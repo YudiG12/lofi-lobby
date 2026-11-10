@@ -115,12 +115,12 @@ v1 = []
 v1.append('<rect x="376" y="80" width="1044" height="470" rx="10" class="g"/>' + f'<path transform="translate(390,86) scale(0.75)" d="{BRANDS["cloudflare"]}" fill="#F38020"/>' + '<text x="414" y="100" class="gl">CLOUDFLARE</text>')
 # the browser: the scene and the HUD, and the YouTube player it embeds
 v1.append('<rect x="24" y="92" width="252" height="236" rx="10" class="g"/><text x="38" y="112" class="gl">BROWSER</text>')
-v1.append(box(A, 124, "Scene", "three.js · 2.5D sprites", "slate", icons=("globe",)) + devices(A + 110, 206, ("laptop",), "lights, shadows, collision"))
+v1.append(box(A, 124, "Scene", "FBX town · trainer sheets", "slate", icons=("globe",)) + devices(A + 110, 206, ("laptop",), "three.js · lights, shadows, collision"))
 v1.append(box(A, 232, "HUD", "chat · radio · admin", "slate", icons=("chat",)) + devices(A + 110, 314, ("monitor",), "glass over the scene"))
 v1.append('<rect x="24" y="380" width="252" height="128" rx="10" class="g"/><text x="38" y="400" class="gl">YOUTUBE</text>')
 v1.append(box(A, 412, "IFrame player", "no controls, always visible", "red", "plays at the room's clock time", icons=("play",), kind="api"))
 # static site
-v1.append(box(X1, 124, "Static assets", "Vite build", "green", "index.html + one JS bundle", icons=("box",)))
+v1.append(box(X1, 124, "Static assets", "Vite build + game art", "green", "HTML + JS + FBX + textures + trainers", icons=("box",)))
 # the Worker: one deployable holding the router and the room class
 v1.append('<rect x="410" y="232" width="626" height="146" rx="8" fill="#5B5BD6" fill-opacity="0.06" stroke="#5B5BD6" stroke-width="1.5" stroke-dasharray="6 4"/>'
           '<text x="424" y="370" class="gl" style="fill:#5B5BD6">WORKER</text>')

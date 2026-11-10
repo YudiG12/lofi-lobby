@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Accepted |
+| **Status** | Superseded by [ADR 005](005-version-and-deploy-game-assets.md) |
 | **Date** | 2026-11-09 |
 | **Deciders** | Yudi Ganeko |
 

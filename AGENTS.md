@@ -21,5 +21,5 @@ npm run deploy-your-own
 - Check changes in the browser; anything multiplayer in two tabs.
 - Design decisions are ADRs in `docs/adr/`; the low-level design is the Architecture section of the `README.md`.
 - The server trusts nothing from the client: keep the limits and cleaning in `worker/index.js` ([SECURITY.md](SECURITY.md)).
-- Never commit or deploy third-party art. `public/assets/` is local only and ignored by Git and by the build ([ADR 004](docs/adr/004-original-art-in-the-repo-local-assets-ignored.md)).
+- Keep the town model, textures and trainer sheets in `public/assets/` versioned and included in production builds; the code-generated fallbacks remain for load failures ([ADR 005](docs/adr/005-version-and-deploy-game-assets.md)).
 - Secrets live only in Worker secrets and the git-ignored `.dev.vars`.
