@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Added
+- Anti-flood per IP: at most 3 connections, chat budget shared across tabs, admin locked for 15 min after 5 wrong passwords (counted per IP, survives reconnects).
+- Progressive mute for chat spam (rate exceeded or repeated text): 30 s, 2 min, 10 min, 1 h.
+
+### Fixed
+- Long words without spaces now wrap in the chat bubble and history.
+
 ### Restored
 - The original Twinleaf FBX town, its textures and the male/female trainer sheets are versioned and included in production again ([ADR 005](docs/adr/005-version-and-deploy-game-assets.md)).
 - README artwork now uses a real gameplay screenshot and the architecture docs describe the bundled assets.
