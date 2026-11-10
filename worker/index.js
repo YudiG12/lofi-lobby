@@ -17,6 +17,8 @@
 //  - all text is stripped of control characters and truncated; numbers finite and clamped
 
 const MAX_PLAYERS = 40;
+// v1 has a single room; any other name is refused so nobody can spin up extra rooms (and extra cost)
+const ROOMS = ["lobby"];
 const MAX_BYTES = 1024;
 const COORD_LIMIT = 500;
 const ADMIN_ATTEMPTS = 5; // per IP, then locked for ADMIN_LOCK_MS
@@ -217,6 +219,7 @@ export default {
     // /ws/<room>  ->  that room's Durable Object. Everything else is the static site (assets).
     const m = url.pathname.match(/^\/ws\/([a-z0-9-]{1,32})$/i);
     if (!m) return env.ASSETS ? env.ASSETS.fetch(req) : new Response("lofi-lobby", { status: 404 });
+    if (!ROOMS.includes(m[1].toLowerCase())) return new Response("unknown room", { status: 404 });
 
     // only accept connections from the site itself (or origins listed in ALLOWED_ORIGINS)
     const origin = req.headers.get("Origin");

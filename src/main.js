@@ -940,7 +940,7 @@ const clock = new THREE.Clock();
 // ---- Multiplayer ----
 // Other players use their configured sheets, with independent textures and crops.
 // Position comes over the WebSocket and is smoothed.
-const ROOM = new URLSearchParams(location.search).get("room") || "lobby";
+const ROOM = "lobby"; // v1: one room only (the server refuses any other)
 let NAME = "trainer";
 try {
   NAME =

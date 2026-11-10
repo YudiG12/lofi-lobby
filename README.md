@@ -36,7 +36,7 @@ Open the URL, pick a trainer and press **enter the room**: the click is what let
 | G | switch trainer |
 | Space | pause the music for you only |
 
-- Another room: `?room=<name>`. Each name is its own Durable Object.
+- There is one room, `lobby`, for everyone (the server refuses any other name).
 - Admin (restart or skip the song for everyone): open once with `?admin=<ADMIN_PASSWORD>`.
 - Change the song list in [`src/radio.js`](src/radio.js) (`LISTA`, YouTube video ids).
 
