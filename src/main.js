@@ -929,7 +929,7 @@ addEventListener("game:pause", (e) => {
   if (gamePaused) Object.keys(keys).forEach((k) => (keys[k] = false));
 });
 addEventListener("keydown", (e) => {
-  if (["msg", "name-input"].includes(document.activeElement?.id)) return; // typing: don't walk
+  if (["msg", "name-input", "enter-name"].includes(document.activeElement?.id)) return; // typing: don't walk
   keys[e.key.toLowerCase()] = true;
 });
 addEventListener("keyup", (e) => (keys[e.key.toLowerCase()] = false));
@@ -1010,6 +1010,11 @@ function changeName(newName) {
   if (MULTIPLAYER && ws?.readyState === 1)
     ws.send(JSON.stringify({ t: "name", name: NAME }));
 }
+// the enter/pause screen has its own name field: fill it in and apply it on enter
+window.applyName = changeName;
+const elEnterName = document.querySelector("#enter-name");
+elEnterName.value = NAME;
+addEventListener("game:pause", (e) => e.detail && (elEnterName.value = NAME));
 elName.addEventListener("click", () => {
   const inp = Object.assign(document.createElement("input"), {
     value: NAME,
