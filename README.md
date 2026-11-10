@@ -32,6 +32,7 @@ Open the URL, pick a trainer and press **enter the room**: the click is what let
 | Key | Does |
 |---|---|
 | Arrows / WASD | walk (Shift runs) |
+| Phone: drag anywhere | walk (push to the edge of the ring to run); **chat** button opens the chat |
 | Enter | open the chat · Esc leaves it |
 | G | switch trainer |
 | Space | pause the music for you only |

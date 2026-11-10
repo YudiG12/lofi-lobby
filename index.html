@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
 <title>Lofi Lobby</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <link href="https://fonts.googleapis.com/css2?family=Silkscreen&display=swap" rel="stylesheet" />
@@ -66,11 +66,44 @@
   #enter button { font: inherit; font-size: 18px; color: #F2F2F5; background: rgba(10,10,14,.75); border: 1px solid rgba(255,255,255,.2);
                    border-radius: 8px; padding: 16px 28px; cursor: pointer; }
   #enter button:hover { border-color: #ffc95a; color: #ffc95a; }
+  #stick { position: fixed; width: 112px; height: 112px; margin: -56px 0 0 -56px; border-radius: 50%; z-index: 3; pointer-events: none;
+           border: 1px solid rgba(255,255,255,.25); background: rgba(10,10,14,.25); display: none; }
+  #stick.on { display: block; }
+  #stick .knob { position: absolute; left: 34px; top: 34px; width: 44px; height: 44px; border-radius: 50%;
+                 background: rgba(255,201,90,.55); border: 1px solid #ffc95a; }
+  #chat-toggle, #pause-btn { display: none; }
+
+  /* phones and tablets */
+  @media (pointer: coarse) {
+    canvas { touch-action: none; }
+    #hint { display: none; }
+    #place { left: 10px; top: calc(10px + env(safe-area-inset-top)); padding: 8px 12px; max-width: calc(50vw - 42px); }
+    #place b { font-size: 16px; }
+    #place small { display: block; font-size: 10px; }
+    #switch-trainer, #pause-btn { font-size: 11px; padding: 6px 10px; }
+    #pause-btn { display: inline-block; margin: 6px 0 0 4px; font: inherit; color: #F2F2F5; background: rgba(0,0,0,.4);
+                 border: 1px solid rgba(255,255,255,.16); border-radius: 6px; }
+    #switch-trainer { display: inline-block; margin-top: 6px; }
+    #radio { left: auto; right: 10px; bottom: auto; top: calc(10px + env(safe-area-inset-top)); max-width: calc(50vw - 16px); padding: 6px; gap: 8px; }
+    #radio .tv { width: 96px; height: 54px; }
+    #radio > div:last-child { min-width: 0; }
+    #radio b { font-size: 10px; line-height: 13px; max-height: 26px; overflow: hidden; }
+    #radio small { font-size: 9px; }
+    #chat-toggle { display: block; position: fixed; right: 12px; bottom: calc(12px + env(safe-area-inset-bottom)); z-index: 4;
+                   font: inherit; font-size: 13px; color: #F2F2F5; background: rgba(10,10,14,.75); border: 1px solid rgba(255,255,255,.2);
+                   border-radius: 22px; padding: 10px 16px; }
+    #chat-toggle.unread::after { content: ""; display: inline-block; width: 8px; height: 8px; margin-left: 6px; border-radius: 50%; background: #ffc95a; }
+    #chat { left: 0; right: 0; top: auto; bottom: 0; width: auto; height: 46vh; border-radius: 12px 12px 0 0;
+            padding-bottom: env(safe-area-inset-bottom); transform: translateY(100%); transition: transform .2s; z-index: 5; }
+    #chat.open { transform: none; }
+    #chat header { padding: 12px 16px 10px; }
+    #chat input { font-size: 16px; } /* 16px+ keeps iOS from zooming in */
+  }
 </style>
 </head>
 <body>
 <div id="place" class="glass"><b>Lofi Lobby</b><small>room lobby · 1 trainer</small>
-  <button id="switch-trainer" title="switch trainer (G)">switch trainer · G</button>
+  <button id="switch-trainer" title="switch trainer (G)">switch trainer · G</button><button id="pause-btn" type="button">pause</button>
 </div>
 <div id="hint" class="glass">arrows / WASD to walk · Shift to run · space to pause</div>
 <div id="radio" class="glass">
@@ -83,6 +116,7 @@
     </div>
   </div>
 </div>
+<button id="chat-toggle" type="button">chat</button>
 <div id="chat" class="glass">
   <header><b>chat</b><small>you: <button id="my-name" title="change name"></button> ✎</small></header>
   <div id="msgs"></div>
@@ -147,6 +181,23 @@
     });
   }
   btnEnter.addEventListener("click", play);
+  document.querySelector("#pause-btn").addEventListener("click", pause);
+  // phones: the chat is a sheet that opens from the button; a dot marks new messages
+  const chat = document.querySelector("#chat");
+  if (matchMedia("(pointer: coarse)").matches) {
+    document.querySelector("#msg").placeholder = "say something…";
+    document.querySelector("#switch-trainer").textContent = "switch trainer";
+  }
+  const chatToggle = document.querySelector("#chat-toggle");
+  chatToggle.addEventListener("click", () => {
+    const open = chat.classList.toggle("open");
+    chatToggle.textContent = open ? "close" : "chat";
+    chatToggle.classList.remove("unread");
+    chatToggle.style.bottom = open ? "calc(46vh + 10px)" : "";
+  });
+  new MutationObserver(() => {
+    if (!chat.classList.contains("open")) chatToggle.classList.add("unread");
+  }).observe(document.querySelector("#msgs"), { childList: true });
   addEventListener("keydown", (e) => {
     const typing = ["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName) || document.activeElement?.isContentEditable;
     if (e.code !== "Space" || e.repeat || typing) return;
