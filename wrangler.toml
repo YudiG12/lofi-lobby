@@ -2,18 +2,22 @@ name = "lofi-lobby"
 main = "worker/index.js"
 compatibility_date = "2025-06-01"
 
-# site estático (build do Vite). /ws/* passa pelo Worker antes dos assets.
+# static site (Vite build). /ws/* goes through the Worker before the assets.
 [assets]
 directory = "./dist"
 binding = "ASSETS"
 run_worker_first = ["/ws/*"]
 
 [durable_objects]
-bindings = [{ name = "SALA", class_name = "Sala" }]
+bindings = [{ name = "ROOM", class_name = "Room" }]
 
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Sala"]
 
-# ALLOWED_ORIGINS (opcional): origens extras permitidas no WebSocket, separadas por vírgula.
-# ADMIN_PASSWORD: segredo -> `npx wrangler secret put ADMIN_PASSWORD` (nunca aqui)
+[[migrations]]
+tag = "v2"
+renamed_classes = [{ from = "Sala", to = "Room" }]
+
+# ALLOWED_ORIGINS (optional): extra origins allowed on the WebSocket, comma-separated.
+# ADMIN_PASSWORD: secret -> `npx wrangler secret put ADMIN_PASSWORD` (never here)
