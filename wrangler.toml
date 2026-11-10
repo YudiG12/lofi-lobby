@@ -1,0 +1,19 @@
+name = "sala-lofi"
+main = "worker/index.js"
+compatibility_date = "2025-06-01"
+
+# site estático (build do Vite). /ws/* passa pelo Worker antes dos assets.
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+run_worker_first = ["/ws/*"]
+
+[durable_objects]
+bindings = [{ name = "SALA", class_name = "Sala" }]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Sala"]
+
+# ORIGENS (opcional): origens extras permitidas no WebSocket, separadas por vírgula.
+# ADMIN_SENHA: segredo -> `npx wrangler secret put ADMIN_SENHA` (nunca aqui)

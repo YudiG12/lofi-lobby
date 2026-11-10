@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Sala Lo-fi</title>
+<link href="https://fonts.googleapis.com/css2?family=Silkscreen&display=swap" rel="stylesheet" />
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; font-family: Silkscreen, monospace; }
+  canvas { display: block; image-rendering: pixelated; }
+  .glass { position: fixed; background: rgba(10,10,14,.62); border: 1px solid rgba(255,255,255,.14);
+           border-radius: 8px; backdrop-filter: blur(6px); color: #F2F2F5; }
+  #local { left: 28px; top: 28px; padding: 12px 20px; }
+  #local b { display: block; font-size: 22px; font-weight: 400; }
+  #local small { color: #A6A8B8; font-size: 12px; }
+  #dica { left: 50%; bottom: 24px; transform: translateX(-50%); padding: 8px 14px; font-size: 12px; color: #A6A8B8; }
+  #radio { left: 28px; bottom: 28px; padding: 10px; display: flex; gap: 12px; align-items: center; max-width: 420px; }
+  #radio .tv { width: 176px; height: 99px; border-radius: 4px; overflow: hidden; background: #000; flex-shrink: 0; pointer-events: none; }
+  #radio small { display: block; color: #A6A8B8; font-size: 11px; margin-bottom: 4px; }
+  #radio b { display: block; font-weight: 400; font-size: 13px; line-height: 18px; }
+  #chat { right: 20px; top: 20px; bottom: 20px; width: 320px; display: flex; flex-direction: column; }
+  #chat header { padding: 18px 20px 14px; border-bottom: 1px solid rgba(255,255,255,.12); display: flex; justify-content: space-between; align-items: baseline; }
+  #chat header b { font-weight: 400; font-size: 18px; }
+  #chat header small { color: #A6A8B8; font-size: 11px; }
+  #msgs { flex: 1; overflow-y: auto; padding: 14px 20px; display: flex; flex-direction: column; justify-content: flex-end; gap: 12px; }
+  #msgs .m small { display: block; font-size: 11px; color: #ffc95a; margin-bottom: 2px; }
+  #msgs .m span { font-size: 13px; line-height: 19px; word-wrap: break-word; }
+  #chat form { padding: 14px 16px 16px; display: flex; gap: 8px; }
+  #chat input { flex: 1; min-width: 0; font: inherit; font-size: 13px; color: #F2F2F5; background: rgba(0,0,0,.35);
+                border: 1px solid rgba(255,255,255,.14); border-radius: 6px; padding: 10px 12px; outline: none; }
+  #chat input:focus { border-color: #ffc95a; }
+  #chat input::placeholder { color: #7d8094; }
+  /* balão + seta numa forma só (clip-path): um único fundo, sem transparência
+     dupla onde a seta encontra o balão; o contorno vem do drop-shadow da forma */
+  .balao { position: fixed; transform: translate(-50%, -100%); pointer-events: none; z-index: 2;
+           transition: opacity .3s; filter: drop-shadow(0 0 0.6px rgba(255,255,255,.55)); }
+  .balao span { display: block; max-width: 220px; padding: 6px 10px 13px; font-size: 12px; line-height: 16px;
+                color: #F2F2F5; text-align: center; background: rgba(0,0,0,.74);
+                clip-path: polygon(0 0, 100% 0, 100% calc(100% - 7px), calc(50% + 6px) calc(100% - 7px),
+                                   50% 100%, calc(50% - 6px) calc(100% - 7px), 0 calc(100% - 7px)); }
+  #trocar-genero { display: block; margin-top: 8px; font: inherit; font-size: 11px; color: #F2F2F5; background: rgba(0,0,0,.4);
+                   border: 1px solid rgba(255,255,255,.16); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+  #trocar-genero:hover { border-color: #ffc95a; color: #ffc95a; }
+  .tag { position: fixed; transform: translate(-50%, -100%); pointer-events: none; z-index: 1; white-space: nowrap;
+         font-size: 10px; line-height: 14px; color: #F2F2F5;
+         /* sem fundo: contorno escuro pra ler em cima de grama clara e de luz de poste */
+         text-shadow: 1px 0 0 #000, -1px 0 0 #000, 0 1px 0 #000, 0 -1px 0 #000; }
+  #meu-nome { font: inherit; color: #ffc95a; background: none; border: 0; padding: 0; cursor: pointer; }
+  #meu-nome:hover { text-decoration: underline; }
+  #msg-nome { font: inherit; font-size: 11px; color: #F2F2F5; background: rgba(0,0,0,.4); width: 120px;
+              border: 1px solid #ffc95a; border-radius: 4px; padding: 2px 6px; outline: none; }
+  #admin { display: flex; gap: 6px; margin-top: 8px; }
+  #admin[hidden] { display: none; }
+  #admin button { font: inherit; font-size: 14px; color: #F2F2F5; background: rgba(0,0,0,.4);
+                  border: 1px solid rgba(255,255,255,.16); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+  #admin button:hover { border-color: #ffc95a; color: #ffc95a; }
+  #entrar { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(5,6,12,.55); backdrop-filter: blur(3px); z-index: 10; }
+  #entrar[hidden] { display: none; }
+  #entrar .caixa { display: flex; flex-direction: column; align-items: center; gap: 16px; padding: 24px 28px;
+                   background: rgba(0,0,0,.6); border: 1px solid rgba(255,255,255,.14); border-radius: 10px; color: #F2F2F5; }
+  #entrar .caixa small { color: #A6A8B8; font-size: 12px; }
+  #entrar .generos { display: flex; gap: 10px; }
+  #entrar .generos button { font-size: 14px; padding: 10px 18px; }
+  #entrar .generos button.on { border-color: #ffc95a; color: #ffc95a; }
+  #entrar button { font: inherit; font-size: 18px; color: #F2F2F5; background: rgba(10,10,14,.75); border: 1px solid rgba(255,255,255,.2);
+                   border-radius: 8px; padding: 16px 28px; cursor: pointer; }
+  #entrar button:hover { border-color: #ffc95a; color: #ffc95a; }
+</style>
+</head>
+<body>
+<div id="local" class="glass"><b>Twinleaf Town</b><small>sala geral · 1 treinador</small>
+  <button id="trocar-genero" title="trocar treinador (G)">trocar treinador · G</button>
+</div>
+<div id="dica" class="glass">setas / WASD pra andar · Shift pra correr · espaço pausa</div>
+<div id="radio" class="glass">
+  <div class="tv"><div id="yt"></div></div>
+  <div><small>tocando agora</small><b id="titulo">—</b>
+    <div id="admin" hidden>
+      <button data-acao="anterior" title="anterior">⏮</button>
+      <button data-acao="replay" title="voltar ao início">↺</button>
+      <button data-acao="proximo" title="próximo">⏭</button>
+    </div>
+  </div>
+</div>
+<div id="chat" class="glass">
+  <header><b>chat</b><small>você: <button id="meu-nome" title="trocar nome"></button> ✎</small></header>
+  <div id="msgs"></div>
+  <form><input id="msg" maxlength="140" autocomplete="off" placeholder="enter pra falar…" /></form>
+</div>
+<div id="entrar">
+  <div class="caixa">
+    <small>escolha seu treinador</small>
+    <div class="generos">
+      <button type="button" data-genero="masculino">masculino</button>
+      <button type="button" data-genero="feminino">feminino</button>
+    </div>
+    <button id="btn-entrar">entrar na sala ▶</button>
+  </div>
+</div>
+<script type="module">
+  import { iniciarRadio, pausarRadio, retomarRadio, admin } from "/src/radio.js";
+  // modo admin: abra com ?admin=SENHA uma vez (fica salvo); ?admin= (vazio) desliga.
+  // A senha é conferida no servidor (segredo ADMIN_SENHA); aqui só mostra os botões.
+  const p = new URLSearchParams(location.search).get("admin");
+  try { if (p !== null) localStorage.setItem("admin-senha", p); } catch {}
+  let ehAdmin = false;
+  try { ehAdmin = !!localStorage.getItem("admin-senha"); } catch {}
+  const painel = document.querySelector("#admin");
+  painel.hidden = !ehAdmin;
+  painel.addEventListener("click", (e) => {
+    const acao = e.target.closest("button")?.dataset.acao;
+    if (acao) admin[acao]();
+  });
+  // escolha de gênero: marca o salvo e aplica ao clicar
+  const botoesGenero = [...document.querySelectorAll("[data-genero]")];
+  let salvo = "masculino";
+  try { salvo = localStorage.getItem("genero") === "feminino" ? "feminino" : "masculino"; } catch {}
+  const marcar = (g) => botoesGenero.forEach((b) => b.classList.toggle("on", b.dataset.genero === g));
+  marcar(salvo);
+  botoesGenero.forEach((b) => b.addEventListener("click", () => {
+    marcar(b.dataset.genero);
+    window.aplicarGenero?.(b.dataset.genero);
+  }));
+  const telaPausa = document.querySelector("#entrar");
+  const btnEntrar = document.querySelector("#btn-entrar");
+  let radioPromise = null;
+  const avisarJogo = (pausado) =>
+    window.dispatchEvent(new CustomEvent("jogo:pausa", { detail: pausado }));
+  function pausar() {
+    pausarRadio();
+    avisarJogo(true);
+    telaPausa.hidden = false;
+    btnEntrar.textContent = "continuar ▶";
+  }
+  function jogar() {
+    telaPausa.hidden = true;
+    avisarJogo(false);
+    if (radioPromise) {
+      retomarRadio();
+      return;
+    }
+    radioPromise = iniciarRadio({ elPlayer: "yt", elTitulo: document.querySelector("#titulo") }).catch((erro) => {
+      radioPromise = null;
+      pausar();
+      console.error("Não foi possível iniciar o rádio", erro);
+    });
+  }
+  btnEntrar.addEventListener("click", jogar);
+  addEventListener("keydown", (e) => {
+    const digitando = ["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName) || document.activeElement?.isContentEditable;
+    if (e.code !== "Space" || e.repeat || digitando) return;
+    e.preventDefault();
+    if (telaPausa.hidden) pausar();
+    else jogar();
+  });
+</script>
+<script type="module" src="/src/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,7 @@
+# assets de terceiros (modelos, texturas, sprites) ficam só local, nunca no repo
+.DS_Store
+.dev.vars
+.wrangler/
+dist
+node_modules
+public/assets/
