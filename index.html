@@ -21,6 +21,9 @@
   #radio .tv .tv-cover { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
   #radio .tv .tv-cover[hidden] { display: none; }
   #radio small { display: block; color: #A6A8B8; font-size: 11px; margin-bottom: 4px; }
+  #mute { display: inline-grid; place-items: center; vertical-align: middle; margin-left: 6px; width: 22px; height: 22px; padding: 0;
+          color: #F2F2F5; background: rgba(0,0,0,.4); border: 1px solid rgba(255,255,255,.16); border-radius: 6px; cursor: pointer; pointer-events: auto; }
+  #mute:hover, #mute.on { border-color: #ffc95a; color: #ffc95a; }
   #radio b { display: block; font-weight: 400; font-size: 13px; line-height: 18px; }
   #chat { right: 20px; top: 20px; bottom: 20px; width: 320px; display: flex; flex-direction: column; }
   #chat header { padding: 18px 20px 14px; border-bottom: 1px solid rgba(255,255,255,.12); display: flex; justify-content: space-between; align-items: baseline; }
@@ -126,10 +129,10 @@
   <div class="me">you: <button id="my-name" title="change name"></button> ✎</div>
   <button id="switch-trainer" title="switch trainer (G)">switch trainer · G</button><button id="pause-btn" type="button">pause</button>
 </div>
-<div id="hint" class="glass">arrows / WASD to walk · Shift to run · space to pause</div>
+<div id="hint" class="glass">arrows / WASD to walk · Shift to run · M to mute · space to pause</div>
 <div id="radio" class="glass">
   <div class="tv"><div id="yt"></div></div>
-  <div><small>now playing</small><b id="title">—</b>
+  <div><small>now playing <button id="mute" type="button" title="mute (M)" aria-label="mute"></button></small><b id="title">—</b>
     <div id="admin" hidden>
       <button data-action="previous" title="previous">⏮</button>
       <button data-action="restart" title="restart">↺</button>
@@ -156,7 +159,24 @@
   </div>
 </div>
 <script type="module">
-  import { startRadio, pauseRadio, resumeRadio, admin } from "/src/radio.js";
+  import { startRadio, pauseRadio, resumeRadio, admin, isMuted, setMuted } from "/src/radio.js";
+  // mute: only for you; the radio keeps running in sync, so unmuting lands on the same second as everyone
+  const muteBtn = document.querySelector("#mute");
+  const SPEAKER = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/>';
+  const drawMute = () => {
+    const m = isMuted();
+    muteBtn.innerHTML = SPEAKER + (m ? '<path d="m22 9-6 6M16 9l6 6"/></svg>' : '<path d="M15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14"/></svg>');
+    muteBtn.classList.toggle("on", m);
+    muteBtn.title = m ? "unmute (M)" : "mute (M)";
+    muteBtn.setAttribute("aria-label", m ? "unmute" : "mute");
+  };
+  const toggleMute = () => { setMuted(!isMuted()); drawMute(); };
+  drawMute();
+  muteBtn.addEventListener("click", toggleMute);
+  addEventListener("keydown", (e) => {
+    const typing = ["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName);
+    if (!typing && !e.repeat && e.key.toLowerCase() === "m") toggleMute();
+  });
   // admin mode: open with ?admin=PASSWORD once (it's saved); ?admin= (empty) turns it off.
   // The password is checked on the server (ADMIN_PASSWORD secret); here it only shows the buttons.
   const p = new URLSearchParams(location.search).get("admin");
