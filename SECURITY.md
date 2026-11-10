@@ -10,7 +10,7 @@ The client is public, so the server trusts nothing it sends.
 - **Limits per connection:** 1 KB per message; rate limits (token bucket) for positions, chat and everything else; **40 players** per room.
 - **Input is cleaned:** names (16 chars) and chat (140 chars) lose control and bidi characters; coordinates must be finite and within bounds; enums are checked against a list.
 - **Output is safe:** the browser inserts every text that comes from the network with `textContent`, never as HTML.
-- **No third-party assets** in the repo or on the live site ([ADR 004](docs/adr/004-original-art-in-the-repo-local-assets-ignored.md)).
+- **Static game assets only:** the repo and live site serve the reviewed files in `public/assets/`; visitors cannot upload assets ([ADR 005](docs/adr/005-version-and-deploy-game-assets.md)).
 
 What it does not do yet: moderation (mute, ban, word filter) and persistence of chat. Chat is relayed and forgotten.
 

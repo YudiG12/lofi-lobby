@@ -652,7 +652,7 @@ function createCharacterTexture(gender) {
       },
       undefined,
       () => {
-        // local file doesn't exist (e.g. published site): fall back to the original trainer
+        // asset unavailable: fall back to the original trainer
         failedSheets.add(gender);
         if (gender === GENDER) applyGender(GENDER);
       },

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Restored
+- The original Twinleaf FBX town, its textures and the male/female trainer sheets are versioned and included in production again ([ADR 005](docs/adr/005-version-and-deploy-game-assets.md)).
+- README artwork now uses a real gameplay screenshot and the architecture docs describe the bundled assets.
+
 ## v1 (2026-11-09)
 
 Built in one evening, from a Paper mockup to a live multiplayer lobby. Decisions in [ADR 001](docs/adr/001-one-durable-object-per-room.md) to [ADR 004](docs/adr/004-original-art-in-the-repo-local-assets-ignored.md); design in [spec v1](docs/spec/v1.md).
