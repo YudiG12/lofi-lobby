@@ -1219,9 +1219,11 @@ function addToHistory(name, text) {
   const t = document.createElement("span");
   t.textContent = text; // textContent: no HTML from the chat
   d.append(s, t);
+  // follow new messages only if already at the bottom (don't yank someone reading old ones)
+  const atBottom = elMsgs.scrollHeight - elMsgs.scrollTop - elMsgs.clientHeight < 40;
   elMsgs.append(d);
   while (elMsgs.children.length > 60) elMsgs.firstChild.remove();
-  elMsgs.scrollTop = elMsgs.scrollHeight;
+  if (atBottom || name === NAME) elMsgs.scrollTop = elMsgs.scrollHeight;
 }
 
 function showBubble(owner, text) {
@@ -1296,11 +1298,14 @@ function receiveChat(id, name, text) {
   if (owner) showBubble(owner, text);
 }
 
+// tapping send must not steal focus from the box (it would close the phone keyboard)
+document.querySelector("#send").addEventListener("pointerdown", (e) => e.preventDefault());
 document.querySelector("#chat form").addEventListener("submit", (e) => {
   e.preventDefault();
   const text = elInput.value.trim().slice(0, 140);
   elInput.value = "";
-  elInput.blur();
+  // desktop: leave the box so the arrows walk again; phone: keep the keyboard up to keep talking
+  if (!MOBILE) elInput.blur();
   if (!text) return;
   if (MULTIPLAYER && ws?.readyState === 1)
     ws.send(JSON.stringify({ t: "chat", text }));
