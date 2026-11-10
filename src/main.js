@@ -649,6 +649,7 @@ function createCharacterTexture(gender) {
         t.magFilter = t.minFilter = THREE.NearestFilter;
         t.colorSpace = THREE.SRGBColorSpace;
         removeBackground(t);
+        setFrame("down", 0);
       },
       undefined,
       () => {
@@ -849,7 +850,7 @@ shadow.rotation.x = -Math.PI / 2;
 scene.add(shadow);
 
 // Replace the sheet's background color (pixel 0,0 of the first frame) with transparent
-function removeBackground(t) {
+function removeBackground(t, cfg = CHARACTER.cfg) {
   const img = t.image;
   const cv = Object.assign(document.createElement("canvas"), {
     width: img.width,
@@ -858,7 +859,7 @@ function removeBackground(t) {
   const ctx = cv.getContext("2d");
   ctx.drawImage(img, 0, 0);
   const d = ctx.getImageData(0, 0, cv.width, cv.height);
-  const [ox, oy] = CHARACTER.origin;
+  const [ox, oy] = cfg.origin;
   const i0 = (oy * cv.width + ox) * 4;
   const bg = [d.data[i0], d.data[i0 + 1], d.data[i0 + 2]];
   for (let i = 0; i < d.data.length; i += 4) {
@@ -872,7 +873,6 @@ function removeBackground(t) {
   ctx.putImageData(d, 0, 0);
   t.image = cv;
   t.needsUpdate = true;
-  setFrame("down", 0);
 }
 
 function setFrame(dir, step, running = false) {
@@ -938,8 +938,8 @@ const SPEED = 9;
 
 const clock = new THREE.Clock();
 // ---- Multiplayer ----
-// Other players show up as the original trainer (each with its own texture,
-// to animate independently). Position comes over the WebSocket and is smoothed.
+// Other players use their configured sheets, with independent textures and crops.
+// Position comes over the WebSocket and is smoothed.
 const ROOM = new URLSearchParams(location.search).get("room") || "lobby";
 let NAME = "trainer";
 try {
@@ -989,24 +989,37 @@ elName.addEventListener("click", () => {
   });
   inp.addEventListener("blur", () => inp.isConnected && close(true));
 });
-const originalCanvas = {}; // gender -> original trainer canvas
-const others = new Map(); // id -> { mesh, tex, target, dir, step, name }
+const others = new Map(); // id -> { mesh, tex, cfg, target, dir, step, name }
 let myId = null;
 let ws = null;
 
-function setFrameTex(tex, d, step) {
+function setFrameTex(tex, cfg, d, step) {
   const img = tex.image;
   if (!img || !img.width) return;
-  // other players use the original trainers (GRID layout)
-  const { x, y, w, h } = framePos(GRID, d, step);
+  const { x, y, w, h } = framePos(cfg, d, step);
   tex.repeat.set(w / img.width, h / img.height);
   tex.offset.set(x / img.width, 1 - (y + h) / img.height);
 }
 
 function createOther(p) {
   const g = p.gender === "female" ? "female" : "male";
-  originalCanvas[g] ??= generateOriginalTrainer(g);
-  const tex = new THREE.CanvasTexture(originalCanvas[g]);
+  const available = sheetAvailable(g);
+  const tex = available
+    ? texLoader.load(
+        SHEETS[g],
+        () => {
+          removeBackground(tex, CROP[g]);
+          setFrameTex(tex, CROP[g], o.dir, o.step);
+        },
+        undefined,
+        () => {
+          failedSheets.add(g);
+          o.cfg = GRID;
+          tex.image = generateOriginalTrainer(g);
+          tex.needsUpdate = true;
+        },
+      )
+    : new THREE.CanvasTexture(generateOriginalTrainer(g));
   tex.magFilter = tex.minFilter = THREE.NearestFilter;
   tex.colorSpace = THREE.SRGBColorSpace;
   const mesh = new THREE.Mesh(
@@ -1032,6 +1045,7 @@ function createOther(p) {
   const o = {
     mesh,
     tex,
+    cfg: available ? CROP[g] : GRID,
     target: new THREE.Vector3(p.x, 0, p.z),
     dir: p.dir || "down",
     step: p.step || 0,
@@ -1138,7 +1152,7 @@ function updateOthers(dt) {
     );
     m.position.y = topHeight(m.position.x, m.position.z);
     m.rotation.copy(sprite.rotation);
-    setFrameTex(o.tex, o.dir, o.step);
+    setFrameTex(o.tex, o.cfg, o.dir, o.step);
   }
 }
 
@@ -1194,7 +1208,8 @@ function updateNameTags() {
   for (const o of others.values()) nameTag(o.mesh, o.name || "trainer");
   for (const [mesh, el] of nameTags) {
     if (!mesh.parent) { el.remove(); nameTags.delete(mesh); continue; }
-    _v.set(mesh.position.x, mesh.position.y + mesh.scale.y * 0.92, mesh.position.z).project(camera);
+    const baseY = mesh === sprite ? pos.y : mesh.position.y;
+    _v.set(mesh.position.x, baseY + mesh.scale.y * 0.92, mesh.position.z).project(camera);
     el.style.left = `${(_v.x * 0.5 + 0.5) * innerWidth}px`;
     el.style.top = `${(-_v.y * 0.5 + 0.5) * innerHeight}px`;
     el.style.display = _v.z < 1 ? "" : "none";
