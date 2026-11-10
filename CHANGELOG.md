@@ -4,7 +4,7 @@
 
 ### Added
 - Anti-flood per IP: at most 3 connections, chat budget shared across tabs, admin locked for 15 min after 5 wrong passwords (counted per IP, survives reconnects).
-- Progressive mute for chat spam (rate exceeded or repeated text): 30 s, 2 min, 10 min, 1 h.
+- Progressive mute for chat spam (rate exceeded, or the same text 4+ times in a row): warning, then 15 s, 1 min, 5 min, 30 min.
 
 ### Fixed
 - Long words without spaces now wrap in the chat bubble and history.

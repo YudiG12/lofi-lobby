@@ -23,11 +23,12 @@ const ADMIN_ATTEMPTS = 5; // per IP, then locked for ADMIN_LOCK_MS
 const ADMIN_LOCK_MS = 15 * 60_000;
 const MAX_PER_IP = 3; // tabs/devices behind one IP
 // progressive mute: each spam strike mutes for longer; strikes are forgotten after STRIKE_RESET_MS quiet
-const MUTE_STEPS_MS = [30_000, 2 * 60_000, 10 * 60_000, 60 * 60_000];
+const MUTE_STEPS_MS = [0, 15_000, 60_000, 5 * 60_000, 30 * 60_000]; // first strike is only a warning
 const STRIKE_RESET_MS = 30 * 60_000;
-const REPEAT_WINDOW_MS = 15_000; // same text again inside this window counts as spam
+const REPEAT_LIMIT = 3; // the same text more than this many times in a row...
+const REPEAT_WINDOW_MS = 30_000; // ...inside this window counts as spam
 // rate buckets: capacity, refill per second
-const RATES = { pos: [30, 20], chat: [5, 0.5], other: [10, 1] };
+const RATES = { pos: [30, 20], chat: [8, 1], other: [10, 1] };
 
 const DIRS = ["down", "up", "left", "right"];
 const cleanText = (s, max) =>
@@ -165,7 +166,8 @@ export class Room {
       const now = Date.now();
       const s = this.spamOf(p.ip, now);
       if (s.mutedUntil > now) return this.tellMuted(ws, s.mutedUntil);
-      if (text === s.lastText && now - s.lastAt < REPEAT_WINDOW_MS) return this.strike(ws, p.ip);
+      s.repeats = text === s.lastText && now - s.lastAt < REPEAT_WINDOW_MS ? s.repeats + 1 : 1;
+      if (s.repeats > REPEAT_LIMIT) return this.strike(ws, p.ip);
       s.lastText = text;
       s.lastAt = now;
       this.broadcast({ t: "chat", id: p.id, name: p.name, text, at: now });
@@ -174,7 +176,7 @@ export class Room {
 
   spamOf(ip, now) {
     let s = this.spam.get(ip);
-    if (!s) this.spam.set(ip, (s = { strikes: 0, mutedUntil: 0, lastStrike: 0, lastText: "", lastAt: 0 }));
+    if (!s) this.spam.set(ip, (s = { strikes: 0, mutedUntil: 0, lastStrike: 0, lastText: "", lastAt: 0, repeats: 0 }));
     if (s.strikes && now - s.lastStrike > STRIKE_RESET_MS) s.strikes = 0;
     return s;
   }
@@ -187,6 +189,10 @@ export class Room {
     s.strikes++;
     s.lastStrike = now;
     s.mutedUntil = now + ms;
+    if (!ms) {
+      try { ws.send(JSON.stringify({ t: "error", msg: "slow down, next time you get muted" })); } catch {}
+      return;
+    }
     this.tellMuted(ws, s.mutedUntil);
   }
   tellMuted(ws, until) {
