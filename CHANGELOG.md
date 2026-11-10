@@ -3,10 +3,9 @@
 ## Unreleased
 
 ### Added
+- Chat **send** button (on phones it keeps the keyboard open).
 - Play on phones: drag anywhere to walk (floating joystick, push to the edge to run), compact HUD, chat as a sheet behind a button with an unread dot, pause button, lighter shadows on touch devices.
 - Name and trainer live together: a name field on the enter/pause screen, and "you: <name> ✎" moved from the chat header to the top card.
-
-### Added
 - Anti-flood per IP: at most 3 connections, chat budget shared across tabs, admin locked for 15 min after 5 wrong passwords (counted per IP, survives reconnects).
 - Browser icon: the town's lamp post (`public/favicon.svg`).
 - Progressive mute for chat spam (rate exceeded, or the same text 4+ times in a row): warning, then 15 s, 1 min, 5 min, 30 min.
@@ -15,6 +14,7 @@
 - A single room, `lobby`: `?room=` is gone and the server refuses other room names, so nobody can open extra rooms to run up the bill.
 
 ### Fixed
+- Chat history scrolls to older messages; new messages only pull you down if you were already at the bottom.
 - Long words without spaces now wrap in the chat bubble and history.
 
 ### Restored
