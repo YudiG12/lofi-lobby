@@ -4,7 +4,7 @@
 // Durable Object becomes the source of that "start".
 
 export const PLAYLIST = [
-  "ZWIJiNeMigM",
+  "x6ujm9B-vAc",
   // add more YouTube IDs here
 ];
 
