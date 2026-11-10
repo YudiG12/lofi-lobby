@@ -1,4 +1,4 @@
-name = "sala-lofi"
+name = "lofi-lobby"
 main = "worker/index.js"
 compatibility_date = "2025-06-01"
 
@@ -15,5 +15,5 @@ bindings = [{ name = "SALA", class_name = "Sala" }]
 tag = "v1"
 new_sqlite_classes = ["Sala"]
 
-# ORIGENS (opcional): origens extras permitidas no WebSocket, separadas por vírgula.
-# ADMIN_SENHA: segredo -> `npx wrangler secret put ADMIN_SENHA` (nunca aqui)
+# ALLOWED_ORIGINS (opcional): origens extras permitidas no WebSocket, separadas por vírgula.
+# ADMIN_PASSWORD: segredo -> `npx wrangler secret put ADMIN_PASSWORD` (nunca aqui)

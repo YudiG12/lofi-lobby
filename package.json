@@ -1,1 +1,21 @@
-{"name":"sala-lofi","private":true,"type":"module","scripts":{"dev":"vite","build":"vite build"},"dependencies":{"three":"^0.187.0"},"devDependencies":{"vite":"^8.3.7","wrangler":"^4.159.0"}}
+{
+  "name": "lofi-lobby",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "dev:server": "wrangler dev --port 8787",
+    "build": "vite build",
+    "deploy": "vite build && wrangler deploy",
+    "deploy-your-own": "bash scripts/deploy-your-own.sh",
+    "render-docs": "bash scripts/render-docs.sh"
+  },
+  "dependencies": {
+    "three": "^0.187.0"
+  },
+  "devDependencies": {
+    "vite": "^8.3.7",
+    "wrangler": "^4.159.0"
+  },
+  "license": "MIT"
+}

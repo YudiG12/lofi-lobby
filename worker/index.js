@@ -10,9 +10,9 @@
 //
 // Segurança (o cliente é público, então nada que vem dele é confiável):
 //  - tamanho máximo de mensagem, limite de taxa por conexão, limite de jogadores por sala
-//  - senha de admin só no servidor (segredo ADMIN_SENHA), comparação em tempo constante,
+//  - senha de admin só no servidor (segredo ADMIN_PASSWORD), comparação em tempo constante,
 //    poucas tentativas por conexão
-//  - origens permitidas (ORIGENS) pra outro site não usar este servidor
+//  - origens permitidas (ALLOWED_ORIGINS) pra outro site não usar este servidor
 //  - todo texto é limpo de caracteres de controle e cortado; números só finitos e limitados
 
 const MAX_JOGADORES = 40;
@@ -52,15 +52,15 @@ export class Sala {
   }
 
   async fetch(req) {
-    if (req.headers.get("Upgrade") !== "websocket") return new Response("esperava websocket", { status: 426 });
-    if (this.state.getWebSockets().length >= MAX_JOGADORES) return new Response("sala cheia", { status: 503 });
+    if (req.headers.get("Upgrade") !== "websocket") return new Response("expected websocket", { status: 426 });
+    if (this.state.getWebSockets().length >= MAX_JOGADORES) return new Response("room is full", { status: 503 });
 
     const [cliente, servidor] = Object.values(new WebSocketPair());
     const id = crypto.randomUUID().slice(0, 8);
     // hibernação: o DO pode dormir com as conexões abertas; o estado de cada
     // jogador fica preso no próprio socket (serializeAttachment)
     this.state.acceptWebSocket(servidor);
-    servidor.serializeAttachment({ id, nome: "treinador", genero: "masculino", x: 0, z: 0, dir: "baixo", passo: 0, falhasAdmin: 0 });
+    servidor.serializeAttachment({ id, nome: "trainer", genero: "masculino", x: 0, z: 0, dir: "baixo", passo: 0, falhasAdmin: 0 });
     servidor.send(JSON.stringify({ t: "voce", id }));
     const radio = await this.state.storage.get("radio");
     if (radio) servidor.send(JSON.stringify({ t: "radio", comando: radio }));
@@ -109,7 +109,7 @@ export class Sala {
     if (!this.permitido(ws, tipo)) return;
 
     if (m.t === "ola") {
-      j.nome = limparTexto(m.nome, 16) || "treinador";
+      j.nome = limparTexto(m.nome, 16) || "trainer";
       j.genero = genero(m.genero);
       ws.serializeAttachment(j);
       this.enviarTodos({ t: "entrou", jogador: this.publico(j) }, ws);
@@ -118,7 +118,7 @@ export class Sala {
       ws.serializeAttachment(j);
       this.enviarTodos({ t: "genero", id: j.id, genero: j.genero }, ws);
     } else if (m.t === "nome") {
-      j.nome = limparTexto(m.nome, 16) || "treinador";
+      j.nome = limparTexto(m.nome, 16) || "trainer";
       ws.serializeAttachment(j);
       this.enviarTodos({ t: "nome", id: j.id, nome: j.nome }, ws);
     } else if (m.t === "pos") {
@@ -130,10 +130,10 @@ export class Sala {
       this.enviarTodos({ t: "pos", id: j.id, x: j.x, z: j.z, dir: j.dir, passo: j.passo }, ws);
     } else if (m.t === "radio") {
       if (j.falhasAdmin >= TENTATIVAS_ADMIN) return; // bloqueado nesta conexão
-      if (!this.env.ADMIN_SENHA || typeof m.senha !== "string" || !iguais(m.senha, this.env.ADMIN_SENHA)) {
+      if (!this.env.ADMIN_PASSWORD || typeof m.senha !== "string" || !iguais(m.senha, this.env.ADMIN_PASSWORD)) {
         j.falhasAdmin++;
         ws.serializeAttachment(j);
-        ws.send(JSON.stringify({ t: "erro", msg: "senha de admin inválida" }));
+        ws.send(JSON.stringify({ t: "erro", msg: "invalid admin password" }));
         return;
       }
       const comando = { idx: Math.max(0, Math.min(999, m.idx | 0)), em: Date.now() };
@@ -160,11 +160,11 @@ export default {
     const m = url.pathname.match(/^\/ws\/([a-z0-9-]{1,32})$/i);
     if (!m) return env.ASSETS ? env.ASSETS.fetch(req) : new Response("sala-lofi", { status: 404 });
 
-    // só aceita conexão vinda do próprio site (ou das origens listadas em ORIGENS)
+    // só aceita conexão vinda do próprio site (ou das origens listadas em ALLOWED_ORIGINS)
     const origem = req.headers.get("Origin");
-    const permitidas = (env.ORIGENS || "").split(",").map((s) => s.trim()).filter(Boolean);
+    const permitidas = (env.ALLOWED_ORIGINS || "").split(",").map((s) => s.trim()).filter(Boolean);
     permitidas.push(url.origin);
-    if (!origem || !permitidas.includes(origem)) return new Response("origem não permitida", { status: 403 });
+    if (!origem || !permitidas.includes(origem)) return new Response("origin not allowed", { status: 403 });
 
     const stub = env.SALA.get(env.SALA.idFromName(m[1].toLowerCase()));
     return stub.fetch(req);
