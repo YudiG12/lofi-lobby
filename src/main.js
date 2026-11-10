@@ -96,6 +96,8 @@ function framePos(cfg, dir, step) {
 }
 
 // ---- Scene ----
+// phones/tablets: touch controls and lighter shadows
+const MOBILE = matchMedia("(pointer: coarse)").matches;
 const renderer = new THREE.WebGLRenderer({ antialias: false });
 renderer.setPixelRatio(1);
 renderer.shadowMap.enabled = true;
@@ -114,7 +116,7 @@ scene.add(new THREE.HemisphereLight("#3a4a8a", "#0b0f1a", 0.35));
 const sun = new THREE.DirectionalLight("#7f95d8", 0.45); // moon
 sun.position.set(40, 80, 30);
 sun.castShadow = true;
-sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.mapSize.set(MOBILE ? 1024 : 2048, MOBILE ? 1024 : 2048);
 Object.assign(sun.shadow.camera, {
   left: -80,
   right: 80,
@@ -424,7 +426,7 @@ function createLampPost(x, z) {
   const light = new THREE.PointLight("#ffc95a", 150, 22, 1.6); // ~2700K, warm yellow
   light.position.set(0.9, 7.6, 0); // a bit out from the pole, under the arm
   light.castShadow = true;
-  light.shadow.mapSize.set(1024, 1024);
+  light.shadow.mapSize.set(MOBILE ? 512 : 1024, MOBILE ? 512 : 1024);
   light.shadow.bias = -0.0005;
   light.shadow.normalBias = 0.05;
   light.shadow.radius = 4;
@@ -927,10 +929,52 @@ addEventListener("game:pause", (e) => {
   if (gamePaused) Object.keys(keys).forEach((k) => (keys[k] = false));
 });
 addEventListener("keydown", (e) => {
-  if (["msg", "name-input"].includes(document.activeElement?.id)) return; // typing: don't walk
+  if (["msg", "name-input", "enter-name"].includes(document.activeElement?.id)) return; // typing: don't walk
   keys[e.key.toLowerCase()] = true;
 });
 addEventListener("keyup", (e) => (keys[e.key.toLowerCase()] = false));
+
+// Touch: a floating joystick. Put a finger anywhere on the scene and drag;
+// pushing past ~90% of the ring runs.
+const STICK_R = 56;
+const stick = { id: null, ox: 0, oy: 0, x: 0, z: 0, mag: 0 };
+const elStick = Object.assign(document.createElement("div"), { id: "stick" });
+elStick.append(Object.assign(document.createElement("div"), { className: "knob" }));
+document.body.append(elStick);
+const canvasEl = renderer.domElement;
+canvasEl.addEventListener("pointerdown", (e) => {
+  if (e.pointerType !== "touch" || stick.id !== null || gamePaused) return;
+  document.activeElement?.blur?.(); // close the keyboard
+  stick.id = e.pointerId;
+  stick.ox = e.clientX;
+  stick.oy = e.clientY;
+  elStick.style.left = `${e.clientX}px`;
+  elStick.style.top = `${e.clientY}px`;
+  elStick.classList.add("on");
+  canvasEl.setPointerCapture(e.pointerId);
+});
+canvasEl.addEventListener("pointermove", (e) => {
+  if (e.pointerId !== stick.id) return;
+  let vx = e.clientX - stick.ox,
+    vy = e.clientY - stick.oy;
+  const len = Math.hypot(vx, vy);
+  if (len > STICK_R) {
+    vx = (vx / len) * STICK_R;
+    vy = (vy / len) * STICK_R;
+  }
+  stick.mag = Math.min(1, len / STICK_R);
+  stick.x = stick.mag > 0.2 ? vx / STICK_R : 0; // small dead zone
+  stick.z = stick.mag > 0.2 ? vy / STICK_R : 0;
+  elStick.firstChild.style.transform = `translate(${vx}px, ${vy}px)`;
+});
+const releaseStick = (e) => {
+  if (e.pointerId !== stick.id) return;
+  Object.assign(stick, { id: null, x: 0, z: 0, mag: 0 });
+  elStick.classList.remove("on");
+  elStick.firstChild.style.transform = "";
+};
+canvasEl.addEventListener("pointerup", releaseStick);
+canvasEl.addEventListener("pointercancel", releaseStick);
 const pos = new THREE.Vector3(0, 0, 0);
 let dir = "down",
   tAnim = 0;
@@ -966,6 +1010,11 @@ function changeName(newName) {
   if (MULTIPLAYER && ws?.readyState === 1)
     ws.send(JSON.stringify({ t: "name", name: NAME }));
 }
+// the enter/pause screen has its own name field: fill it in and apply it on enter
+window.applyName = changeName;
+const elEnterName = document.querySelector("#enter-name");
+elEnterName.value = NAME;
+addEventListener("game:pause", (e) => e.detail && (elEnterName.value = NAME));
 elName.addEventListener("click", () => {
   const inp = Object.assign(document.createElement("input"), {
     value: NAME,
@@ -1289,14 +1338,21 @@ function loop() {
     dx += 1;
     dir = "right";
   }
+  if (stick.x || stick.z) {
+    dx = stick.x;
+    dz = stick.z;
+    // facing follows the stronger axis
+    dir = Math.abs(dx) > Math.abs(dz) ? (dx > 0 ? "right" : "left") : dz > 0 ? "down" : "up";
+  }
   if (gamePaused) {
     dx = 0;
     dz = 0;
   }
+  const run = keys.shift || stick.mag > 0.9;
   const walking = dx || dz;
   if (walking) {
     const n = Math.hypot(dx, dz);
-    const speed = SPEED * (keys.shift ? 1.5 : 1);
+    const speed = SPEED * (run ? 1.5 : 1);
     // move axis by axis to slide along walls
     const nx = pos.x + (dx / n) * speed * dt;
     if (isFree(nx, pos.z, pos.y)) pos.x = nx;
@@ -1305,7 +1361,7 @@ function loop() {
     tAnim += dt * 8 * (speed / SPEED);
   } else tAnim = 0;
   const currentStep = walking ? Math.floor(tAnim) % CHARACTER.steps : 0;
-  const running = Boolean(walking && keys.shift);
+  const running = Boolean(walking && run);
   setFrame(dir, currentStep, running);
   sendPosition(performance.now(), currentStep);
   updateOthers(dt);
