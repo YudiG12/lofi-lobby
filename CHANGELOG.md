@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- **Mute** button next to "now playing" (and the M key): only for you, remembered, and the radio keeps playing in sync underneath.
 - Chat **send** button (on phones it keeps the keyboard open).
 - Play on phones: drag anywhere to walk (floating joystick, push to the edge to run), compact HUD, chat as a sheet behind a button with an unread dot, pause button, lighter shadows on touch devices.
 - Name and trainer live together: a name field on the enter/pause screen, and "you: <name> ✎" moved from the chat header to the top card.

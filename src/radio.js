@@ -14,6 +14,9 @@ const durations = {}; // id -> seconds (learned as each video loads)
 let player = null;
 let playingIdx = -1;
 let paused = false;
+// mute is per person and remembered; the radio keeps playing (and in sync) underneath
+let muted = false;
+try { muted = localStorage.getItem("muted") === "1"; } catch {}
 
 function loadApi() {
   return new Promise((ok) => {
@@ -138,12 +141,14 @@ export async function startRadio({ elPlayer, elTitle }) {
         if (TOUCH) {
           e.target.mute();
           const unmute = () => {
+            if (muted) return;
             e.target.unMute();
             e.target.setVolume(70);
             if (!paused) e.target.playVideo();
           };
           addEventListener("pointerdown", unmute, { once: true, capture: true });
         }
+        if (muted) e.target.mute();
         if (paused) e.target.pauseVideo();
         else e.target.playVideo();
       },
@@ -173,6 +178,18 @@ export async function startRadio({ elPlayer, elTitle }) {
     },
   });
   setInterval(sync, 5000);
+}
+
+export const isMuted = () => muted;
+export function setMuted(m) {
+  muted = m;
+  try { localStorage.setItem("muted", m ? "1" : "0"); } catch {}
+  if (!player?.mute) return;
+  if (m) player.mute();
+  else {
+    player.unMute();
+    player.setVolume(70);
+  }
 }
 
 export function pauseRadio() {
