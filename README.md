@@ -6,7 +6,7 @@
 
 Live: **[lofi-lobby.yudiganeko.workers.dev](https://lofi-lobby.yudiganeko.workers.dev)**
 
-<p align="center"><img src="docs/assets/hld-light.png" alt="High-level design: the browser loads the static site from a Cloudflare Worker and opens a WebSocket to /ws/room, which the Worker routes to one Durable Object per room; the radio command lives in the object's storage" width="720"></p>
+<p align="center"><img src="docs/assets/hld-light.png" alt="High-level design: you and everyone else connect to a Cloudflare Worker, which routes each room to its own Durable Object, which keeps the radio in sync" width="720"></p>
 
 <p align="center"><sub>A simplified view. Every component, with the decision behind it: <a href="ARCHITECTURE.md">ARCHITECTURE.md</a>.</sub></p>
 
