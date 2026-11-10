@@ -4,6 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Lofi Lobby</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <link href="https://fonts.googleapis.com/css2?family=Silkscreen&display=swap" rel="stylesheet" />
 <style>
   html, body { margin: 0; height: 100%; background: #000; overflow: hidden; font-family: Silkscreen, monospace; }
@@ -24,7 +25,7 @@
   #chat header small { color: #A6A8B8; font-size: 11px; }
   #msgs { flex: 1; overflow-y: auto; padding: 14px 20px; display: flex; flex-direction: column; justify-content: flex-end; gap: 12px; }
   #msgs .m small { display: block; font-size: 11px; color: #ffc95a; margin-bottom: 2px; }
-  #msgs .m span { font-size: 13px; line-height: 19px; word-wrap: break-word; }
+  #msgs .m span { font-size: 13px; line-height: 19px; overflow-wrap: anywhere; }
   #chat form { padding: 14px 16px 16px; display: flex; gap: 8px; }
   #chat input { flex: 1; min-width: 0; font: inherit; font-size: 13px; color: #F2F2F5; background: rgba(0,0,0,.35);
                 border: 1px solid rgba(255,255,255,.14); border-radius: 6px; padding: 10px 12px; outline: none; }
@@ -35,7 +36,7 @@
   .bubble { position: fixed; transform: translate(-50%, -100%); pointer-events: none; z-index: 2;
            transition: opacity .3s; filter: drop-shadow(0 0 0.6px rgba(255,255,255,.55)); }
   .bubble span { display: block; max-width: 220px; padding: 6px 10px 13px; font-size: 12px; line-height: 16px;
-                color: #F2F2F5; text-align: center; background: rgba(0,0,0,.74);
+                color: #F2F2F5; text-align: center; overflow-wrap: anywhere; background: rgba(0,0,0,.74);
                 clip-path: polygon(0 0, 100% 0, 100% calc(100% - 7px), calc(50% + 6px) calc(100% - 7px),
                                    50% 100%, calc(50% - 6px) calc(100% - 7px), 0 calc(100% - 7px)); }
   #switch-trainer { display: block; margin-top: 8px; font: inherit; font-size: 11px; color: #F2F2F5; background: rgba(0,0,0,.4);

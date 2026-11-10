@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- the lamp post from the town (createLampPost): iron cap, warm lantern, pole, glow on a night sky -->
+  <defs>
+    <radialGradient id="glow" cx="32" cy="26" r="24" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffd45e" stop-opacity=".55"/>
+      <stop offset="1" stop-color="#ffd45e" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="lamp" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fff1b8"/>
+      <stop offset="1" stop-color="#ffc95a"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="#141a2e"/>
+  <circle cx="32" cy="26" r="24" fill="url(#glow)"/>
+  <path d="M19 15 L32 6 L45 15 Z" fill="#59607a"/>
+  <path d="M22 16 H42 L38 34 H26 Z" fill="url(#lamp)"/>
+  <rect x="25" y="34" width="14" height="3" rx="1" fill="#59607a"/>
+  <rect x="29" y="37" width="6" height="18" fill="#59607a"/>
+  <path d="M24 59 L27 54 H37 L40 59 Z" fill="#59607a"/>
+</svg>
