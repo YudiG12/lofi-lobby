@@ -16,7 +16,10 @@
   #place small { color: #A6A8B8; font-size: 12px; }
   #hint { left: 50%; bottom: 24px; transform: translateX(-50%); padding: 8px 14px; font-size: 12px; color: #A6A8B8; }
   #radio { left: 28px; bottom: 28px; padding: 10px; display: flex; gap: 12px; align-items: center; max-width: 420px; }
-  #radio .tv { width: 176px; height: 99px; border-radius: 4px; overflow: hidden; background: #000; flex-shrink: 0; pointer-events: none; }
+  #radio .tv { position: relative; width: 176px; height: 99px; border-radius: 4px; overflow: hidden; background: #000; flex-shrink: 0; pointer-events: none; }
+  #radio .tv iframe { position: absolute; inset: 0; width: 100% !important; height: 100% !important; }
+  #radio .tv .tv-cover { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  #radio .tv .tv-cover[hidden] { display: none; }
   #radio small { display: block; color: #A6A8B8; font-size: 11px; margin-bottom: 4px; }
   #radio b { display: block; font-weight: 400; font-size: 13px; line-height: 18px; }
   #chat { right: 20px; top: 20px; bottom: 20px; width: 320px; display: flex; flex-direction: column; }
@@ -77,14 +80,14 @@
   @media (pointer: coarse) {
     canvas { touch-action: none; }
     #hint { display: none; }
-    #place { left: 10px; top: calc(10px + env(safe-area-inset-top)); padding: 8px 12px; max-width: calc(50vw - 42px); }
+    #place { left: 10px; top: calc(10px + env(safe-area-inset-top)); padding: 8px 12px; max-width: calc(100vw - 20px); }
     #place b { font-size: 16px; }
     #place small { display: block; font-size: 10px; }
     #switch-trainer, #pause-btn { font-size: 11px; padding: 6px 10px; }
-    #pause-btn { display: inline-block; margin: 6px 0 0 4px; font: inherit; color: #F2F2F5; background: rgba(0,0,0,.4);
+    #pause-btn { display: inline-block; margin: 6px 0 0 4px; cursor: pointer; font: inherit; color: #F2F2F5; background: rgba(0,0,0,.4);
                  border: 1px solid rgba(255,255,255,.16); border-radius: 6px; }
     #switch-trainer { display: inline-block; margin-top: 6px; }
-    #radio { left: auto; right: 10px; bottom: auto; top: calc(10px + env(safe-area-inset-top)); max-width: calc(50vw - 16px); padding: 6px; gap: 8px; }
+    #radio { left: 10px; bottom: calc(12px + env(safe-area-inset-bottom)); max-width: calc(100vw - 130px); padding: 6px; gap: 8px; }
     #radio .tv { width: 96px; height: 54px; }
     #radio > div:last-child { min-width: 0; }
     #radio b { font-size: 10px; line-height: 13px; max-height: 26px; overflow: hidden; }

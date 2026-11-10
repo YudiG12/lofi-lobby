@@ -103,10 +103,28 @@ function sync() {
   if (player.getPlayerState() !== YT.PlayerState.PLAYING && player.getPlayerState() !== YT.PlayerState.BUFFERING) player.playVideo();
 }
 
+const TOUCH = matchMedia("(pointer: coarse)").matches;
+
 export async function startRadio({ elPlayer, elTitle }) {
   await loadApi();
   const { idx, sec } = nowOnRadio();
   playingIdx = idx;
+  // cover with the video's thumbnail whenever it isn't playing, so YouTube's big
+  // pause/play overlay and logo never show in the little TV
+  const cover = Object.assign(document.createElement("img"), { className: "tv-cover", alt: "" });
+  document.getElementById(elPlayer).parentElement.append(cover);
+  // YouTube shows its pause button and channel badge for a few seconds after playback
+  // starts, so the cover only lifts once that has faded
+  let coverTimer = 0;
+  const setCover = (playing) => {
+    clearTimeout(coverTimer);
+    if (playing) coverTimer = setTimeout(() => (cover.hidden = true), 4500);
+    else {
+      cover.src = `https://i.ytimg.com/vi/${PLAYLIST[Math.max(0, playingIdx)]}/hqdefault.jpg`;
+      cover.hidden = false;
+    }
+  };
+  setCover(false);
   player = new YT.Player(elPlayer, {
     width: 176,
     height: 99,
@@ -115,11 +133,23 @@ export async function startRadio({ elPlayer, elTitle }) {
     events: {
       onReady: (e) => {
         e.target.setVolume(70);
+        // phones only autoplay muted (the tap on "enter" is used up while the API loads):
+        // start muted and turn the sound on at the next touch
+        if (TOUCH) {
+          e.target.mute();
+          const unmute = () => {
+            e.target.unMute();
+            e.target.setVolume(70);
+            if (!paused) e.target.playVideo();
+          };
+          addEventListener("pointerdown", unmute, { once: true, capture: true });
+        }
         if (paused) e.target.pauseVideo();
         else e.target.playVideo();
       },
       onStateChange: (e) => {
         const p = e.target;
+        setCover(e.data === YT.PlayerState.PLAYING);
         if (paused && e.data === YT.PlayerState.PLAYING) {
           p.pauseVideo();
           return;
