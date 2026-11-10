@@ -80,14 +80,15 @@
   @media (pointer: coarse) {
     canvas { touch-action: none; }
     #hint { display: none; }
-    #place { left: 10px; top: calc(10px + env(safe-area-inset-top)); padding: 8px 12px; max-width: calc(100vw - 20px); }
+    #place { left: 12px; top: calc(12px + env(safe-area-inset-top)); padding: 10px 14px 12px; max-width: calc(100vw - 24px); }
     #place b { font-size: 16px; }
     #place small { display: block; font-size: 10px; }
     #switch-trainer, #pause-btn { font-size: 11px; padding: 6px 10px; }
-    #pause-btn { display: inline-block; margin: 6px 0 0 4px; cursor: pointer; font: inherit; color: #F2F2F5; background: rgba(0,0,0,.4);
+    #pause-btn { display: inline-block; margin: 10px 0 0 8px; cursor: pointer; font: inherit; font-size: 11px; padding: 6px 10px; color: #F2F2F5; background: rgba(0,0,0,.4);
                  border: 1px solid rgba(255,255,255,.16); border-radius: 6px; }
-    #switch-trainer { display: inline-block; margin-top: 6px; }
-    #radio { left: 10px; bottom: calc(12px + env(safe-area-inset-bottom)); max-width: calc(100vw - 130px); padding: 6px; gap: 8px; }
+    #switch-trainer { display: inline-block; margin-top: 10px; }
+    #place small { margin-top: 2px; }
+    #radio { left: 12px; bottom: calc(12px + env(safe-area-inset-bottom)); max-width: calc(100vw - 130px); padding: 6px; gap: 8px; }
     #radio .tv { width: 96px; height: 54px; }
     #radio > div:last-child { min-width: 0; }
     #radio b { font-size: 10px; line-height: 13px; max-height: 26px; overflow: hidden; }
@@ -99,6 +100,7 @@
     #chat { left: 0; right: 0; top: auto; bottom: 0; width: auto; height: 46vh; border-radius: 12px 12px 0 0;
             padding-bottom: env(safe-area-inset-bottom); transform: translateY(100%); transition: transform .2s; z-index: 5; }
     #chat.open { transform: none; }
+    body:has(#chat.open) #radio { display: none; } /* the sheet covers it anyway */
     #chat header { padding: 12px 16px 10px; }
     #chat input { font-size: 16px; } /* 16px+ keeps iOS from zooming in */
   }
