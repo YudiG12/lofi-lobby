@@ -329,7 +329,7 @@ function criarVilaOriginal() {
 
 // Sem os arquivos locais da cidade, monta uma vila original em low-poly.
 function carregarVilaOriginal() {
-  document.querySelector("#local b").textContent = "Vila Lo-fi";
+  document.querySelector("#local b").textContent = "Lofi Lobby";
   prepararCidade(criarVilaOriginal());
 }
 
@@ -941,12 +941,12 @@ const relogio = new THREE.Clock();
 // ---- Multiplayer ----
 // Outros jogadores aparecem com o treinador original (cada um com a própria
 // textura, pra animar independente). Posição chega pelo WebSocket e é suavizada.
-const SALA = new URLSearchParams(location.search).get("sala") || "geral";
-let NOME = "treinador";
+const SALA = new URLSearchParams(location.search).get("room") || "lobby";
+let NOME = "trainer";
 try {
   NOME =
     localStorage.getItem("nome") ||
-    `treinador${Math.floor(Math.random() * 900 + 100)}`;
+    `trainer${Math.floor(Math.random() * 900 + 100)}`;
 } catch {}
 NOME = NOME.slice(0, 16);
 try {
@@ -1054,7 +1054,7 @@ function removerOutro(id) {
 function atualizarContagem() {
   const el = document.querySelector("#local small");
   if (el)
-    el.textContent = `sala ${SALA} · ${outros.size + 1} treinador${outros.size ? "es" : ""}`;
+    el.textContent = `room ${SALA} · ${outros.size + 1} trainer${outros.size ? "s" : ""}`;
 }
 
 function conectar() {
@@ -1070,7 +1070,7 @@ function conectar() {
     else if (m.t === "saiu") removerOutro(m.id);
     else if (m.t === "chat") receberChat(m.id, m.nome, m.texto);
     else if (m.t === "radio") receberComando(m.comando);
-    else if (m.t === "erro") adicionarHistorico("sistema", m.msg);
+    else if (m.t === "erro") adicionarHistorico("system", m.msg);
     else if (m.t === "nome") {
       const o = outros.get(m.id);
       if (o) o.nome = m.nome;
@@ -1192,7 +1192,7 @@ function etiqueta(mesh, nome) {
 }
 function atualizarEtiquetas() {
   etiqueta(sprite, NOME);
-  for (const o of outros.values()) etiqueta(o.mesh, o.nome || "treinador");
+  for (const o of outros.values()) etiqueta(o.mesh, o.nome || "trainer");
   for (const [mesh, el] of etiquetas) {
     if (!mesh.parent) { el.remove(); etiquetas.delete(mesh); continue; }
     _v.set(mesh.position.x, mesh.position.y + mesh.scale.y * 0.92, mesh.position.z).project(camera);

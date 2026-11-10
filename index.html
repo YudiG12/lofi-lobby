@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Sala Lo-fi</title>
+<title>Lofi Lobby</title>
 <link href="https://fonts.googleapis.com/css2?family=Silkscreen&display=swap" rel="stylesheet" />
 <style>
   html, body { margin: 0; height: 100%; background: #000; overflow: hidden; font-family: Silkscreen, monospace; }
@@ -68,33 +68,33 @@
 </style>
 </head>
 <body>
-<div id="local" class="glass"><b>Twinleaf Town</b><small>sala geral · 1 treinador</small>
-  <button id="trocar-genero" title="trocar treinador (G)">trocar treinador · G</button>
+<div id="local" class="glass"><b>Lofi Lobby</b><small>room lobby · 1 trainer</small>
+  <button id="trocar-genero" title="switch trainer (G)">switch trainer · G</button>
 </div>
-<div id="dica" class="glass">setas / WASD pra andar · Shift pra correr · espaço pausa</div>
+<div id="dica" class="glass">arrows / WASD to walk · Shift to run · space to pause</div>
 <div id="radio" class="glass">
   <div class="tv"><div id="yt"></div></div>
-  <div><small>tocando agora</small><b id="titulo">—</b>
+  <div><small>now playing</small><b id="titulo">—</b>
     <div id="admin" hidden>
-      <button data-acao="anterior" title="anterior">⏮</button>
-      <button data-acao="replay" title="voltar ao início">↺</button>
-      <button data-acao="proximo" title="próximo">⏭</button>
+      <button data-acao="anterior" title="previous">⏮</button>
+      <button data-acao="replay" title="restart">↺</button>
+      <button data-acao="proximo" title="next">⏭</button>
     </div>
   </div>
 </div>
 <div id="chat" class="glass">
-  <header><b>chat</b><small>você: <button id="meu-nome" title="trocar nome"></button> ✎</small></header>
+  <header><b>chat</b><small>you: <button id="meu-nome" title="change name"></button> ✎</small></header>
   <div id="msgs"></div>
-  <form><input id="msg" maxlength="140" autocomplete="off" placeholder="enter pra falar…" /></form>
+  <form><input id="msg" maxlength="140" autocomplete="off" placeholder="press enter to talk…" /></form>
 </div>
 <div id="entrar">
   <div class="caixa">
-    <small>escolha seu treinador</small>
+    <small>choose your trainer</small>
     <div class="generos">
-      <button type="button" data-genero="masculino">masculino</button>
-      <button type="button" data-genero="feminino">feminino</button>
+      <button type="button" data-genero="masculino">male</button>
+      <button type="button" data-genero="feminino">female</button>
     </div>
-    <button id="btn-entrar">entrar na sala ▶</button>
+    <button id="btn-entrar">enter the room ▶</button>
   </div>
 </div>
 <script type="module">

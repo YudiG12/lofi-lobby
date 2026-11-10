@@ -1,0 +1,35 @@
+<!doctype html><html><head><meta charset="utf-8">
+<!-- High-level design image for the README. Render to PNG at 2x: scripts/render-docs.sh -->
+<link href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600;700;800&family=Oxanium:wght@600&display=swap" rel="stylesheet">
+<script>if (location.search.includes("theme=dark")) document.documentElement.dataset.theme = "dark";</script>
+<style>
+:root{--bg:#FFFFFF;--line:#E3E8ED;--line2:#CBD3DB;--ink:#1B2632;--muted:#4A5D72;--subtle:#677A8E;--sand-bg:#FCFAF7;--sand-line:#E6D5C1;--sand-ink:#5B4630;--sand:#8A6A3F;--cf:#F38020}
+[data-theme=dark]{--bg:#0D1117;--line:#30363D;--line2:#3D4752;--ink:#F0F3F6;--muted:#B6C1CC;--subtle:#8E9DAD;--sand-bg:#1A1712;--sand-line:#5B4630;--sand-ink:#E6D5C1;--sand:#C9A77F}
+*{box-sizing:border-box;margin:0}body{background:var(--bg);font-family:Onest,sans-serif;color:var(--ink)}
+.eb{font-family:Oxanium,Onest,sans-serif;font-weight:600;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--subtle)}
+.box{position:absolute;border:1px solid var(--line2);border-radius:4px;background:var(--bg);padding:14px 16px}
+.box b{display:block;font-size:16px;font-weight:700}.box span{display:block;font-size:13px;color:var(--muted);margin-top:4px;line-height:1.4}
+.cf{border-color:var(--sand-line);background:var(--sand-bg)}.cf b{color:var(--sand-ink)}
+.lbl{position:absolute;font-size:12px;color:var(--subtle);background:var(--bg);padding:0 6px}
+</style></head><body>
+<div style="width:1200px;height:430px;position:relative;border:1px solid var(--line);border-radius:4px;overflow:hidden">
+ <div class="eb" style="position:absolute;left:32px;top:24px">Lofi Lobby · high-level design</div>
+ <div class="eb" style="position:absolute;left:470px;top:24px;color:var(--cf)">Cloudflare</div>
+ <svg style="position:absolute;left:0;top:0" width="1200" height="430" fill="none" stroke="var(--line2)" stroke-width="1.5">
+  <rect x="456" y="44" width="712" height="358" rx="4" stroke="var(--sand-line)" stroke-dasharray="4 4"/>
+  <path d="M252 140 H500"/><path d="M252 300 H500"/>
+  <path d="M700 300 C740 300 740 230 780 230"/><path d="M1000 230 H1040"/>
+  
+ </svg>
+ <div class="box" style="left:32px;top:96px;width:220px;height:240px">
+  <b>Browser</b><span>three.js scene: 2.5D sprites, lamp lights and shadows, feet-depth occlusion</span>
+  <span style="margin-top:14px">YouTube player, no controls: the system decides what plays</span>
+ </div>
+ <div class="lbl" style="left:300px;top:118px">HTTPS</div>
+ <div class="lbl" style="left:282px;top:278px">WebSocket /ws/&lt;room&gt;</div>
+ <div class="box cf" style="left:500px;top:100px;width:200px;height:80px"><b>Static assets</b><span>Vite build, served by the Worker</span></div>
+ <div class="box cf" style="left:500px;top:258px;width:200px;height:84px"><b>Worker</b><span>origin check, routes /ws/&lt;room&gt;</span></div>
+ <div class="box cf" style="left:780px;top:182px;width:220px;height:100px"><b>Durable Object · Room</b><span>one per room · hibernating WebSockets · rate limits</span></div>
+ <div class="box cf" style="left:1040px;top:182px;width:120px;height:100px"><b>Storage</b><span>radio command (video + start)</span></div>
+ <div class="box" style="left:780px;top:318px;width:380px;height:62px;border-style:dashed"><b style="font-size:14px">Secret ADMIN_PASSWORD</b><span>admin restart / skip, checked in constant time</span></div>
+</div></body></html>
