@@ -1,21 +1,21 @@
-// Rádio da sala: o SISTEMA controla a faixa e a posição; a pausa é só local.
-// Todo mundo ouve o mesmo trecho: a posição é calculada pelo relógio a partir
-// de uma data fixa, percorrendo a lista em loop. Quando o multiplayer entrar,
-// o Durable Object da sala passa a ser a fonte desse "início".
+// Room radio: the SYSTEM controls the track and position; pausing is local only.
+// Everyone hears the same part: the position is computed from the clock, starting
+// at a fixed date, looping through the playlist. With multiplayer, the room's
+// Durable Object becomes the source of that "start".
 
-export const LISTA = [
+export const PLAYLIST = [
   "ZWIJiNeMigM",
-  // adicione outros IDs do YouTube aqui
+  // add more YouTube IDs here
 ];
 
-const INICIO = Date.UTC(2026, 0, 1); // marco zero da rádio
-const duracoes = {}; // id -> segundos (descobre ao carregar cada vídeo)
+const START = Date.UTC(2026, 0, 1); // radio's time zero
+const durations = {}; // id -> seconds (learned as each video loads)
 
 let player = null;
-let tocandoIdx = -1;
-let pausado = false;
+let playingIdx = -1;
+let paused = false;
 
-function carregarApi() {
+function loadApi() {
   return new Promise((ok) => {
     if (window.YT?.Player) return ok();
     window.onYouTubeIframeAPIReady = ok;
@@ -25,132 +25,132 @@ function carregarApi() {
   });
 }
 
-// Comando do admin: "o vídeo idx começou no instante t". Enquanto existir,
-// manda no relógio; depois que esse vídeo acaba, segue a lista a partir dele.
-let comando = null;
-try { comando = JSON.parse(localStorage.getItem("radio-comando") || "null"); } catch {}
+// Admin command: "video idx started at time t". While it exists it drives
+// the clock; after that video ends, the playlist continues from it.
+let command = null;
+try { command = JSON.parse(localStorage.getItem("radio-command") || "null"); } catch {}
 
-function agoraPorComando() {
-  let idx = comando.idx;
-  let t = (Date.now() - comando.em) / 1000;
-  // avança pela lista enquanto já passou da duração do vídeo
+function nowByCommand() {
+  let idx = command.idx;
+  let t = (Date.now() - command.at) / 1000;
+  // walk the playlist while time is past the video's duration
   for (let n = 0; n < 500; n++) {
-    const d = duracoes[LISTA[idx]] || 3600;
-    if (t < d) return { idx, seg: Math.max(0, t) };
+    const d = durations[PLAYLIST[idx]] || 3600;
+    if (t < d) return { idx, sec: Math.max(0, t) };
     t -= d;
-    idx = (idx + 1) % LISTA.length;
+    idx = (idx + 1) % PLAYLIST.length;
   }
-  return { idx: 0, seg: 0 };
+  return { idx: 0, sec: 0 };
 }
 
-// Com servidor: o comando vai pro Durable Object da sala, que valida a senha
-// de admin e manda pra todo mundo (inclusive de volta pra cá).
-let enviarAoServidor = null;
-export function ligarRadioAoServidor(fn) {
-  enviarAoServidor = fn;
+// With a server: the command goes to the room's Durable Object, which checks the
+// admin password and sends it to everyone (including back here).
+let sendToServer = null;
+export function connectRadioToServer(fn) {
+  sendToServer = fn;
 }
-// chamado quando o servidor manda o comando atual da sala
-export function receberComando(c) {
-  comando = c && Number.isFinite(c.idx) ? { idx: c.idx % LISTA.length, em: c.em } : null;
-  tocandoIdx = -1;
-  sincronizar();
-}
-
-function aplicarComando(idx) {
-  idx = (idx + LISTA.length) % LISTA.length;
-  if (enviarAoServidor) return enviarAoServidor(idx); // espera o servidor confirmar
-  comando = { idx, em: Date.now() };
-  try { localStorage.setItem("radio-comando", JSON.stringify(comando)); } catch {}
-  tocandoIdx = -1; // força recarregar o vídeo no ponto novo
-  sincronizar();
+// called when the server sends the room's current command
+export function receiveCommand(c) {
+  command = c && Number.isFinite(c.idx) ? { idx: c.idx % PLAYLIST.length, at: c.at } : null;
+  playingIdx = -1;
+  sync();
 }
 
-// Controles de admin (por enquanto locais; no multiplayer vão pro servidor da sala)
+function applyCommand(idx) {
+  idx = (idx + PLAYLIST.length) % PLAYLIST.length;
+  if (sendToServer) return sendToServer(idx); // wait for the server to confirm
+  command = { idx, at: Date.now() };
+  try { localStorage.setItem("radio-command", JSON.stringify(command)); } catch {}
+  playingIdx = -1; // force reloading the video at the new point
+  sync();
+}
+
+// Admin controls (local when offline; go to the room server in multiplayer)
 export const admin = {
-  replay: () => aplicarComando(Math.max(0, tocandoIdx)),
-  proximo: () => aplicarComando(tocandoIdx + 1),
-  anterior: () => aplicarComando(tocandoIdx - 1),
+  restart: () => applyCommand(Math.max(0, playingIdx)),
+  next: () => applyCommand(playingIdx + 1),
+  previous: () => applyCommand(playingIdx - 1),
 };
 
-// Qual vídeo e em que segundo, agora. Vídeo sem duração conhecida conta como 1h
-// até carregar (aí recalcula).
-function agoraNaRadio() {
-  if (comando) return agoraPorComando();
-  const total = LISTA.reduce((s, id) => s + (duracoes[id] || 3600), 0);
-  let t = ((Date.now() - INICIO) / 1000) % total;
-  for (let i = 0; i < LISTA.length; i++) {
-    const d = duracoes[LISTA[i]] || 3600;
-    if (t < d) return { idx: i, seg: t };
+// Which video and which second, right now. A video with unknown duration counts
+// as 1h until it loads (then it's recomputed).
+function nowOnRadio() {
+  if (command) return nowByCommand();
+  const total = PLAYLIST.reduce((s, id) => s + (durations[id] || 3600), 0);
+  let t = ((Date.now() - START) / 1000) % total;
+  for (let i = 0; i < PLAYLIST.length; i++) {
+    const d = durations[PLAYLIST[i]] || 3600;
+    if (t < d) return { idx: i, sec: t };
     t -= d;
   }
-  return { idx: 0, seg: 0 };
+  return { idx: 0, sec: 0 };
 }
 
-function sincronizar() {
-  if (pausado || !player?.getPlayerState) return;
-  const { idx, seg } = agoraNaRadio();
-  if (idx !== tocandoIdx) {
-    const mesmoVideo = LISTA[idx] === player.getVideoData?.()?.video_id;
-    tocandoIdx = idx;
-    // replay com lista de 1 vídeo: mesmo id, só volta o ponteiro
-    if (mesmoVideo) player.seekTo(seg, true);
-    else player.loadVideoById({ videoId: LISTA[idx], startSeconds: seg });
+function sync() {
+  if (paused || !player?.getPlayerState) return;
+  const { idx, sec } = nowOnRadio();
+  if (idx !== playingIdx) {
+    const sameVideo = PLAYLIST[idx] === player.getVideoData?.()?.video_id;
+    playingIdx = idx;
+    // restart with a 1-video playlist: same id, just seek back
+    if (sameVideo) player.seekTo(sec, true);
+    else player.loadVideoById({ videoId: PLAYLIST[idx], startSeconds: sec });
     return;
   }
-  // corrige se saiu do ritmo (anúncio, internet lenta) mais de 3s
-  const atual = player.getCurrentTime?.() || 0;
-  if (Math.abs(atual - seg) > 3 && player.getPlayerState() === YT.PlayerState.PLAYING) player.seekTo(seg, true);
+  // correct drift (ads, slow connection) of more than 3s
+  const current = player.getCurrentTime?.() || 0;
+  if (Math.abs(current - sec) > 3 && player.getPlayerState() === YT.PlayerState.PLAYING) player.seekTo(sec, true);
   if (player.getPlayerState() !== YT.PlayerState.PLAYING && player.getPlayerState() !== YT.PlayerState.BUFFERING) player.playVideo();
 }
 
-export async function iniciarRadio({ elPlayer, elTitulo }) {
-  await carregarApi();
-  const { idx, seg } = agoraNaRadio();
-  tocandoIdx = idx;
+export async function startRadio({ elPlayer, elTitle }) {
+  await loadApi();
+  const { idx, sec } = nowOnRadio();
+  playingIdx = idx;
   player = new YT.Player(elPlayer, {
     width: 176,
     height: 99,
-    videoId: LISTA[idx],
-    playerVars: { autoplay: 1, controls: 0, disablekb: 1, modestbranding: 1, rel: 0, playsinline: 1, start: Math.floor(seg) },
+    videoId: PLAYLIST[idx],
+    playerVars: { autoplay: 1, controls: 0, disablekb: 1, modestbranding: 1, rel: 0, playsinline: 1, start: Math.floor(sec) },
     events: {
       onReady: (e) => {
         e.target.setVolume(70);
-        if (pausado) e.target.pauseVideo();
+        if (paused) e.target.pauseVideo();
         else e.target.playVideo();
       },
       onStateChange: (e) => {
         const p = e.target;
-        if (pausado && e.data === YT.PlayerState.PLAYING) {
+        if (paused && e.data === YT.PlayerState.PLAYING) {
           p.pauseVideo();
           return;
         }
         if (e.data === YT.PlayerState.PLAYING) {
-          const id = LISTA[tocandoIdx];
+          const id = PLAYLIST[playingIdx];
           const d = p.getDuration();
-          if (d && duracoes[id] !== d) {
-            duracoes[id] = d;
-            sincronizar(); // agora com a duração real, recalcula o ponto
+          if (d && durations[id] !== d) {
+            durations[id] = d;
+            sync(); // now with the real duration, recompute the point
           }
-          elTitulo.textContent = p.getVideoData()?.title || "—";
+          elTitle.textContent = p.getVideoData()?.title || "—";
         }
-        if (e.data === YT.PlayerState.ENDED) sincronizar();
+        if (e.data === YT.PlayerState.ENDED) sync();
       },
       onError: () => {
-        // vídeo indisponível/sem embed: pula pro próximo
-        duracoes[LISTA[tocandoIdx]] = 1;
-        sincronizar();
+        // video unavailable / not embeddable: skip to the next
+        durations[PLAYLIST[playingIdx]] = 1;
+        sync();
       },
     },
   });
-  setInterval(sincronizar, 5000);
+  setInterval(sync, 5000);
 }
 
-export function pausarRadio() {
-  pausado = true;
+export function pauseRadio() {
+  paused = true;
   player?.pauseVideo?.();
 }
 
-export function retomarRadio() {
-  pausado = false;
-  sincronizar();
+export function resumeRadio() {
+  paused = false;
+  sync();
 }

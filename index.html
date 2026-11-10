@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="pt-BR">
+<html lang="en">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -10,10 +10,10 @@
   canvas { display: block; image-rendering: pixelated; }
   .glass { position: fixed; background: rgba(10,10,14,.62); border: 1px solid rgba(255,255,255,.14);
            border-radius: 8px; backdrop-filter: blur(6px); color: #F2F2F5; }
-  #local { left: 28px; top: 28px; padding: 12px 20px; }
-  #local b { display: block; font-size: 22px; font-weight: 400; }
-  #local small { color: #A6A8B8; font-size: 12px; }
-  #dica { left: 50%; bottom: 24px; transform: translateX(-50%); padding: 8px 14px; font-size: 12px; color: #A6A8B8; }
+  #place { left: 28px; top: 28px; padding: 12px 20px; }
+  #place b { display: block; font-size: 22px; font-weight: 400; }
+  #place small { color: #A6A8B8; font-size: 12px; }
+  #hint { left: 50%; bottom: 24px; transform: translateX(-50%); padding: 8px 14px; font-size: 12px; color: #A6A8B8; }
   #radio { left: 28px; bottom: 28px; padding: 10px; display: flex; gap: 12px; align-items: center; max-width: 420px; }
   #radio .tv { width: 176px; height: 99px; border-radius: 4px; overflow: hidden; background: #000; flex-shrink: 0; pointer-events: none; }
   #radio small { display: block; color: #A6A8B8; font-size: 11px; margin-bottom: 4px; }
@@ -30,128 +30,128 @@
                 border: 1px solid rgba(255,255,255,.14); border-radius: 6px; padding: 10px 12px; outline: none; }
   #chat input:focus { border-color: #ffc95a; }
   #chat input::placeholder { color: #7d8094; }
-  /* balão + seta numa forma só (clip-path): um único fundo, sem transparência
-     dupla onde a seta encontra o balão; o contorno vem do drop-shadow da forma */
-  .balao { position: fixed; transform: translate(-50%, -100%); pointer-events: none; z-index: 2;
+  /* bubble + arrow as a single shape (clip-path): one background, no double
+     transparency where the arrow meets the bubble; the outline comes from the shape's drop-shadow */
+  .bubble { position: fixed; transform: translate(-50%, -100%); pointer-events: none; z-index: 2;
            transition: opacity .3s; filter: drop-shadow(0 0 0.6px rgba(255,255,255,.55)); }
-  .balao span { display: block; max-width: 220px; padding: 6px 10px 13px; font-size: 12px; line-height: 16px;
+  .bubble span { display: block; max-width: 220px; padding: 6px 10px 13px; font-size: 12px; line-height: 16px;
                 color: #F2F2F5; text-align: center; background: rgba(0,0,0,.74);
                 clip-path: polygon(0 0, 100% 0, 100% calc(100% - 7px), calc(50% + 6px) calc(100% - 7px),
                                    50% 100%, calc(50% - 6px) calc(100% - 7px), 0 calc(100% - 7px)); }
-  #trocar-genero { display: block; margin-top: 8px; font: inherit; font-size: 11px; color: #F2F2F5; background: rgba(0,0,0,.4);
+  #switch-trainer { display: block; margin-top: 8px; font: inherit; font-size: 11px; color: #F2F2F5; background: rgba(0,0,0,.4);
                    border: 1px solid rgba(255,255,255,.16); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
-  #trocar-genero:hover { border-color: #ffc95a; color: #ffc95a; }
+  #switch-trainer:hover { border-color: #ffc95a; color: #ffc95a; }
   .tag { position: fixed; transform: translate(-50%, -100%); pointer-events: none; z-index: 1; white-space: nowrap;
          font-size: 10px; line-height: 14px; color: #F2F2F5;
-         /* sem fundo: contorno escuro pra ler em cima de grama clara e de luz de poste */
+         /* no background: dark outline so it reads over light grass and lamp light */
          text-shadow: 1px 0 0 #000, -1px 0 0 #000, 0 1px 0 #000, 0 -1px 0 #000; }
-  #meu-nome { font: inherit; color: #ffc95a; background: none; border: 0; padding: 0; cursor: pointer; }
-  #meu-nome:hover { text-decoration: underline; }
-  #msg-nome { font: inherit; font-size: 11px; color: #F2F2F5; background: rgba(0,0,0,.4); width: 120px;
+  #my-name { font: inherit; color: #ffc95a; background: none; border: 0; padding: 0; cursor: pointer; }
+  #my-name:hover { text-decoration: underline; }
+  #name-input { font: inherit; font-size: 11px; color: #F2F2F5; background: rgba(0,0,0,.4); width: 120px;
               border: 1px solid #ffc95a; border-radius: 4px; padding: 2px 6px; outline: none; }
   #admin { display: flex; gap: 6px; margin-top: 8px; }
   #admin[hidden] { display: none; }
   #admin button { font: inherit; font-size: 14px; color: #F2F2F5; background: rgba(0,0,0,.4);
                   border: 1px solid rgba(255,255,255,.16); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
   #admin button:hover { border-color: #ffc95a; color: #ffc95a; }
-  #entrar { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(5,6,12,.55); backdrop-filter: blur(3px); z-index: 10; }
-  #entrar[hidden] { display: none; }
-  #entrar .caixa { display: flex; flex-direction: column; align-items: center; gap: 16px; padding: 24px 28px;
+  #enter { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(5,6,12,.55); backdrop-filter: blur(3px); z-index: 10; }
+  #enter[hidden] { display: none; }
+  #enter .box { display: flex; flex-direction: column; align-items: center; gap: 16px; padding: 24px 28px;
                    background: rgba(0,0,0,.6); border: 1px solid rgba(255,255,255,.14); border-radius: 10px; color: #F2F2F5; }
-  #entrar .caixa small { color: #A6A8B8; font-size: 12px; }
-  #entrar .generos { display: flex; gap: 10px; }
-  #entrar .generos button { font-size: 14px; padding: 10px 18px; }
-  #entrar .generos button.on { border-color: #ffc95a; color: #ffc95a; }
-  #entrar button { font: inherit; font-size: 18px; color: #F2F2F5; background: rgba(10,10,14,.75); border: 1px solid rgba(255,255,255,.2);
+  #enter .box small { color: #A6A8B8; font-size: 12px; }
+  #enter .genders { display: flex; gap: 10px; }
+  #enter .genders button { font-size: 14px; padding: 10px 18px; }
+  #enter .genders button.on { border-color: #ffc95a; color: #ffc95a; }
+  #enter button { font: inherit; font-size: 18px; color: #F2F2F5; background: rgba(10,10,14,.75); border: 1px solid rgba(255,255,255,.2);
                    border-radius: 8px; padding: 16px 28px; cursor: pointer; }
-  #entrar button:hover { border-color: #ffc95a; color: #ffc95a; }
+  #enter button:hover { border-color: #ffc95a; color: #ffc95a; }
 </style>
 </head>
 <body>
-<div id="local" class="glass"><b>Lofi Lobby</b><small>room lobby · 1 trainer</small>
-  <button id="trocar-genero" title="switch trainer (G)">switch trainer · G</button>
+<div id="place" class="glass"><b>Lofi Lobby</b><small>room lobby · 1 trainer</small>
+  <button id="switch-trainer" title="switch trainer (G)">switch trainer · G</button>
 </div>
-<div id="dica" class="glass">arrows / WASD to walk · Shift to run · space to pause</div>
+<div id="hint" class="glass">arrows / WASD to walk · Shift to run · space to pause</div>
 <div id="radio" class="glass">
   <div class="tv"><div id="yt"></div></div>
-  <div><small>now playing</small><b id="titulo">—</b>
+  <div><small>now playing</small><b id="title">—</b>
     <div id="admin" hidden>
-      <button data-acao="anterior" title="previous">⏮</button>
-      <button data-acao="replay" title="restart">↺</button>
-      <button data-acao="proximo" title="next">⏭</button>
+      <button data-action="previous" title="previous">⏮</button>
+      <button data-action="restart" title="restart">↺</button>
+      <button data-action="next" title="next">⏭</button>
     </div>
   </div>
 </div>
 <div id="chat" class="glass">
-  <header><b>chat</b><small>you: <button id="meu-nome" title="change name"></button> ✎</small></header>
+  <header><b>chat</b><small>you: <button id="my-name" title="change name"></button> ✎</small></header>
   <div id="msgs"></div>
   <form><input id="msg" maxlength="140" autocomplete="off" placeholder="press enter to talk…" /></form>
 </div>
-<div id="entrar">
-  <div class="caixa">
+<div id="enter">
+  <div class="box">
     <small>choose your trainer</small>
-    <div class="generos">
-      <button type="button" data-genero="masculino">male</button>
-      <button type="button" data-genero="feminino">female</button>
+    <div class="genders">
+      <button type="button" data-gender="male">male</button>
+      <button type="button" data-gender="female">female</button>
     </div>
-    <button id="btn-entrar">enter the room ▶</button>
+    <button id="btn-enter">enter the room ▶</button>
   </div>
 </div>
 <script type="module">
-  import { iniciarRadio, pausarRadio, retomarRadio, admin } from "/src/radio.js";
-  // modo admin: abra com ?admin=SENHA uma vez (fica salvo); ?admin= (vazio) desliga.
-  // A senha é conferida no servidor (segredo ADMIN_SENHA); aqui só mostra os botões.
+  import { startRadio, pauseRadio, resumeRadio, admin } from "/src/radio.js";
+  // admin mode: open with ?admin=PASSWORD once (it's saved); ?admin= (empty) turns it off.
+  // The password is checked on the server (ADMIN_PASSWORD secret); here it only shows the buttons.
   const p = new URLSearchParams(location.search).get("admin");
-  try { if (p !== null) localStorage.setItem("admin-senha", p); } catch {}
-  let ehAdmin = false;
-  try { ehAdmin = !!localStorage.getItem("admin-senha"); } catch {}
-  const painel = document.querySelector("#admin");
-  painel.hidden = !ehAdmin;
-  painel.addEventListener("click", (e) => {
-    const acao = e.target.closest("button")?.dataset.acao;
-    if (acao) admin[acao]();
+  try { if (p !== null) localStorage.setItem("admin-password", p); } catch {}
+  let isAdmin = false;
+  try { isAdmin = !!localStorage.getItem("admin-password"); } catch {}
+  const panel = document.querySelector("#admin");
+  panel.hidden = !isAdmin;
+  panel.addEventListener("click", (e) => {
+    const action = e.target.closest("button")?.dataset.action;
+    if (action) admin[action]();
   });
-  // escolha de gênero: marca o salvo e aplica ao clicar
-  const botoesGenero = [...document.querySelectorAll("[data-genero]")];
-  let salvo = "masculino";
-  try { salvo = localStorage.getItem("genero") === "feminino" ? "feminino" : "masculino"; } catch {}
-  const marcar = (g) => botoesGenero.forEach((b) => b.classList.toggle("on", b.dataset.genero === g));
-  marcar(salvo);
-  botoesGenero.forEach((b) => b.addEventListener("click", () => {
-    marcar(b.dataset.genero);
-    window.aplicarGenero?.(b.dataset.genero);
+  // trainer choice: mark the saved one and apply on click
+  const genderButtons = [...document.querySelectorAll("[data-gender]")];
+  let saved = "male";
+  try { saved = localStorage.getItem("gender") === "female" ? "female" : "male"; } catch {}
+  const mark = (g) => genderButtons.forEach((b) => b.classList.toggle("on", b.dataset.gender === g));
+  mark(saved);
+  genderButtons.forEach((b) => b.addEventListener("click", () => {
+    mark(b.dataset.gender);
+    window.applyGender?.(b.dataset.gender);
   }));
-  const telaPausa = document.querySelector("#entrar");
-  const btnEntrar = document.querySelector("#btn-entrar");
+  const pauseScreen = document.querySelector("#enter");
+  const btnEnter = document.querySelector("#btn-enter");
   let radioPromise = null;
-  const avisarJogo = (pausado) =>
-    window.dispatchEvent(new CustomEvent("jogo:pausa", { detail: pausado }));
-  function pausar() {
-    pausarRadio();
-    avisarJogo(true);
-    telaPausa.hidden = false;
-    btnEntrar.textContent = "continuar ▶";
+  const notifyGame = (paused) =>
+    window.dispatchEvent(new CustomEvent("game:pause", { detail: paused }));
+  function pause() {
+    pauseRadio();
+    notifyGame(true);
+    pauseScreen.hidden = false;
+    btnEnter.textContent = "continue ▶";
   }
-  function jogar() {
-    telaPausa.hidden = true;
-    avisarJogo(false);
+  function play() {
+    pauseScreen.hidden = true;
+    notifyGame(false);
     if (radioPromise) {
-      retomarRadio();
+      resumeRadio();
       return;
     }
-    radioPromise = iniciarRadio({ elPlayer: "yt", elTitulo: document.querySelector("#titulo") }).catch((erro) => {
+    radioPromise = startRadio({ elPlayer: "yt", elTitle: document.querySelector("#title") }).catch((err) => {
       radioPromise = null;
-      pausar();
-      console.error("Não foi possível iniciar o rádio", erro);
+      pause();
+      console.error("Could not start the radio", err);
     });
   }
-  btnEntrar.addEventListener("click", jogar);
+  btnEnter.addEventListener("click", play);
   addEventListener("keydown", (e) => {
-    const digitando = ["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName) || document.activeElement?.isContentEditable;
-    if (e.code !== "Space" || e.repeat || digitando) return;
+    const typing = ["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName) || document.activeElement?.isContentEditable;
+    if (e.code !== "Space" || e.repeat || typing) return;
     e.preventDefault();
-    if (telaPausa.hidden) pausar();
-    else jogar();
+    if (pauseScreen.hidden) pause();
+    else play();
   });
 </script>
 <script type="module" src="/src/main.js"></script>
