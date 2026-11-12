@@ -36,6 +36,7 @@ Open the URL, pick a trainer and press **enter the room**: the click is what let
 | Phone: drag anywhere | walk (push to the edge of the ring to run); **chat** button opens the chat |
 | Enter | open the chat · Esc leaves it |
 | G | switch trainer |
+| N or the day/night button | switch between day and night for you |
 | Space | pause the music for you only |
 
 - There is one room, `lobby`, for everyone (the server refuses any other name).

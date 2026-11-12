@@ -52,9 +52,10 @@
                 color: #F2F2F5; text-align: center; overflow-wrap: anywhere; background: rgba(0,0,0,.74);
                 clip-path: polygon(0 0, 100% 0, 100% calc(100% - 7px), calc(50% + 6px) calc(100% - 7px),
                                    50% 100%, calc(50% - 6px) calc(100% - 7px), 0 calc(100% - 7px)); }
-  #switch-trainer { display: block; margin-top: 8px; font: inherit; font-size: 11px; color: #F2F2F5; background: rgba(0,0,0,.4);
+  #switch-trainer, #day-night { display: inline-block; margin-top: 8px; font: inherit; font-size: 11px; color: #F2F2F5; background: rgba(0,0,0,.4);
                    border: 1px solid rgba(255,255,255,.16); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
-  #switch-trainer:hover { border-color: #ffc95a; color: #ffc95a; }
+  #day-night { margin-left: 6px; }
+  #switch-trainer:hover, #day-night:hover { border-color: #ffc95a; color: #ffc95a; }
   .tag { position: fixed; transform: translate(-50%, -100%); pointer-events: none; z-index: 1; white-space: nowrap;
          font-size: 10px; line-height: 14px; color: #F2F2F5;
          /* no background: dark outline so it reads over light grass and lamp light */
@@ -98,7 +99,8 @@
     #place { left: 12px; top: calc(12px + env(safe-area-inset-top)); padding: 10px 14px 12px; max-width: calc(100vw - 24px); }
     #place b { font-size: 16px; }
     #place small { display: block; font-size: 10px; }
-    #switch-trainer, #pause-btn { font-size: 11px; padding: 6px 10px; }
+    #switch-trainer, #day-night, #pause-btn { font-size: 11px; padding: 6px 10px; }
+    #day-night { margin: 10px 0 0 8px; }
     #pause-btn { display: inline-block; margin: 10px 0 0 8px; cursor: pointer; font: inherit; font-size: 11px; padding: 6px 10px; color: #F2F2F5; background: rgba(0,0,0,.4);
                  border: 1px solid rgba(255,255,255,.16); border-radius: 6px; }
     #switch-trainer { display: inline-block; margin-top: 10px; }
@@ -127,9 +129,9 @@
 <body>
 <div id="place" class="glass"><b>Lofi Lobby</b><small>room lobby · 1 trainer</small>
   <div class="me">you: <button id="my-name" title="change name"></button> ✎</div>
-  <button id="switch-trainer" title="switch trainer (G)">switch trainer · G</button><button id="pause-btn" type="button">pause</button>
+  <button id="switch-trainer" title="switch trainer (G)">switch trainer · G</button><button id="day-night" type="button" title="make it day (N)">make it day · N</button><button id="pause-btn" type="button">pause</button>
 </div>
-<div id="hint" class="glass">arrows / WASD to walk · Shift to run · M to mute · space to pause</div>
+<div id="hint" class="glass">arrows / WASD to walk · Shift to run · M to mute · N for day/night · space to pause</div>
 <div id="radio" class="glass">
   <div class="tv"><div id="yt"></div></div>
   <div><small>now playing <button id="mute" type="button" title="mute (M)" aria-label="mute"></button></small><b id="title">—</b>
