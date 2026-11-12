@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- **Day and night**: a button in the top card (and the N key) switches the town to daytime and back, with a short fade. Only for you, and remembered.
 - **Mute** button next to "now playing" (and the M key): only for you, remembered, and the radio keeps playing in sync underneath.
 - Chat **send** button (on phones it keeps the keyboard open).
 - Play on phones: drag anywhere to walk (floating joystick, push to the edge to run), compact HUD, chat as a sheet behind a button with an unread dot, pause button, lighter shadows on touch devices.

@@ -111,9 +111,11 @@ scene.fog = new THREE.Fog("#070a18", 50, 140);
 
 const camera = new THREE.PerspectiveCamera(30, 1, 0.1, 1000);
 
-// Night: weak bluish moonlight; the lamp posts are the main light
-scene.add(new THREE.HemisphereLight("#3a4a8a", "#0b0f1a", 0.35));
-const sun = new THREE.DirectionalLight("#7f95d8", 0.45); // moon
+// Night: weak bluish moonlight; the lamp posts are the main light.
+// Colors and intensities here are overwritten by the day/night look (applyLook).
+const skyLight = new THREE.HemisphereLight("#3a4a8a", "#0b0f1a", 0.35);
+scene.add(skyLight);
+const sun = new THREE.DirectionalLight("#7f95d8", 0.45); // moon (sun by day)
 sun.position.set(40, 80, 30);
 sun.castShadow = true;
 sun.shadow.mapSize.set(MOBILE ? 1024 : 2048, MOBILE ? 1024 : 2048);
@@ -457,6 +459,70 @@ const LAMP_POSTS = [
 ];
 const lampPosts = LAMP_POSTS.map(([x, z]) => createLampPost(x, z));
 const lampPostSolids = lampPosts.flatMap((p) => p.children.filter((c) => c.isMesh));
+
+// ---- Day / night ----
+// Only for you, like mute: it changes how you see the town, not the room.
+// Each entry is [night, day]; switching blends between them in about a second.
+const LOOK = {
+  background: ["#070a18", "#9fcdf2"],
+  skyTop: ["#3a4a8a", "#d6ecff"],
+  skyGround: ["#0b0f1a", "#5c6a44"],
+  skyIntensity: [0.35, 1.1],
+  sunColor: ["#7f95d8", "#fff1d8"],
+  sunIntensity: [0.45, 1.9],
+  lampIntensity: [150, 0], // lamps off by day
+  glowOpacity: [0.35, 0],
+  lantern: ["#ffdf7a", "#d8cfa8"], // unlit glass
+  waterColor: ["#0b2d63", "#2a6db3"],
+  waterEmissive: ["#020c22", "#06223f"],
+  waterSpecular: ["#7a6440", "#ffffff"],
+};
+for (const k in LOOK)
+  if (typeof LOOK[k][0] === "string") LOOK[k] = LOOK[k].map((c) => new THREE.Color(c));
+const lampLights = lampPosts.flatMap((p) => p.children.filter((c) => c.isPointLight));
+const lampGlows = lampPosts.flatMap((p) => p.children.filter((c) => c.isSprite));
+const mixNum = ([a, b], t) => a + (b - a) * t;
+const mixColor = (target, [a, b], t) => target.copy(a).lerp(b, t);
+// t: 0 = night, 1 = day
+function applyLook(t) {
+  mixColor(scene.background, LOOK.background, t);
+  scene.fog.color.copy(scene.background);
+  mixColor(skyLight.color, LOOK.skyTop, t);
+  mixColor(skyLight.groundColor, LOOK.skyGround, t);
+  skyLight.intensity = mixNum(LOOK.skyIntensity, t);
+  mixColor(sun.color, LOOK.sunColor, t);
+  sun.intensity = mixNum(LOOK.sunIntensity, t);
+  for (const l of lampLights) l.intensity = mixNum(LOOK.lampIntensity, t);
+  for (const g of lampGlows) g.material.opacity = mixNum(LOOK.glowOpacity, t);
+  mixColor(lightMaterial.color, LOOK.lantern, t);
+  mixColor(waterMaterial.color, LOOK.waterColor, t);
+  mixColor(waterMaterial.emissive, LOOK.waterEmissive, t);
+  mixColor(waterMaterial.specular, LOOK.waterSpecular, t);
+}
+let isDay = false;
+try { isDay = localStorage.getItem("time-of-day") === "day"; } catch {}
+let dayAmount = isDay ? 1 : 0; // eased toward isDay in the loop
+applyLook(dayAmount);
+const dayNightBtn = document.querySelector("#day-night");
+function drawDayNight() {
+  const label = isDay ? "make it night" : "make it day";
+  dayNightBtn.textContent = MOBILE ? label : `${label} · N`;
+  dayNightBtn.title = `${label} (N)`;
+}
+function toggleDayNight() {
+  isDay = !isDay;
+  try { localStorage.setItem("time-of-day", isDay ? "day" : "night"); } catch {}
+  drawDayNight();
+}
+drawDayNight();
+dayNightBtn.addEventListener("click", (e) => {
+  toggleDayNight();
+  e.currentTarget.blur(); // give the keyboard back to the game
+});
+addEventListener("keydown", (e) => {
+  const typing = ["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName);
+  if (!typing && !e.repeat && e.key.toLowerCase() === "n") toggleDayNight();
+});
 
 let townMeshes = [];
 const waterMeshes = new Set();
@@ -1325,6 +1391,11 @@ elInput.addEventListener("focus", () =>
 function loop() {
   const dt = Math.min(clock.getDelta(), 0.05);
   waterUniforms.uTime.value += dt;
+  const dayTarget = isDay ? 1 : 0;
+  if (dayAmount !== dayTarget) {
+    dayAmount += Math.sign(dayTarget - dayAmount) * Math.min(dt, Math.abs(dayTarget - dayAmount));
+    applyLook(dayAmount);
+  }
   let dx = 0,
     dz = 0;
   if (keys.arrowup || keys.w) {
