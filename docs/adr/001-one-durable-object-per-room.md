@@ -18,7 +18,7 @@ Each room is **one Durable Object**, addressed by name (`idFromName(room)`), rea
 - **Player state lives in the socket** (`serializeAttachment`): name, trainer, position. It survives hibernation without a write to storage on every step.
 - **Only the radio command is stored** (`storage.put("radio")`), because it must outlive every connection.
 - **The server relays, it doesn't simulate.** Clients send their position about 15 times a second; others smooth it.
-- **A room holds at most 40 players.** More people means more rooms.
+- **A room holds at most 100 players.** More people means more rooms.
 
 ## Alternatives considered
 

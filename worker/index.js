@@ -16,7 +16,7 @@
 //  - per IP: few connections, shared chat budget, admin lockout, progressive mute for spam
 //  - all text is stripped of control characters and truncated; numbers finite and clamped
 
-const MAX_PLAYERS = 40;
+const MAX_PLAYERS = 100;
 // v1 has a single room; any other name is refused so nobody can spin up extra rooms (and extra cost)
 const ROOMS = ["lobby"];
 const MAX_BYTES = 1024;
