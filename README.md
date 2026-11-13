@@ -55,7 +55,7 @@ Open the URL, pick a trainer and press **enter the room**: the click is what let
 | Assets | The repo and live site include the **Twinleaf FBX town, its textures and both trainer sheets** from `public/assets/`; code-generated fallbacks remain for load failures | [ADR 005](docs/adr/005-version-and-deploy-game-assets.md) |
 | Admin | Secret `ADMIN_PASSWORD`, checked in the room object in constant time, few tries per connection | [SECURITY.md](SECURITY.md) |
 
-**Limits of this design.** A room is one object, so it holds a few dozen players (capped at 100); more people means more rooms, not a bigger one. Positions are relayed, not simulated on the server, so a modified client can teleport; nothing in the lobby is worth cheating for. The YouTube player can't be hidden or fully controlled (ads, embeds disabled by the owner): those videos are skipped.
+**Limits of this design.** There is a single room (`lobby`), and a room is one object, so it holds a few dozen players (capped at 100); growing past that would mean opening more rooms, not a bigger one. Positions are relayed, not simulated on the server, so a modified client can teleport; nothing in the lobby is worth cheating for. The YouTube player can't be hidden or fully controlled (ads, embeds disabled by the owner): those videos are skipped.
 
 The full design, with the protocol and the sync rules, is in the [v1 spec](docs/spec/v1.md).
 
