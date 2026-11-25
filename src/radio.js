@@ -17,6 +17,12 @@ let paused = false;
 // mute is per person and remembered; the radio keeps playing (and in sync) underneath
 let muted = false;
 try { muted = localStorage.getItem("muted") === "1"; } catch {}
+// volume (0-100) is per person and remembered too
+let volume = 70;
+try {
+  const v = parseInt(localStorage.getItem("volume"), 10);
+  if (v >= 0 && v <= 100) volume = v;
+} catch {}
 
 function loadApi() {
   return new Promise((ok) => {
@@ -135,7 +141,7 @@ export async function startRadio({ elPlayer, elTitle }) {
     playerVars: { autoplay: 1, controls: 0, disablekb: 1, modestbranding: 1, rel: 0, playsinline: 1, start: Math.floor(sec) },
     events: {
       onReady: (e) => {
-        e.target.setVolume(70);
+        e.target.setVolume(volume);
         // phones only autoplay muted (the tap on "enter" is used up while the API loads):
         // start muted and turn the sound on at the next touch
         if (TOUCH) {
@@ -143,7 +149,7 @@ export async function startRadio({ elPlayer, elTitle }) {
           const unmute = () => {
             if (muted) return;
             e.target.unMute();
-            e.target.setVolume(70);
+            e.target.setVolume(volume);
             if (!paused) e.target.playVideo();
           };
           addEventListener("pointerdown", unmute, { once: true, capture: true });
@@ -188,8 +194,15 @@ export function setMuted(m) {
   if (m) player.mute();
   else {
     player.unMute();
-    player.setVolume(70);
+    player.setVolume(volume);
   }
+}
+
+export const getVolume = () => volume;
+export function setVolume(v) {
+  volume = Math.max(0, Math.min(100, Math.round(v)));
+  try { localStorage.setItem("volume", String(volume)); } catch {}
+  player?.setVolume?.(volume);
 }
 
 export function pauseRadio() {

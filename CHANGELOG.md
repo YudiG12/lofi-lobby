@@ -12,6 +12,7 @@
 - **Moderation**: bad names are refused, bad chat words become `***`, and the admin can kick or ban by clicking a player's name (`/unban` in the chat lifts bans).
 - **Day and night**: a button in the top card (and the N key) switches the town to daytime and back, with a short fade. Only for you, and remembered.
 - **Mute** button next to "now playing" (and the M key): only for you, remembered, and the radio keeps playing in sync underneath.
+- **Volume** slider next to the mute button: only for you and remembered; moving it while muted unmutes.
 - Chat **send** button (on phones it keeps the keyboard open).
 - Play on phones: drag anywhere to walk (floating joystick, push to the edge to run), compact HUD, chat as a sheet behind a button with an unread dot, pause button, lighter shadows on touch devices.
 - Name and trainer live together: a name field on the enter/pause screen, and "you: <name> ✎" moved from the chat header to the top card.
