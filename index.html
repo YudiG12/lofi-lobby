@@ -53,10 +53,10 @@
                 color: #F2F2F5; text-align: center; overflow-wrap: anywhere; background: rgba(0,0,0,.74);
                 clip-path: polygon(0 0, 100% 0, 100% calc(100% - 7px), calc(50% + 6px) calc(100% - 7px),
                                    50% 100%, calc(50% - 6px) calc(100% - 7px), 0 calc(100% - 7px)); }
-  #switch-trainer, #day-night, #rain, #respawn { display: inline-block; margin-top: 10px; font: inherit; font-size: 11px; color: #F2F2F5; background: rgba(255,255,255,.06);
+  #switch-trainer, #day-night, #rain, #respawn, #fullscreen { display: inline-block; margin-top: 10px; font: inherit; font-size: 11px; color: #F2F2F5; background: rgba(255,255,255,.06);
                    border: 1px solid rgba(255,255,255,.2); border-radius: 6px; padding: 5px 10px; cursor: pointer; }
-  #day-night, #rain, #respawn { margin-left: 6px; }
-  #switch-trainer:hover, #day-night:hover, #rain:hover, #respawn:hover { border-color: #ffc95a; color: #ffc95a; }
+  #day-night, #rain, #respawn, #fullscreen { margin-left: 6px; }
+  #switch-trainer:hover, #day-night:hover, #rain:hover, #respawn:hover, #fullscreen:hover, #fullscreen.on { border-color: #ffc95a; color: #ffc95a; }
   .tag.mod { pointer-events: auto; cursor: pointer; }
   .tag.mod:hover, #msgs .m small.mod:hover { color: #ffc95a; text-decoration: underline; }
   #msgs .m small.mod { cursor: pointer; }
@@ -128,8 +128,8 @@
     #place { left: 12px; top: calc(12px + env(safe-area-inset-top)); padding: 10px 14px 12px; max-width: calc(100vw - 24px); }
     #place b { font-size: 16px; }
     #place small { display: block; font-size: 10px; }
-    #switch-trainer, #day-night, #rain, #respawn, #pause-btn { font-size: 11px; padding: 6px 10px; }
-    #day-night, #rain, #respawn { margin: 10px 0 0 8px; }
+    #switch-trainer, #day-night, #rain, #respawn, #fullscreen, #pause-btn { font-size: 11px; padding: 6px 10px; }
+    #day-night, #rain, #respawn, #fullscreen { margin: 10px 0 0 8px; }
     #pause-btn { display: inline-block; margin: 10px 0 0 8px; cursor: pointer; font: inherit; font-size: 11px; padding: 6px 10px; color: #F2F2F5; background: rgba(0,0,0,.4);
                  border: 1px solid rgba(255,255,255,.16); border-radius: 6px; }
     #switch-trainer { display: inline-block; margin-top: 10px; }
@@ -158,13 +158,13 @@
 <body>
 <div id="place" class="glass"><b>Lofi Lobby</b><small>room lobby · 1 trainer</small>
   <div class="me">you: <button id="my-name" title="change name"></button> ✎</div>
-  <button id="switch-trainer" title="switch trainer (G)">switch trainer · G</button><button id="day-night" type="button" title="make it day (N)">make it day · N</button><button id="rain" type="button" title="make it rain (R)">make it rain · R</button><button id="respawn" type="button" title="back to the spawn">respawn</button><button id="pause-btn" type="button">pause</button>
+  <button id="switch-trainer" title="switch trainer (G)">switch trainer · G</button><button id="day-night" type="button" title="make it day (N)">make it day · N</button><button id="rain" type="button" title="make it rain (R)">make it rain · R</button><button id="respawn" type="button" title="back to the spawn">respawn</button><button id="fullscreen" type="button" title="full screen (F)" hidden>full screen · F</button><button id="pause-btn" type="button">pause</button>
 </div>
 <form id="admin-login" class="glass" hidden autocomplete="off"><b>admin login</b>
   <input type="password" placeholder="password" aria-label="admin password" />
   <div><button type="button" data-cancel>cancel</button><button type="submit">log in</button></div>
 </form>
-<div id="hint" class="glass">arrows / WASD to walk · Shift to run · M to mute · N for day/night · R for rain · space to pause</div>
+<div id="hint" class="glass">arrows / WASD to walk · Shift to run · M to mute · N for day/night · R for rain · F for full screen · space to pause</div>
 <div id="radio" class="glass">
   <div class="tv"><div id="yt"></div></div>
   <div><small>now playing <button id="mute" type="button" title="mute (M)" aria-label="mute"></button></small><b id="title">—</b>
@@ -212,6 +212,26 @@
     const typing = ["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName);
     if (!typing && !e.repeat && e.key.toLowerCase() === "m") toggleMute();
   });
+  // full screen: only for you (browser feature); hidden where it's unsupported (e.g. iPhone Safari)
+  const fsBtn = document.querySelector("#fullscreen");
+  const fsRoot = document.documentElement;
+  if (fsRoot.requestFullscreen) {
+    fsBtn.hidden = false;
+    const drawFs = () => {
+      const on = !!document.fullscreenElement;
+      fsBtn.classList.toggle("on", on);
+      fsBtn.title = on ? "exit full screen (F)" : "full screen (F)";
+    };
+    const toggleFs = () => {
+      (document.fullscreenElement ? document.exitFullscreen() : fsRoot.requestFullscreen()).catch(() => {});
+    };
+    fsBtn.addEventListener("click", () => { toggleFs(); fsBtn.blur(); });
+    document.addEventListener("fullscreenchange", drawFs);
+    addEventListener("keydown", (e) => {
+      const typing = ["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName);
+      if (!typing && !e.repeat && !e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === "f") toggleFs();
+    });
+  }
   // admin mode: type /admin in the chat and the password (it's saved after the server accepts it);
   // /logout leaves. The server checks the password (ADMIN_PASSWORD secret); here it only shows the buttons.
   let isAdmin = false;

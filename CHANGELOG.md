@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- **Full screen**: a button in the top card (and the F key) enters or leaves full screen, handy for leaving the lobby open next to your work. Only for you; hidden where the browser doesn't support it.
 - **Respawn** button in the top card: sends your trainer back to the spawn if you got stuck.
 - Everyone sees who the admin is: an **ADMIN** badge over the name and a highlighted line in the chat. Names with "admin", "moderador", "moderator" or "staff" are refused so nobody can pose as one.
 - **Rain**: a button in the top card (and the R key) turns on rain with a short fade: thin drops that stop on roofs, splash rings on the ground and the pond, shiny wet ground and a little fog; by day the sky also turns grey. Only for you, and remembered.
@@ -39,6 +40,7 @@
 Built in one evening, from a Paper mockup to a live multiplayer lobby. Decisions in [ADR 001](docs/adr/001-one-durable-object-per-room.md) to [ADR 004](docs/adr/004-original-art-in-the-repo-local-assets-ignored.md); design in [spec v1](docs/spec/v1.md).
 
 ### Added
+- **Full screen**: a button in the top card (and the F key) enters or leaves full screen, handy for leaving the lobby open next to your work. Only for you; hidden where the browser doesn't support it.
 - **Respawn** button in the top card: sends your trainer back to the spawn if you got stuck.
 - **2.5D town at night** in three.js: lamp posts that light the scene and cast dynamic shadows, animated water, collision with houses, fences, mailboxes and the pond.
 - **Sprites that take the depth of their feet**, so objects in front cover the whole trainer and nothing behind cuts the head ([ADR 003](docs/adr/003-sprites-take-the-depth-of-the-feet.md)).
