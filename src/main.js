@@ -235,6 +235,7 @@ function prepareTown(fbx) {
     candles.updateMatrixWorld(true);
     solidBoxes.push(new THREE.Box3().setFromObject(candles).expandByScalar(0.15)); // nobody steps on them: a very small gap around
     placeBenches();
+    placeFireflies();
     board.position.y = groundHeight(board.position.x, board.position.z);
 }
 
@@ -912,6 +913,86 @@ addEventListener("keydown", (e) => {
   const typing = ["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName);
   if (!typing && !e.repeat && !e.ctrlKey && !e.metaKey && e.key.toLowerCase() === "r") toggleRain();
 });
+
+// ---- Fireflies ----
+// Little blinking lights drifting around the pond at night. Gone by day and in the rain
+// (same fade as the look). Only for you, nothing goes to the server.
+const FIREFLIES = { count: MOBILE ? 40 : 90, margin: 12, wander: 1.5 };
+const fireflyBase = new Float32Array(FIREFLIES.count * 3); // where each one hovers around
+const fireflyPos = new Float32Array(FIREFLIES.count * 3);
+const fireflyPhase = new Float32Array(FIREFLIES.count);
+const fireflySpeed = new Float32Array(FIREFLIES.count);
+for (let i = 0; i < FIREFLIES.count; i++) {
+  fireflyPhase[i] = Math.random() * Math.PI * 2;
+  fireflySpeed[i] = 0.6 + Math.random() * 0.8;
+}
+const fireflyGeometry = new THREE.BufferGeometry();
+fireflyGeometry.setAttribute("position", new THREE.BufferAttribute(fireflyPos, 3).setUsage(THREE.DynamicDrawUsage));
+fireflyGeometry.setAttribute("phase", new THREE.BufferAttribute(fireflyPhase, 1));
+fireflyGeometry.setAttribute("speed", new THREE.BufferAttribute(fireflySpeed, 1));
+const fireflyUniforms = { uOpacity: { value: 0 }, uTime: { value: 0 }, uColor: { value: new THREE.Color("#d8ff8a") } };
+const fireflyMesh = new THREE.Points(
+  fireflyGeometry,
+  new THREE.ShaderMaterial({
+    uniforms: fireflyUniforms,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    vertexShader: `attribute float phase; attribute float speed; uniform float uTime; varying float vGlow;
+      void main() {
+        // blinks: mostly dim, a short bright pulse now and then
+        vGlow = pow(0.5 + 0.5 * sin(uTime * speed * 1.7 + phase), 4.0);
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        gl_PointSize = (300.0 + 200.0 * vGlow) / -mv.z;
+        gl_Position = projectionMatrix * mv;
+      }`,
+    fragmentShader: `uniform float uOpacity; uniform vec3 uColor; varying float vGlow;
+      void main() {
+        float a = smoothstep(0.5, 0.0, length(gl_PointCoord - 0.5)) * (0.15 + 0.85 * vGlow) * uOpacity;
+        if (a < 0.01) discard;
+        gl_FragColor = vec4(uColor, a);
+      }`,
+  }),
+);
+fireflyMesh.frustumCulled = false; // positions move every frame
+fireflyMesh.visible = false;
+scene.add(fireflyMesh);
+let firefliesPlaced = false;
+// In a ring around the pond, on land, at about knee to head height.
+function placeFireflies() {
+  if (!pondBox) return;
+  const { min, max } = pondBox;
+  const m = FIREFLIES.margin;
+  for (let i = 0, tries = 0; i < FIREFLIES.count && tries < 2000; tries++) {
+    const x = min.x - m + Math.random() * (max.x - min.x + 2 * m);
+    const z = min.z - m + Math.random() * (max.z - min.z + 2 * m);
+    if (inPond(x, z)) continue;
+    fireflyBase[i * 3] = x;
+    fireflyBase[i * 3 + 1] = groundHeight(x, z) + 0.6 + Math.random() * 1.8;
+    fireflyBase[i * 3 + 2] = z;
+    i++;
+  }
+  firefliesPlaced = true;
+}
+function updateFireflies() {
+  const opacity = (1 - dayAmount) * (1 - rainAmount);
+  fireflyMesh.visible = firefliesPlaced && opacity > 0.01;
+  if (!fireflyMesh.visible) return;
+  const t = waterUniforms.uTime.value;
+  fireflyUniforms.uOpacity.value = opacity;
+  fireflyUniforms.uTime.value = t;
+  const w = FIREFLIES.wander;
+  for (let i = 0; i < FIREFLIES.count; i++) {
+    const j = i * 3;
+    const p = fireflyPhase[i];
+    const s = fireflySpeed[i] * 0.4;
+    // slow wandering loop around the base, a little up and down
+    fireflyPos[j] = fireflyBase[j] + w * Math.sin(t * s + p) * Math.cos(t * s * 0.7);
+    fireflyPos[j + 1] = fireflyBase[j + 1] + 0.5 * Math.sin(t * s * 1.3 + p * 2);
+    fireflyPos[j + 2] = fireflyBase[j + 2] + w * Math.cos(t * s * 0.9 + p);
+  }
+  fireflyGeometry.attributes.position.needsUpdate = true;
+}
 
 let townMeshes = [];
 const waterMeshes = new Set();
@@ -2342,6 +2423,7 @@ function loop() {
     applyLook(dayAmount);
   }
   updateRain(dt);
+  updateFireflies();
   let dx = 0,
     dz = 0;
   if (keys.arrowup || keys.w) {
