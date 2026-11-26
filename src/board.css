@@ -121,3 +121,12 @@
   #wall .notes .paper.long footer::after { display: none; } /* no room: the fade says there is more */
   #wall .over { padding: 12px; align-items: flex-start; padding-top: calc(12px + env(safe-area-inset-top)); } /* above the phone keyboard */
 }
+
+/* the capybara asleep: a small chat-style bubble, bobbing gently */
+#capy-zzz { position: fixed; z-index: 1; transform: translate(-50%, -100%); pointer-events: none; font: inherit; font-size: 11px;
+  line-height: 14px; color: #F2F2F5; background: rgba(0,0,0,.74); padding: 4px 9px 11px; white-space: nowrap;
+  filter: drop-shadow(0 0 0.6px rgba(255,255,255,.55)); opacity: 0; transition: opacity .4s;
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 7px), calc(50% + 5px) calc(100% - 7px),
+                     50% 100%, calc(50% - 5px) calc(100% - 7px), 0 calc(100% - 7px)); }
+#capy-zzz.on { opacity: 1; animation: capy-zzz 2.4s ease-in-out infinite; }
+@keyframes capy-zzz { 50% { margin-top: -5px; } }

@@ -2427,6 +2427,7 @@ addEventListener("keydown", (e) => {
 // near the capybara: a prompt over it ("E" or tap to feed); feeding opens its ironic thank-you bubble
 const capyPrompt = Object.assign(document.createElement("button"), { id: "capy-prompt", type: "button" });
 capyPrompt.innerHTML = MOBILE ? "tap to feed the capybara" : "<kbd>E</kbd> feed the capybara";
+capyPrompt.style.marginTop = "-26px"; // above the Zzz bubble
 const feedCapy = () => showBubble(capy.mesh, capy.feed(performance.now()));
 capyPrompt.addEventListener("click", (e) => {
   feedCapy();
@@ -2439,8 +2440,20 @@ addEventListener("keydown", (e) => {
   if (typing() || e.repeat || gamePaused || wall.isOpen() || e.metaKey || e.ctrlKey || e.altKey) return;
   if (e.key.toLowerCase() === "e" && nearCapy()) feedCapy();
 });
+// asleep at night: a little "Zzz..." bubble floats over it
+const capyZzz = Object.assign(document.createElement("div"), { id: "capy-zzz", textContent: "Zzz..." });
+document.body.append(capyZzz);
 function updateCapy() {
-  capy.update(performance.now());
+  const now = performance.now();
+  capy.setAsleep(!isDay);
+  capy.update(now);
+  const sleeping = capy.isAsleep(now) && !gamePaused && !bubbles.has(capy.mesh);
+  capyZzz.classList.toggle("on", sleeping);
+  if (sleeping) {
+    _v.set(capy.mesh.position.x - 0.6, capy.mesh.position.y + 2.6, capy.mesh.position.z).project(camera);
+    capyZzz.style.left = `${(_v.x * 0.5 + 0.5) * innerWidth}px`;
+    capyZzz.style.top = `${(-_v.y * 0.5 + 0.5) * innerHeight}px`;
+  }
   capy.mesh.rotation.set(camera.rotation.x * 0.5, 0, 0); // faces the camera like the trainers
   const show = nearCapy() && !wall.isOpen() && !gamePaused && !bubbles.has(capy.mesh);
   capyPrompt.classList.toggle("on", show);
