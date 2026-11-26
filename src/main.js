@@ -97,7 +97,7 @@ function framePos(cfg, dir, step) {
 }
 
 // ---- Scene ----
-// phones/tablets: touch controls and lighter shadows
+// phones/tablets: touch controls and less rain
 const MOBILE = matchMedia("(pointer: coarse)").matches;
 const renderer = new THREE.WebGLRenderer({ antialias: false });
 renderer.setPixelRatio(1);
@@ -119,7 +119,8 @@ scene.add(skyLight);
 const sun = new THREE.DirectionalLight("#7f95d8", 0.45); // moon (sun by day)
 sun.position.set(40, 80, 30);
 sun.castShadow = true;
-sun.shadow.mapSize.set(MOBILE ? 1024 : 2048, MOBILE ? 1024 : 2048);
+// 1024 is enough for pixel-art shadows over the whole town; 2048 cost ~42 MB more of GPU memory
+sun.shadow.mapSize.set(1024, 1024);
 Object.assign(sun.shadow.camera, {
   left: -80,
   right: 80,
@@ -439,7 +440,9 @@ function createLampPost(x, z) {
   const light = new THREE.PointLight("#ffc95a", 150, 22, 1.6); // ~2700K, warm yellow
   light.position.set(0.9, 7.6, 0); // a bit out from the pole, under the arm
   light.castShadow = true;
-  light.shadow.mapSize.set(MOBILE ? 512 : 1024, MOBILE ? 512 : 1024);
+  // a point light's shadow is 6 maps (one per cube face), colour and depth: ~13 MB of GPU memory
+  // each at 512, ~50 MB at 1024 for no visible gain once the soft edge (radius) blurs it
+  light.shadow.mapSize.set(512, 512);
   light.shadow.bias = -0.0005;
   light.shadow.normalBias = 0.05;
   light.shadow.radius = 4;

@@ -27,6 +27,7 @@
 - Progressive mute for chat spam (rate exceeded, or the same text 4+ times in a row): warning, then 15 s, 1 min, 5 min, 30 min.
 
 ### Changed
+- Lighter shadows: the lamp posts' shadow maps are 512 instead of 1024 and the moon's (sun's by day) 1024 instead of 2048, the same on every device. The town looks the same by night and by day, and the game takes about 245 MB less of GPU memory (about 355 MB down to 110 MB).
 - Two trainers standing close: the one in front now covers the other from head to toe (the feet of the one behind used to show through). Every trainer is drawn at the depth of its feet, not only yours.
 - Admin login: type `/admin` in the chat and then the password in its own login box instead of `?admin=` in the URL; `/logout` leaves. Admin lock is looser: 20 tries, then 1 minute.
 - You come back where you were: the position is remembered in the browser and sent when you (re)connect, so others see you in the right spot even if you stand still.
