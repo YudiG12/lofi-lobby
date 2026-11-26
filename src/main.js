@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader.js";
 import { connectRadioToServer, receiveCommand } from "./radio.js";
 import { createBoard, setupWall } from "./board.js";
+import { createCapybara, CAPY_NEAR, CAPY_RADIUS } from "./capybara.js";
 
 // ---- Asset config (change here to use other files) ----
 const TOWN = {
@@ -236,7 +237,9 @@ function prepareTown(fbx) {
     candles.updateMatrixWorld(true);
     solidBoxes.push(new THREE.Box3().setFromObject(candles).expandByScalar(0.15)); // nobody steps on them: a very small gap around
     placeBenches();
+    placeFireflies();
     board.position.y = groundHeight(board.position.x, board.position.z);
+    placeCapybara();
 }
 
 // ---- Original village (default on the published site) ----
@@ -916,6 +919,86 @@ addEventListener("keydown", (e) => {
   if (!typing && !e.repeat && !e.ctrlKey && !e.metaKey && e.key.toLowerCase() === "r") toggleRain();
 });
 
+// ---- Fireflies ----
+// Little blinking lights drifting around the pond at night. Gone by day and in the rain
+// (same fade as the look). Only for you, nothing goes to the server.
+const FIREFLIES = { count: MOBILE ? 40 : 90, margin: 12, wander: 1.5 };
+const fireflyBase = new Float32Array(FIREFLIES.count * 3); // where each one hovers around
+const fireflyPos = new Float32Array(FIREFLIES.count * 3);
+const fireflyPhase = new Float32Array(FIREFLIES.count);
+const fireflySpeed = new Float32Array(FIREFLIES.count);
+for (let i = 0; i < FIREFLIES.count; i++) {
+  fireflyPhase[i] = Math.random() * Math.PI * 2;
+  fireflySpeed[i] = 0.6 + Math.random() * 0.8;
+}
+const fireflyGeometry = new THREE.BufferGeometry();
+fireflyGeometry.setAttribute("position", new THREE.BufferAttribute(fireflyPos, 3).setUsage(THREE.DynamicDrawUsage));
+fireflyGeometry.setAttribute("phase", new THREE.BufferAttribute(fireflyPhase, 1));
+fireflyGeometry.setAttribute("speed", new THREE.BufferAttribute(fireflySpeed, 1));
+const fireflyUniforms = { uOpacity: { value: 0 }, uTime: { value: 0 }, uColor: { value: new THREE.Color("#d8ff8a") } };
+const fireflyMesh = new THREE.Points(
+  fireflyGeometry,
+  new THREE.ShaderMaterial({
+    uniforms: fireflyUniforms,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    vertexShader: `attribute float phase; attribute float speed; uniform float uTime; varying float vGlow;
+      void main() {
+        // blinks: mostly dim, a short bright pulse now and then
+        vGlow = pow(0.5 + 0.5 * sin(uTime * speed * 1.7 + phase), 4.0);
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        gl_PointSize = (300.0 + 200.0 * vGlow) / -mv.z;
+        gl_Position = projectionMatrix * mv;
+      }`,
+    fragmentShader: `uniform float uOpacity; uniform vec3 uColor; varying float vGlow;
+      void main() {
+        float a = smoothstep(0.5, 0.0, length(gl_PointCoord - 0.5)) * (0.15 + 0.85 * vGlow) * uOpacity;
+        if (a < 0.01) discard;
+        gl_FragColor = vec4(uColor, a);
+      }`,
+  }),
+);
+fireflyMesh.frustumCulled = false; // positions move every frame
+fireflyMesh.visible = false;
+scene.add(fireflyMesh);
+let firefliesPlaced = false;
+// In a ring around the pond, on land, at about knee to head height.
+function placeFireflies() {
+  if (!pondBox) return;
+  const { min, max } = pondBox;
+  const m = FIREFLIES.margin;
+  for (let i = 0, tries = 0; i < FIREFLIES.count && tries < 2000; tries++) {
+    const x = min.x - m + Math.random() * (max.x - min.x + 2 * m);
+    const z = min.z - m + Math.random() * (max.z - min.z + 2 * m);
+    if (inPond(x, z)) continue;
+    fireflyBase[i * 3] = x;
+    fireflyBase[i * 3 + 1] = groundHeight(x, z) + 0.6 + Math.random() * 1.8;
+    fireflyBase[i * 3 + 2] = z;
+    i++;
+  }
+  firefliesPlaced = true;
+}
+function updateFireflies() {
+  const opacity = (1 - dayAmount) * (1 - rainAmount);
+  fireflyMesh.visible = firefliesPlaced && opacity > 0.01;
+  if (!fireflyMesh.visible) return;
+  const t = waterUniforms.uTime.value;
+  fireflyUniforms.uOpacity.value = opacity;
+  fireflyUniforms.uTime.value = t;
+  const w = FIREFLIES.wander;
+  for (let i = 0; i < FIREFLIES.count; i++) {
+    const j = i * 3;
+    const p = fireflyPhase[i];
+    const s = fireflySpeed[i] * 0.4;
+    // slow wandering loop around the base, a little up and down
+    fireflyPos[j] = fireflyBase[j] + w * Math.sin(t * s + p) * Math.cos(t * s * 0.7);
+    fireflyPos[j + 1] = fireflyBase[j + 1] + 0.5 * Math.sin(t * s * 1.3 + p * 2);
+    fireflyPos[j + 2] = fireflyBase[j + 2] + w * Math.cos(t * s * 0.9 + p);
+  }
+  fireflyGeometry.attributes.position.needsUpdate = true;
+}
+
 let townMeshes = [];
 const waterMeshes = new Set();
 const edgeMeshes = new Set();
@@ -1065,6 +1148,29 @@ function placeLampPost(p) {
   }
 }
 
+// ---- Capybara (middle of town; E feeds it) ----
+const capy = createCapybara();
+capy.mesh.position.set(6, 0, 4);
+scene.add(capy.mesh);
+// the open spot nearest the middle, off the spawn point and clear of benches, posts and the board
+function placeCapybara() {
+  for (let r = 0; r <= 14; r += 0.5)
+    for (let a = 0; a < 16; a++) {
+      const x = 6 + Math.cos((a / 16) * Math.PI * 2) * r,
+        z = 4 + Math.sin((a / 16) * Math.PI * 2) * r;
+      if (
+        isOpen(x, z, 2.4) &&
+        Math.hypot(x, z) > 4 &&
+        benches.every((b) => Math.hypot(b.x - x, b.z - z) > 5) &&
+        lampPosts.every((l) => Math.hypot(l.position.x - x, l.position.z - z) > 3.5) &&
+        Math.hypot(board.position.x - x, board.position.z - z) > 7
+      ) {
+        capy.mesh.position.set(x, groundHeight(x, z), z);
+        return;
+      }
+    }
+}
+
 // ---- Collision ----
 const BODY_RADIUS = 0.9; // character "width"
 const MAX_STEP = 1.2; // height difference it can climb
@@ -1086,6 +1192,7 @@ function isFree(x, z, currentY) {
     inPond(x, z + BODY_RADIUS)
   )
     return false;
+  if (Math.hypot(x - capy.mesh.position.x, z - capy.mesh.position.z) < CAPY_RADIUS + BODY_RADIUS * 0.5) return false;
   if (Math.abs(x - board.position.x) < 3.8 + BODY_RADIUS * 0.5 && Math.abs(z - board.position.z) < 0.5 + BODY_RADIUS * 0.5) return false;
   for (const p of lampPosts)
     if (
@@ -1381,6 +1488,7 @@ gl_Position.z = (feetClip.z / feetClip.w) * gl_Position.w;`,
   return uFeet.value;
 }
 const myFeet = useFeetDepth(sprite);
+const capyFeet = useFeetDepth(capy.mesh);
 const _toCam = new THREE.Vector3();
 const occlusionRay = new THREE.Ray();
 const _hit = new THREE.Vector3();
@@ -1410,6 +1518,7 @@ function setFeet(feet, x, y, z) {
 }
 function updateOcclusion() {
   setFeet(myFeet, pos.x + slide.x, pos.y, pos.z + slide.z);
+  setFeet(capyFeet, capy.mesh.position.x, capy.mesh.position.y, capy.mesh.position.z);
   for (const o of others.values()) setFeet(o.feet, o.mesh.position.x, o.mesh.position.y, o.mesh.position.z);
 }
 
@@ -1513,14 +1622,15 @@ const SPEED = 9;
 // ---- Sitting ----
 let mySeat = -1;
 
-// What you hold while sitting: nothing, a laptop on your lap or a coffee. Pixel art drawn in code
-// on the trainer's own 32px frame, on a plane that sits exactly over the trainer and takes the
-// same depth (its feet), so it is covered and uncovered together with the body.
-const HELD = ["nothing", "a laptop", "a coffee"];
-// each view: [colour, x, y, w, h, glows, puff] rectangles on the 32x32 frame, drawn for a body whose
-// middle is on column 16 (front and back views) or whose front edge is on column 22 (side view,
+// What you hold while sitting: nothing, a laptop on your lap, a coffee or a book. Pixel art drawn
+// in code on the trainer's own 32px frame, on a plane that sits exactly over the trainer and takes
+// the same depth (its feet), so it is covered and uncovered together with the body.
+const HELD = ["nothing", "a laptop", "a coffee", "a book"];
+// each view: [colour, x, y, w, h, glows, puff, only] rectangles on the 32x32 frame, drawn for a body
+// whose middle is on column 16 (front and back views) or whose front edge is on column 22 (side view,
 // looking right); bodyShape() measures the real sprite and the art moves to fit it.
 // A rectangle with `puff` is steam: it rises and sways over the 4 frames.
+// A rectangle with `only` is drawn on that frame alone (the book's page turning).
 const HELD_ART = {
   // laptop from the front: on the lap, under the chin; you see the back of the lid and its small light
   "1down": [["#11131a", 10, 22, 13, 6], ["#3a4052", 11, 23, 11, 4], ["#565d75", 11, 23, 11, 1], ["#bfe3ff", 16, 25, 1, 1, 1], ["#23262f", 9, 28, 15, 1]],
@@ -1534,6 +1644,16 @@ const HELD_ART = {
   // from the side: right against the chest, below the chin, so neither the cup nor the steam crosses the face
   "2right": [["#f4ead2", 22, 24, 3, 4], ["#6b4a2f", 22, 25, 3, 2], ["#ffffff", 21, 23, 5, 1], ["#e8e8ee", 25, 21, 1, 2, 1, 0], ["#e8e8ee", 25, 21, 1, 1, 1, 2]],
   "2up": [["#f4ead2", 23, 23, 2, 3], ["#6b4a2f", 23, 24, 2, 1], ["#ffffff", 23, 22, 2, 1], ["#e8e8ee", 24, 19, 1, 2, 1, 0], ["#e8e8ee", 24, 19, 1, 1, 1, 2]],
+  // book from the front: held open under the chin, pages turned to the reader, so you see the
+  // cover (two halves around the spine, a gold title on each) and the page edges along the top
+  "3down": [["#f4ead2", 10, 22, 6, 1], ["#f4ead2", 17, 22, 6, 1], ["#7a2430", 10, 23, 6, 5], ["#7a2430", 17, 23, 6, 5],
+    ["#4e1520", 16, 22, 1, 6], ["#e8c060", 12, 25, 2, 1], ["#e8c060", 19, 25, 2, 1], ["skin", 9, 25, 1, 2], ["skin", 23, 25, 1, 2]],
+  // from the side: open in front of the chest, pages up toward the face, the hand under the cover;
+  // now and then a page lifts as it turns
+  "3right": [["#7a2430", 21, 27, 6, 1], ["#f4ead2", 21, 25, 6, 2], ["#d8ccb0", 21, 26, 6, 1], ["#ffffff", 22, 25, 4, 1],
+    ["skin", 22, 27, 2, 1], ["#f4ead2", 24, 23, 1, 2, 0, undefined, 1], ["#f4ead2", 25, 22, 1, 1, 0, undefined, 1]],
+  // from behind the body hides it: only the cover's corners show past the elbows
+  "3up": [["#7a2430", 8, 25, 1, 2], ["#7a2430", 24, 25, 1, 2]],
 };
 const FACE_LIGHT = [0.34, 0.22, 0.4, 0.28]; // how strong the screen's light is on each frame
 const FLICKER = [0, 1, 0, 2, 3, 1, 2, 0]; // uneven, like a screen changing
@@ -1578,8 +1698,9 @@ function bodyShape(tex, cfg, d) {
 }
 const heldTex = {};
 function heldTextures(item, d, shape) {
-  const tick = Math.floor(performance.now() / (item === 2 ? 320 : 260));
-  const frame = item === 2 ? tick % 4 : FLICKER[tick % 8]; // steam rising, or the screen's light
+  const tick = Math.floor(performance.now() / (item === 1 ? 260 : item === 2 ? 320 : 400));
+  // the screen's light, steam rising, or a page turning about every 4 seconds
+  const frame = item === 1 ? FLICKER[tick % 8] : item === 2 ? tick % 4 : +(tick % 10 === 9);
   const key = item + d + frame + (shape?.key || "");
   if (heldTex[key]) return heldTex[key];
   const art = HELD_ART[item + (d === "left" ? "right" : d)] || HELD_ART[item + "down"];
@@ -1594,7 +1715,8 @@ function heldTextures(item, d, shape) {
       for (const [i, j] of shape.face) c.fillRect(i, j, 1, 1);
     }
     if (d === "left") c.setTransform(-1, 0, 0, 1, 32, 0); // mirror the side view
-    for (const [color, x, y, w, h, glows, puff] of art) {
+    for (const [color, x, y, w, h, glows, puff, only] of art) {
+      if (only !== undefined && only !== frame) continue;
       c.globalAlpha = glowOnly && !glows ? 0.3 : 1; // the rest glows a little too, to stay readable at night
       const rise = puff === undefined ? 0 : (frame + puff) % 4; // 0..3 pixels up, then it starts again
       c.fillStyle = color === "skin" ? shape?.skin || "#f0b890" : color;
@@ -1633,15 +1755,30 @@ function showHeld(mesh, body, cfg, item, seat) {
 }
 const myHeld = createHeld(myFeet);
 let myHold = 0;
-try { myHold = [1, 2].includes(+localStorage.getItem("hold")) ? +localStorage.getItem("hold") : 0; } catch {}
+try { myHold = [1, 2, 3].includes(+localStorage.getItem("hold")) ? +localStorage.getItem("hold") : 0; } catch {}
 const sendHold = () => ws?.readyState === 1 && ws.send(JSON.stringify({ t: "hold", item: myHold }));
 const holdBtn = document.querySelector("#hold");
+// the button shows what you hold (the cup, unlit, when your hands are empty)
+const CUP_ICON = holdBtn.querySelector("svg").innerHTML;
+const HELD_ICONS = [
+  CUP_ICON,
+  '<path d="M20 16V7a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v9m16 0H4m16 0 1.28 2.55a1 1 0 0 1-.9 1.45H3.62a1 1 0 0 1-.9-1.45L4 16"/>',
+  CUP_ICON,
+  '<path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/>',
+];
+let holdIcon = 0;
+function updateHoldButton() {
+  holdBtn.hidden = mySeat < 0;
+  holdBtn.classList.toggle("on", myHold > 0);
+  holdBtn.setAttribute("aria-label", "hold " + HELD[(myHold + 1) % HELD.length]);
+  if (holdIcon !== myHold) holdBtn.querySelector("svg").innerHTML = HELD_ICONS[(holdIcon = myHold)];
+}
 let lastHold = 0;
 function cycleHold() {
   const now = performance.now();
   if (gamePaused || mySeat < 0 || now - lastHold < 350) return; // stays under the server's rate limit
   lastHold = now;
-  myHold = (myHold + 1) % 3;
+  myHold = (myHold + 1) % HELD.length;
   try { localStorage.setItem("hold", myHold); } catch {}
   sendHold();
 }
@@ -1720,7 +1857,7 @@ addEventListener("keydown", (e) => {
   const k = e.key.toLowerCase();
   // by the message board, E opens it (unless you're seated: then it stands you up)
   if (!typing && !e.repeat && !e.ctrlKey && !e.metaKey && k === "q") cycleHold();
-  if (!typing && !e.repeat && !e.ctrlKey && !e.metaKey && k === "e") (mySeat >= 0 || !nearBoard()) && toggleSit();
+  if (!typing && !e.repeat && !e.ctrlKey && !e.metaKey && k === "e") (mySeat >= 0 || (!nearBoard() && !nearCapy())) && toggleSit();
   // a quick tap on a move key can end before the next frame: stand up right away
   else if (!typing && !gamePaused && mySeat >= 0 && MOVE_KEYS[k]) {
     dir = MOVE_KEYS[k];
@@ -2290,6 +2427,31 @@ addEventListener("keydown", (e) => {
   const k = e.key.toLowerCase();
   if ((k === "e" && nearBoard()) || k === "b") wall.show();
 });
+// near the capybara: a prompt over it ("E" or tap to feed); feeding opens its ironic thank-you bubble
+const capyPrompt = Object.assign(document.createElement("button"), { id: "capy-prompt", type: "button" });
+capyPrompt.innerHTML = MOBILE ? "tap to feed the capybara" : "<kbd>E</kbd> feed the capybara";
+const feedCapy = () => showBubble(capy.mesh, capy.feed(performance.now()));
+capyPrompt.addEventListener("click", (e) => {
+  feedCapy();
+  e.currentTarget.blur(); // give the keyboard back to the game
+});
+document.body.append(capyPrompt);
+const nearCapy = () =>
+  mySeat < 0 && !nearBoard() && Math.hypot(pos.x - capy.mesh.position.x, pos.z - capy.mesh.position.z) < CAPY_NEAR;
+addEventListener("keydown", (e) => {
+  if (typing() || e.repeat || gamePaused || wall.isOpen() || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.key.toLowerCase() === "e" && nearCapy()) feedCapy();
+});
+function updateCapy() {
+  capy.update(performance.now());
+  capy.mesh.rotation.set(camera.rotation.x * 0.5, 0, 0); // faces the camera like the trainers
+  const show = nearCapy() && !wall.isOpen() && !gamePaused && !bubbles.has(capy.mesh);
+  capyPrompt.classList.toggle("on", show);
+  if (!show) return;
+  _v.set(capy.mesh.position.x, capy.mesh.position.y + 5, capy.mesh.position.z).project(camera);
+  capyPrompt.style.left = `${(_v.x * 0.5 + 0.5) * innerWidth}px`;
+  capyPrompt.style.top = `${(-_v.y * 0.5 + 0.5) * innerHeight}px`;
+}
 function updateWallPrompt() {
   const show = nearBoard() && !wall.isOpen() && !gamePaused;
   wallPrompt.classList.toggle("on", show);
@@ -2317,6 +2479,7 @@ function loop() {
     applyLook(dayAmount);
   }
   updateRain(dt);
+  updateFireflies();
   let dx = 0,
     dz = 0;
   if (keys.arrowup || keys.w) {
@@ -2363,9 +2526,7 @@ function loop() {
   setFrame(dir, currentStep, running);
   sendPosition(performance.now(), currentStep);
   const freeSeat = mySeat >= 0 ? -1 : nearestFreeSeat();
-  holdBtn.hidden = mySeat < 0;
-  holdBtn.classList.toggle("on", myHold > 0);
-  holdBtn.setAttribute("aria-label", "hold " + HELD[(myHold + 1) % 3]);
+  updateHoldButton();
   updateOthers(dt);
 
   // smooth the height so it doesn't jitter on small terrain steps
@@ -2383,6 +2544,7 @@ function loop() {
   shadow.visible = mySeat < 0; // would float under the hanging feet
   camera.position.set(pos.x + slide.x, pos.y + 38, pos.z + 42 + slide.z);
   camera.lookAt(pos.x + slide.x, pos.y + 1, pos.z + slide.z);
+  updateCapy();
   updateOcclusion();
   // facing the camera, tilted only halfway (the shadow looks like a standing body)
   sprite.rotation.set(camera.rotation.x * 0.5, 0, 0);
