@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader.js";
 import { connectRadioToServer, receiveCommand } from "./radio.js";
 import { createBoard, setupWall } from "./board.js";
+import { createCapybara, CAPY_NEAR, CAPY_RADIUS } from "./capybara.js";
 
 // ---- Asset config (change here to use other files) ----
 const TOWN = {
@@ -236,6 +237,7 @@ function prepareTown(fbx) {
     solidBoxes.push(new THREE.Box3().setFromObject(candles).expandByScalar(0.15)); // nobody steps on them: a very small gap around
     placeBenches();
     board.position.y = groundHeight(board.position.x, board.position.z);
+    placeCapybara();
 }
 
 // ---- Original village (default on the published site) ----
@@ -1062,6 +1064,29 @@ function placeLampPost(p) {
   }
 }
 
+// ---- Capybara (middle of town; E feeds it) ----
+const capy = createCapybara();
+capy.mesh.position.set(6, 0, 4);
+scene.add(capy.mesh);
+// the open spot nearest the middle, off the spawn point and clear of benches, posts and the board
+function placeCapybara() {
+  for (let r = 0; r <= 14; r += 0.5)
+    for (let a = 0; a < 16; a++) {
+      const x = 6 + Math.cos((a / 16) * Math.PI * 2) * r,
+        z = 4 + Math.sin((a / 16) * Math.PI * 2) * r;
+      if (
+        isOpen(x, z, 2.4) &&
+        Math.hypot(x, z) > 4 &&
+        benches.every((b) => Math.hypot(b.x - x, b.z - z) > 5) &&
+        lampPosts.every((l) => Math.hypot(l.position.x - x, l.position.z - z) > 3.5) &&
+        Math.hypot(board.position.x - x, board.position.z - z) > 7
+      ) {
+        capy.mesh.position.set(x, groundHeight(x, z), z);
+        return;
+      }
+    }
+}
+
 // ---- Collision ----
 const BODY_RADIUS = 0.9; // character "width"
 const MAX_STEP = 1.2; // height difference it can climb
@@ -1083,6 +1108,7 @@ function isFree(x, z, currentY) {
     inPond(x, z + BODY_RADIUS)
   )
     return false;
+  if (Math.hypot(x - capy.mesh.position.x, z - capy.mesh.position.z) < CAPY_RADIUS + BODY_RADIUS * 0.5) return false;
   if (Math.abs(x - board.position.x) < 3.8 + BODY_RADIUS * 0.5 && Math.abs(z - board.position.z) < 0.5 + BODY_RADIUS * 0.5) return false;
   for (const p of lampPosts)
     if (
@@ -1378,6 +1404,7 @@ gl_Position.z = (feetClip.z / feetClip.w) * gl_Position.w;`,
   return uFeet.value;
 }
 const myFeet = useFeetDepth(sprite);
+const capyFeet = useFeetDepth(capy.mesh);
 const _toCam = new THREE.Vector3();
 const occlusionRay = new THREE.Ray();
 const _hit = new THREE.Vector3();
@@ -1407,6 +1434,7 @@ function setFeet(feet, x, y, z) {
 }
 function updateOcclusion() {
   setFeet(myFeet, pos.x + slide.x, pos.y, pos.z + slide.z);
+  setFeet(capyFeet, capy.mesh.position.x, capy.mesh.position.y, capy.mesh.position.z);
   for (const o of others.values()) setFeet(o.feet, o.mesh.position.x, o.mesh.position.y, o.mesh.position.z);
 }
 
@@ -1745,7 +1773,7 @@ addEventListener("keydown", (e) => {
   const k = e.key.toLowerCase();
   // by the message board, E opens it (unless you're seated: then it stands you up)
   if (!typing && !e.repeat && !e.ctrlKey && !e.metaKey && k === "q") cycleHold();
-  if (!typing && !e.repeat && !e.ctrlKey && !e.metaKey && k === "e") (mySeat >= 0 || !nearBoard()) && toggleSit();
+  if (!typing && !e.repeat && !e.ctrlKey && !e.metaKey && k === "e") (mySeat >= 0 || (!nearBoard() && !nearCapy())) && toggleSit();
   // a quick tap on a move key can end before the next frame: stand up right away
   else if (!typing && !gamePaused && mySeat >= 0 && MOVE_KEYS[k]) {
     dir = MOVE_KEYS[k];
@@ -2315,6 +2343,31 @@ addEventListener("keydown", (e) => {
   const k = e.key.toLowerCase();
   if ((k === "e" && nearBoard()) || k === "b") wall.show();
 });
+// near the capybara: a prompt over it ("E" or tap to feed); feeding opens its ironic thank-you bubble
+const capyPrompt = Object.assign(document.createElement("button"), { id: "capy-prompt", type: "button" });
+capyPrompt.innerHTML = MOBILE ? "tap to feed the capybara" : "<kbd>E</kbd> feed the capybara";
+const feedCapy = () => showBubble(capy.mesh, capy.feed(performance.now()));
+capyPrompt.addEventListener("click", (e) => {
+  feedCapy();
+  e.currentTarget.blur(); // give the keyboard back to the game
+});
+document.body.append(capyPrompt);
+const nearCapy = () =>
+  mySeat < 0 && !nearBoard() && Math.hypot(pos.x - capy.mesh.position.x, pos.z - capy.mesh.position.z) < CAPY_NEAR;
+addEventListener("keydown", (e) => {
+  if (typing() || e.repeat || gamePaused || wall.isOpen() || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.key.toLowerCase() === "e" && nearCapy()) feedCapy();
+});
+function updateCapy() {
+  capy.update(performance.now());
+  capy.mesh.rotation.set(camera.rotation.x * 0.5, 0, 0); // faces the camera like the trainers
+  const show = nearCapy() && !wall.isOpen() && !gamePaused && !bubbles.has(capy.mesh);
+  capyPrompt.classList.toggle("on", show);
+  if (!show) return;
+  _v.set(capy.mesh.position.x, capy.mesh.position.y + 5, capy.mesh.position.z).project(camera);
+  capyPrompt.style.left = `${(_v.x * 0.5 + 0.5) * innerWidth}px`;
+  capyPrompt.style.top = `${(-_v.y * 0.5 + 0.5) * innerHeight}px`;
+}
 function updateWallPrompt() {
   const show = nearBoard() && !wall.isOpen() && !gamePaused;
   wallPrompt.classList.toggle("on", show);
@@ -2406,6 +2459,7 @@ function loop() {
   shadow.visible = mySeat < 0; // would float under the hanging feet
   camera.position.set(pos.x + slide.x, pos.y + 38, pos.z + 42 + slide.z);
   camera.lookAt(pos.x + slide.x, pos.y + 1, pos.z + slide.z);
+  updateCapy();
   updateOcclusion();
   // facing the camera, tilted only halfway (the shadow looks like a standing body)
   sprite.rotation.set(camera.rotation.x * 0.5, 0, 0);
