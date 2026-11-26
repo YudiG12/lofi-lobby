@@ -26,6 +26,27 @@ export const PHRASES = [
   "Você é tipo um herói. Um herói bem pequenininho.",
   "Que atitude nobre. Vou mencionar você no meu discurso do Oscar.",
   "Valeu. Aceito pix também, só pra constar.",
+  // for the devs in the lobby
+  "Obrigada! Funcionou na sua máquina, né? Na minha barriga também.",
+  "Que capim lindo. Tem testes? Não? Imaginei.",
+  "Valeu. Vou fazer o code review disso aqui com os dentes.",
+  "Comida em produção numa sexta à noite? Corajoso.",
+  "Obrigada. Agora só falta o deploy do segundo capim.",
+  "Hmm, capim legado. Ninguém sabe quem plantou, mas funciona.",
+  "Agradeço. Vou abrir uma issue: 'porção pequena, prioridade alta'.",
+  "Que gentileza. Mais rápido que o seu build, pelo menos.",
+  "Obrigada! LGTM. Não li, mas LGTM.",
+  "Delícia. Pena que veio sem documentação, como tudo que você faz.",
+  "Valeu. Isso aqui resolve o meu problema mais que a sua última sprint.",
+  "Comi. Agora vou dormir igual o seu pipeline de CI: por horas.",
+  "Obrigada pelo capim. Foi copiado do Stack Overflow?",
+  "Que lindo. Você até que serve pra algo além de fazer merge com conflito.",
+  "Obrigada! Já estimou quanto tempo leva pra me dar outro? Multiplica por três.",
+  "Sério, valeu. É o primeiro commit seu que não quebrou nada.",
+  "Uau, capim sem bug. Você pediu pra IA, né?",
+  "Agradeço a refatoração da minha fome. Ficou só um pouquinho pior.",
+  "Obrigada. Vou marcar como 'won't fix' e pedir outro.",
+  "Nossa, entregou no prazo. Tá se sentindo bem?",
 ];
 
 // 5 frames side by side, 32x24 logical pixels each, drawn at 2x like the trainers:
@@ -134,7 +155,7 @@ export function createCapybara() {
       last = i;
       return PHRASES[i];
     },
-    // asleep at night: lies down (feeding wakes it up just long enough to chew and complain)
+    // asleep at night: lies down (and can only be fed by day)
     setAsleep(v) {
       asleep = v;
     },

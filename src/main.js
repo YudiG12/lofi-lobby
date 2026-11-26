@@ -2434,8 +2434,9 @@ capyPrompt.addEventListener("click", (e) => {
   e.currentTarget.blur(); // give the keyboard back to the game
 });
 document.body.append(capyPrompt);
+// fed only by day: at night it's asleep and nothing wakes it
 const nearCapy = () =>
-  mySeat < 0 && !nearBoard() && Math.hypot(pos.x - capy.mesh.position.x, pos.z - capy.mesh.position.z) < CAPY_NEAR;
+  isDay && mySeat < 0 && !nearBoard() && Math.hypot(pos.x - capy.mesh.position.x, pos.z - capy.mesh.position.z) < CAPY_NEAR;
 addEventListener("keydown", (e) => {
   if (typing() || e.repeat || gamePaused || wall.isOpen() || e.metaKey || e.ctrlKey || e.altKey) return;
   if (e.key.toLowerCase() === "e" && nearCapy()) feedCapy();
