@@ -1,6 +1,7 @@
 name = "lofi-lobby"
 main = "worker/index.js"
 compatibility_date = "2025-06-01"
+compatibility_flags = ["web_socket_auto_reply_to_close"]
 
 # static site (Vite build). /ws/* goes through the Worker before the assets.
 [assets]

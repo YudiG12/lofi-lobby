@@ -1831,7 +1831,12 @@ elName.addEventListener("click", () => {
 });
 const others = new Map(); // id -> { mesh, tex, cfg, target, dir, step, name }
 let myId = null;
+let myLeaveToken = "";
 let ws = null;
+let pingTimer = 0;
+let reconnectTimer = 0;
+let pageUnloading = false;
+const PING_EVERY_MS = 25_000;
 
 function setFrameTex(tex, cfg, d, step) {
   const img = tex.image;
@@ -1842,6 +1847,7 @@ function setFrameTex(tex, cfg, d, step) {
 }
 
 function createOther(p) {
+  if (others.has(p.id)) removeOther(p.id);
   const g = p.gender === "female" ? "female" : "male";
   const available = sheetAvailable(g);
   const tex = available
@@ -1920,21 +1926,31 @@ let deployed = ""; // the deploy this tab first connected to
 let pendingPassword = ""; // typed after /admin, saved only if the server accepts it
 let kicked = false; // kicked or banned: stay out instead of reconnecting
 function connect() {
+  clearTimeout(reconnectTimer);
+  if (pageUnloading) return;
   const proto = location.protocol === "https:" ? "wss" : "ws";
-  ws = new WebSocket(`${proto}://${location.host}/ws/${ROOM}`);
-  ws.onopen = () => {
-    ws.send(JSON.stringify({ t: "hello", v: 1, name: NAME, gender: GENDER, x: pos.x, z: pos.z, dir }));
+  const sock = new WebSocket(`${proto}://${location.host}/ws/${ROOM}`);
+  ws = sock;
+  sock.onopen = () => {
+    if (ws !== sock) return;
+    clearInterval(pingTimer);
+    pingTimer = setInterval(() => {
+      if (sock.readyState === 1) sock.send("ping");
+    }, PING_EVERY_MS);
+    sock.send(JSON.stringify({ t: "hello", v: 1, name: NAME, gender: GENDER, x: pos.x, z: pos.z, dir }));
     if (mySeat >= 0) sendSeat(); // reconnected while sitting
     if (myHold) sendHold();
     // a saved admin logs in again quietly, so everyone sees the admin badge
     let password = "";
     try { password = localStorage.getItem("admin-password") || ""; } catch {}
-    if (password) ws.send(JSON.stringify({ t: "auth", password, quiet: true }));
+    if (password) sock.send(JSON.stringify({ t: "auth", password, quiet: true }));
   };
-  ws.onmessage = (ev) => {
+  sock.onmessage = (ev) => {
+    if (ws !== sock || ev.data === "pong") return;
     const m = JSON.parse(ev.data);
     if (m.t === "you") {
       myId = m.id;
+      myLeaveToken = m.token || "";
       // the room reconnected us to a newer deploy than the one this tab loaded with: reload to get
       // it, but not in the middle of something being written
       if (deployed && m.v && m.v !== deployed) {
@@ -2024,14 +2040,40 @@ function connect() {
       o.step = m.step;
     }
   };
-  ws.onclose = () => {
+  sock.onclose = () => {
+    if (ws !== sock) return;
+    clearInterval(pingTimer);
+    pingTimer = 0;
+    myLeaveToken = "";
     [...others.keys()].forEach(removeOther);
-    if (!kicked) setTimeout(connect, 2000); // reconnect
+    if (!kicked && !pageUnloading) reconnectTimer = setTimeout(connect, 2000); // reconnect
   };
 }
 const MULTIPLAYER = true;
 if (MULTIPLAYER) {
   connect();
+  const leaveNow = () => {
+    pageUnloading = true;
+    clearInterval(pingTimer);
+    pingTimer = 0;
+    clearTimeout(reconnectTimer);
+    if (myId && myLeaveToken && navigator.sendBeacon) {
+      try { navigator.sendBeacon("/api/leave", JSON.stringify({ id: myId, token: myLeaveToken })); } catch {}
+      myLeaveToken = "";
+    }
+    if (ws && (ws.readyState === 0 || ws.readyState === 1)) {
+      try { ws.close(1000, "pagehide"); } catch {}
+    }
+  };
+  addEventListener("pagehide", leaveNow);
+  addEventListener("pageshow", (e) => {
+    if (!e.persisted) return;
+    pageUnloading = false;
+    if (!kicked && (!ws || ws.readyState > 1)) connect();
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && ws?.readyState === 1) ws.send("ping");
+  });
   // radio admin commands go to the server, with the saved password
   connectRadioToServer((idx) => {
     let password = "";
