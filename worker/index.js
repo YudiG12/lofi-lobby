@@ -11,7 +11,7 @@
 //                     { t: "joined", player } | { t: "left", id } | { t: "pos", ... }
 //                     { t: "chat", id, name, text, at } | { t: "name", id, name }
 //                     { t: "gender", id, gender } | { t: "radio", command } | { t: "error", msg }
-//                     { t: "hold", item }   (what you hold while sitting: 0 nothing, 1 laptop, 2 coffee)
+//                     { t: "hold", item }   (what you hold while sitting: 0 nothing, 1 laptop, 2 coffee, 3 book)
 //                     { t: "seat", id, seat, n }   (who sits where; n only on a correction to the sender)
 //                     { t: "history", messages: [{ id, name, text, at }] } (on join)
 //                     { t: "notice", msg } | { t: "rename", name } (your name was refused)
@@ -491,7 +491,7 @@ export class Room {
       this.broadcast({ t: "seat", id: p.id, seat }, ws);
     } else if (m.t === "hold") {
       // what the player holds on a bench; the client only draws it on someone seated
-      p.hold = [1, 2].includes(m.item) ? m.item : 0;
+      p.hold = [1, 2, 3].includes(m.item) ? m.item : 0;
       ws.serializeAttachment(p);
       this.broadcast({ t: "hold", id: p.id, item: p.hold }, ws);
     } else if (m.t === "auth") {

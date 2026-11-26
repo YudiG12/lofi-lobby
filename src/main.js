@@ -1510,14 +1510,15 @@ const SPEED = 9;
 // ---- Sitting ----
 let mySeat = -1;
 
-// What you hold while sitting: nothing, a laptop on your lap or a coffee. Pixel art drawn in code
-// on the trainer's own 32px frame, on a plane that sits exactly over the trainer and takes the
-// same depth (its feet), so it is covered and uncovered together with the body.
-const HELD = ["nothing", "a laptop", "a coffee"];
-// each view: [colour, x, y, w, h, glows, puff] rectangles on the 32x32 frame, drawn for a body whose
-// middle is on column 16 (front and back views) or whose front edge is on column 22 (side view,
+// What you hold while sitting: nothing, a laptop on your lap, a coffee or a book. Pixel art drawn
+// in code on the trainer's own 32px frame, on a plane that sits exactly over the trainer and takes
+// the same depth (its feet), so it is covered and uncovered together with the body.
+const HELD = ["nothing", "a laptop", "a coffee", "a book"];
+// each view: [colour, x, y, w, h, glows, puff, only] rectangles on the 32x32 frame, drawn for a body
+// whose middle is on column 16 (front and back views) or whose front edge is on column 22 (side view,
 // looking right); bodyShape() measures the real sprite and the art moves to fit it.
 // A rectangle with `puff` is steam: it rises and sways over the 4 frames.
+// A rectangle with `only` is drawn on that frame alone (the book's page turning).
 const HELD_ART = {
   // laptop from the front: on the lap, under the chin; you see the back of the lid and its small light
   "1down": [["#11131a", 10, 22, 13, 6], ["#3a4052", 11, 23, 11, 4], ["#565d75", 11, 23, 11, 1], ["#bfe3ff", 16, 25, 1, 1, 1], ["#23262f", 9, 28, 15, 1]],
@@ -1531,6 +1532,16 @@ const HELD_ART = {
   // from the side: right against the chest, below the chin, so neither the cup nor the steam crosses the face
   "2right": [["#f4ead2", 22, 24, 3, 4], ["#6b4a2f", 22, 25, 3, 2], ["#ffffff", 21, 23, 5, 1], ["#e8e8ee", 25, 21, 1, 2, 1, 0], ["#e8e8ee", 25, 21, 1, 1, 1, 2]],
   "2up": [["#f4ead2", 23, 23, 2, 3], ["#6b4a2f", 23, 24, 2, 1], ["#ffffff", 23, 22, 2, 1], ["#e8e8ee", 24, 19, 1, 2, 1, 0], ["#e8e8ee", 24, 19, 1, 1, 1, 2]],
+  // book from the front: held open under the chin, pages turned to the reader, so you see the
+  // cover (two halves around the spine, a gold title on each) and the page edges along the top
+  "3down": [["#f4ead2", 10, 22, 6, 1], ["#f4ead2", 17, 22, 6, 1], ["#7a2430", 10, 23, 6, 5], ["#7a2430", 17, 23, 6, 5],
+    ["#4e1520", 16, 22, 1, 6], ["#e8c060", 12, 25, 2, 1], ["#e8c060", 19, 25, 2, 1], ["skin", 9, 25, 1, 2], ["skin", 23, 25, 1, 2]],
+  // from the side: open in front of the chest, pages up toward the face, the hand under the cover;
+  // now and then a page lifts as it turns
+  "3right": [["#7a2430", 21, 27, 6, 1], ["#f4ead2", 21, 25, 6, 2], ["#d8ccb0", 21, 26, 6, 1], ["#ffffff", 22, 25, 4, 1],
+    ["skin", 22, 27, 2, 1], ["#f4ead2", 24, 23, 1, 2, 0, undefined, 1], ["#f4ead2", 25, 22, 1, 1, 0, undefined, 1]],
+  // from behind the body hides it: only the cover's corners show past the elbows
+  "3up": [["#7a2430", 8, 25, 1, 2], ["#7a2430", 24, 25, 1, 2]],
 };
 const FACE_LIGHT = [0.34, 0.22, 0.4, 0.28]; // how strong the screen's light is on each frame
 const FLICKER = [0, 1, 0, 2, 3, 1, 2, 0]; // uneven, like a screen changing
@@ -1575,8 +1586,9 @@ function bodyShape(tex, cfg, d) {
 }
 const heldTex = {};
 function heldTextures(item, d, shape) {
-  const tick = Math.floor(performance.now() / (item === 2 ? 320 : 260));
-  const frame = item === 2 ? tick % 4 : FLICKER[tick % 8]; // steam rising, or the screen's light
+  const tick = Math.floor(performance.now() / (item === 1 ? 260 : item === 2 ? 320 : 400));
+  // the screen's light, steam rising, or a page turning about every 4 seconds
+  const frame = item === 1 ? FLICKER[tick % 8] : item === 2 ? tick % 4 : +(tick % 10 === 9);
   const key = item + d + frame + (shape?.key || "");
   if (heldTex[key]) return heldTex[key];
   const art = HELD_ART[item + (d === "left" ? "right" : d)] || HELD_ART[item + "down"];
@@ -1591,7 +1603,8 @@ function heldTextures(item, d, shape) {
       for (const [i, j] of shape.face) c.fillRect(i, j, 1, 1);
     }
     if (d === "left") c.setTransform(-1, 0, 0, 1, 32, 0); // mirror the side view
-    for (const [color, x, y, w, h, glows, puff] of art) {
+    for (const [color, x, y, w, h, glows, puff, only] of art) {
+      if (only !== undefined && only !== frame) continue;
       c.globalAlpha = glowOnly && !glows ? 0.3 : 1; // the rest glows a little too, to stay readable at night
       const rise = puff === undefined ? 0 : (frame + puff) % 4; // 0..3 pixels up, then it starts again
       c.fillStyle = color === "skin" ? shape?.skin || "#f0b890" : color;
@@ -1630,15 +1643,30 @@ function showHeld(mesh, body, cfg, item, seat) {
 }
 const myHeld = createHeld(myFeet);
 let myHold = 0;
-try { myHold = [1, 2].includes(+localStorage.getItem("hold")) ? +localStorage.getItem("hold") : 0; } catch {}
+try { myHold = [1, 2, 3].includes(+localStorage.getItem("hold")) ? +localStorage.getItem("hold") : 0; } catch {}
 const sendHold = () => ws?.readyState === 1 && ws.send(JSON.stringify({ t: "hold", item: myHold }));
 const holdBtn = document.querySelector("#hold");
+// the button shows what you hold (the cup, unlit, when your hands are empty)
+const CUP_ICON = holdBtn.querySelector("svg").innerHTML;
+const HELD_ICONS = [
+  CUP_ICON,
+  '<path d="M20 16V7a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v9m16 0H4m16 0 1.28 2.55a1 1 0 0 1-.9 1.45H3.62a1 1 0 0 1-.9-1.45L4 16"/>',
+  CUP_ICON,
+  '<path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/>',
+];
+let holdIcon = 0;
+function updateHoldButton() {
+  holdBtn.hidden = mySeat < 0;
+  holdBtn.classList.toggle("on", myHold > 0);
+  holdBtn.setAttribute("aria-label", "hold " + HELD[(myHold + 1) % HELD.length]);
+  if (holdIcon !== myHold) holdBtn.querySelector("svg").innerHTML = HELD_ICONS[(holdIcon = myHold)];
+}
 let lastHold = 0;
 function cycleHold() {
   const now = performance.now();
   if (gamePaused || mySeat < 0 || now - lastHold < 350) return; // stays under the server's rate limit
   lastHold = now;
-  myHold = (myHold + 1) % 3;
+  myHold = (myHold + 1) % HELD.length;
   try { localStorage.setItem("hold", myHold); } catch {}
   sendHold();
 }
@@ -2360,9 +2388,7 @@ function loop() {
   setFrame(dir, currentStep, running);
   sendPosition(performance.now(), currentStep);
   const freeSeat = mySeat >= 0 ? -1 : nearestFreeSeat();
-  holdBtn.hidden = mySeat < 0;
-  holdBtn.classList.toggle("on", myHold > 0);
-  holdBtn.setAttribute("aria-label", "hold " + HELD[(myHold + 1) % 3]);
+  updateHoldButton();
   updateOthers(dt);
 
   // smooth the height so it doesn't jitter on small terrain steps
