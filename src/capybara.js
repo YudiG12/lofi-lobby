@@ -1,4 +1,4 @@
-// Capybara: a pixel-art billboard that walks a stretch of the lower road, there and back, and sits down to eat when fed. Walk up and press E to feed it;
+// Capybara: a pixel-art billboard that strolls all over town, stops to sniff around, and sits down to eat when fed. Walk up and press E to feed it;
 // it thanks you, ironically, in a speech bubble. Where it is, what it does and what it says come from the room
 // (src/main.js), the same for every player; this file only draws it.
 import * as THREE from "three";

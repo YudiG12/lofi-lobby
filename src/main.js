@@ -1172,55 +1172,266 @@ function placeCapybara() {
     }
 }
 
-// The capybara's walk: it goes left and right on the right end of the lower road (the sand path), in
-// front of the house on the right, and sits down to eat when someone feeds it. It is the same for
-// everyone, frame by frame: where it is depends only on the room's clock and on `capyFed`, the last
-// feeding, which the room keeps and sends to all (worker/index.js, "capy"). Nothing here may depend
-// on one player (day or night, who stands near): that would put it somewhere else on their screen.
-const CAPY_ROAD_Z = 19.4; // the lower half of the path, off the line people walk
-const CAPY_REACH = 20; // how far from the middle it goes, at most
+// The capybara's walk: it strolls all over town on a fixed round, stopping now and then to sniff
+// around, and sits down to eat when someone feeds it. It is the same for everyone, frame by frame:
+// the round is built from the town alone (same map, same round on every device) and where it is
+// on it depends only on the room's clock and on `capyFed`, the last feeding, which the room keeps
+// and sends to all (worker/index.js, "capy"). Nothing here may depend on one player (day or night,
+// who stands near): that would put it somewhere else on their screen.
+//
+// How the round is built (once, when the town loads):
+//  1. the town becomes a grid; a cell is walkable if the capybara fits there on flat open ground
+//     (not in the pond or under a roof, clear of walls, fences, lamp posts, benches and the board);
+//  2. only the biggest connected patch of walkable cells is kept, so it can never end up somewhere
+//     it can't walk out of;
+//  3. stops are spread over that patch (each one as far as possible from the ones before), put in
+//     a loop, and joined by shortest paths that keep a little away from walls and are then
+//     straightened wherever the straight line stays walkable.
 const CAPY_SPEED = 1.5; // units per second: a slow stroll
-const capyWalk = { on: false, min: 0, max: 0, yAt: NaN };
+const CAPY_CELL = 1.25; // grid size, in town units
+const CAPY_STOPS = 14; // places it visits on one round
+const CAPY_SNIFF_MS = 4000; // how long it stays at each stop
+const capyWalk = { on: false, legs: [], period: 0, yAt: null };
 let clockOffset = 0; // the room's clock minus this device's (from the "you" message)
 function placeCapyWalk() {
-  const z = CAPY_ROAD_Z;
-  const clear = (x) =>
-    !inPond(x, z) && !insideSolid(x, z, 1, 1) && Math.abs(topHeight(x, z) - groundHeight(x, z)) < 0.4 &&
-    lampPosts.every((l) => Math.hypot(l.position.x - x, l.position.z - z) > 2.5) &&
-    benches.every((b) => Math.hypot(b.x - x, b.z - z) > 3.2);
-  // a house front looks at this stretch of road: a ray going north at window height meets a wall facing us
-  const houseBehind = (x) => {
-    ray.set(new THREE.Vector3(x, groundHeight(x, z) + 4.4, z), new THREE.Vector3(0, 0, -1));
-    const hit = ray.intersectObjects(townMeshes, false)[0];
-    return !!hit?.face && hit.distance < 14 && hit.face.normal.clone().transformDirection(hit.object.matrixWorld).z > 0.8;
+  const t0 = performance.now();
+  const W0 = townBox.min.x + 2,
+    Z0 = townBox.min.z + 2;
+  const cols = Math.floor((townBox.max.x - 2 - W0) / CAPY_CELL),
+    rows = Math.floor((townBox.max.z - 2 - Z0) / CAPY_CELL);
+  if (!(cols > 4 && rows > 4)) return;
+  const at = (c, r) => [W0 + (c + 0.5) * CAPY_CELL, Z0 + (r + 0.5) * CAPY_CELL];
+  // one ray per cell: the top surface (for steps), the ground (to spot roofs) and water
+  const top = new Float32Array(cols * rows),
+    open = new Uint8Array(cols * rows);
+  for (let r = 0; r < rows; r++)
+    for (let c = 0; c < cols; c++) {
+      const [x, z] = at(c, r),
+        i = r * cols + c;
+      ray.set(new THREE.Vector3(x, 200, z), DOWN);
+      const hits = ray.intersectObjects(townMeshes, false);
+      const floor = hits.filter((h) => !edgeMeshes.has(h.object));
+      top[i] = floor.length ? floor[0].point.y : 0;
+      const ground = hits.length ? hits[hits.length - 1].point.y : 0;
+      const wet = hits.length > 0 && (waterMeshes.has(hits[0].object) || edgeMeshes.has(hits[0].object));
+      open[i] =
+        !wet &&
+        Math.abs(top[i] - ground) < 0.4 && // not on a roof, a fence or a table
+        !inPond(x - 1.2, z) && !inPond(x + 1.2, z) && !inPond(x, z - 1.2) && !inPond(x, z + 1.2) &&
+        !insideSolid(x, z, 1, 1.8) &&
+        lampPosts.every((l) => Math.hypot(l.position.x - x, l.position.z - z) > 2.2) &&
+        benches.every((b) => Math.hypot(b.x - x, b.z - z) > 3.2) &&
+        !(Math.abs(x - board.position.x) < 5 && Math.abs(z - board.position.z) < 2)
+          ? 1
+          : 0;
+    }
+  // flat: no neighbour more than a small step up or down (the edge of a ledge, a house's wall)
+  const ok = new Uint8Array(cols * rows);
+  for (let r = 1; r < rows - 1; r++)
+    for (let c = 1; c < cols - 1; c++) {
+      const i = r * cols + c;
+      ok[i] = open[i] && [1, -1, cols, -cols].every((d) => open[i + d] && Math.abs(top[i + d] - top[i]) < 0.6) ? 1 : 0;
+    }
+  // 8 neighbours; a diagonal only when both sides are free too (no cutting corners)
+  const STEPS = [[1, 0, 1], [-1, 0, 1], [0, 1, 1], [0, -1, 1], [1, 1, Math.SQRT2], [1, -1, Math.SQRT2], [-1, 1, Math.SQRT2], [-1, -1, Math.SQRT2]];
+  const around = (i, fn) => {
+    const c = i % cols,
+      r = (i - c) / cols;
+    for (const [dc, dr, cost] of STEPS) {
+      const c2 = c + dc,
+        r2 = r + dr;
+      if (c2 < 0 || r2 < 0 || c2 >= cols || r2 >= rows) continue;
+      const j = r2 * cols + c2;
+      if (!ok[j] || (dc && dr && !(ok[r * cols + c2] && ok[r2 * cols + c]))) continue;
+      fn(j, cost);
+    }
   };
-  // the first run of road on the right side with a house behind it
-  let min = NaN,
-    max = NaN;
-  for (let x = 0.5; x <= CAPY_REACH; x += 0.5) {
-    if (clear(x) && houseBehind(x)) (max = x), Number.isNaN(min) && (min = x);
-    else if (!Number.isNaN(min)) break;
+  // 2. the biggest connected patch
+  const patch = new Int32Array(cols * rows).fill(-1);
+  let best = -1,
+    bestSize = 0;
+  for (let i = 0, id = 0; i < ok.length; i++) {
+    if (!ok[i] || patch[i] >= 0) continue;
+    const queue = [i];
+    patch[i] = id;
+    for (let q = 0; q < queue.length; q++) around(queue[q], (j) => patch[j] < 0 && ((patch[j] = id), queue.push(j)));
+    if (queue.length > bestSize) (best = id), (bestSize = queue.length);
+    id++;
   }
-  if (!(max - min >= 6)) return; // no such road in this town: it stays where it is
-  Object.assign(capyWalk, { on: true, min, max });
-  capy.mesh.position.z = z;
-  capy.setPose("walk");
+  if (bestSize < 40) return; // no room to stroll in this town: it stays where it is
+  const cells = [];
+  for (let i = 0; i < ok.length; i++) if (patch[i] === best) cells.push(i);
+  const inPatch = (x, z) => {
+    const c = Math.floor((x - W0) / CAPY_CELL),
+      r = Math.floor((z - Z0) / CAPY_CELL);
+    return c >= 0 && r >= 0 && c < cols && r < rows && patch[r * cols + c] === best;
+  };
+  // how far each cell is from the patch's edge (in cells): paths prefer the middle of the way
+  const edge = new Int32Array(cols * rows).fill(-1),
+    queue = [];
+  for (const i of cells) {
+    let border = false;
+    const c = i % cols,
+      r = (i - c) / cols;
+    for (const [dc, dr] of STEPS) {
+      const c2 = c + dc,
+        r2 = r + dr;
+      if (c2 < 0 || r2 < 0 || c2 >= cols || r2 >= rows || patch[r2 * cols + c2] !== best) border = true;
+    }
+    if (border) (edge[i] = 0), queue.push(i);
+  }
+  for (let q = 0; q < queue.length; q++) around(queue[q], (j) => patch[j] === best && edge[j] < 0 && ((edge[j] = edge[queue[q]] + 1), queue.push(j)));
+  // 3. stops spread over the patch, starting next to where it sits at first
+  const pos0 = capy.mesh.position;
+  const dist2 = (i, x, z) => {
+    const [cx, cz] = at(i % cols, Math.floor(i / cols));
+    return (cx - x) ** 2 + (cz - z) ** 2;
+  };
+  const roomy = cells.filter((i) => edge[i] >= 1); // stops off the very edge
+  const pool = roomy.length >= CAPY_STOPS ? roomy : cells;
+  const stops = [pool.reduce((a, i) => (dist2(i, pos0.x, pos0.z) < dist2(a, pos0.x, pos0.z) ? i : a))];
+  const near = pool.map((i) => dist2(i, ...at(stops[0] % cols, Math.floor(stops[0] / cols))));
+  while (stops.length < CAPY_STOPS) {
+    let k = 0;
+    for (let j = 1; j < pool.length; j++) if (near[j] > near[k]) k = j;
+    if (near[k] === 0) break;
+    stops.push(pool[k]);
+    const [sx, sz] = at(pool[k] % cols, Math.floor(pool[k] / cols));
+    for (let j = 0; j < pool.length; j++) near[j] = Math.min(near[j], dist2(pool[j], sx, sz));
+  }
+  // a loop through them: always on to the nearest one not yet visited, then home
+  const order = [stops.shift()];
+  while (stops.length) {
+    const [lx, lz] = at(order.at(-1) % cols, Math.floor(order.at(-1) / cols));
+    let k = 0;
+    for (let j = 1; j < stops.length; j++) if (dist2(stops[j], lx, lz) < dist2(stops[k], lx, lz)) k = j;
+    order.push(stops.splice(k, 1)[0]);
+  }
+  order.push(order[0]);
+  // shortest path between two cells, a bit dearer next to walls
+  const path = (from, to) => {
+    const cost = new Float64Array(cols * rows).fill(Infinity),
+      prev = new Int32Array(cols * rows).fill(-1),
+      done = new Uint8Array(cols * rows);
+    cost[from] = 0;
+    const heap = [[0, from]];
+    const push = (n) => {
+      heap.push(n);
+      for (let k = heap.length - 1; k > 0; ) {
+        const p = (k - 1) >> 1;
+        if (heap[p][0] <= heap[k][0]) break;
+        [heap[p], heap[k]] = [heap[k], heap[p]];
+        k = p;
+      }
+    };
+    const pop = () => {
+      const topN = heap[0],
+        last = heap.pop();
+      if (heap.length) {
+        heap[0] = last;
+        for (let k = 0; ; ) {
+          const l = 2 * k + 1,
+            r = l + 1;
+          let m = k;
+          if (l < heap.length && heap[l][0] < heap[m][0]) m = l;
+          if (r < heap.length && heap[r][0] < heap[m][0]) m = r;
+          if (m === k) break;
+          [heap[m], heap[k]] = [heap[k], heap[m]];
+          k = m;
+        }
+      }
+      return topN;
+    };
+    while (heap.length) {
+      const [d, i] = pop();
+      if (done[i]) continue;
+      done[i] = 1;
+      if (i === to) break;
+      around(i, (j, step) => {
+        if (patch[j] !== best) return;
+        const nd = d + step * (edge[j] < 2 ? 2.5 : 1);
+        if (nd < cost[j]) (cost[j] = nd), (prev[j] = i), push([nd, j]);
+      });
+    }
+    const cellsOnWay = [];
+    for (let i = to; i >= 0; i = prev[i]) cellsOnWay.push(i);
+    return cellsOnWay.reverse().map((i) => at(i % cols, Math.floor(i / cols)));
+  };
+  // straight lines wherever the whole line (and the body's width around it) stays in the patch
+  const clearLine = ([ax, az], [bx, bz]) => {
+    const len = Math.hypot(bx - ax, bz - az),
+      n = Math.ceil(len / 0.3);
+    const ox = len ? (-(bz - az) / len) * 0.6 : 0,
+      oz = len ? ((bx - ax) / len) * 0.6 : 0;
+    for (let k = 0; k <= n; k++) {
+      const x = ax + ((bx - ax) * k) / n,
+        z = az + ((bz - az) * k) / n;
+      if (!inPatch(x, z) || !inPatch(x + ox, z + oz) || !inPatch(x - ox, z - oz)) return false;
+    }
+    return true;
+  };
+  const straighten = (pts) => {
+    const out = [pts[0]];
+    for (let i = 0; i < pts.length - 1; ) {
+      let j = pts.length - 1;
+      while (j > i + 1 && !clearLine(pts[i], pts[j])) j--;
+      out.push(pts[j]);
+      i = j;
+    }
+    return out;
+  };
+  // the timeline of one round: walking legs and sniffing stops, in ms of walking time
+  const legs = [];
+  let t = 0,
+    facing = -1;
+  for (let s = 0; s < order.length - 1; s++) {
+    const pts = straighten(path(order[s], order[s + 1]));
+    for (let k = 0; k < pts.length - 1; k++) {
+      const [ax, az] = pts[k],
+        [bx, bz] = pts[k + 1];
+      const ms = (Math.hypot(bx - ax, bz - az) / CAPY_SPEED) * 1000;
+      if (ms < 1) continue;
+      if (Math.abs(bx - ax) > 0.05) facing = bx > ax ? 1 : -1; // straight up or down the screen: keeps its side
+      legs.push({ t, ms, ax, az, bx, bz, facing, walk: true });
+      t += ms;
+    }
+    const [x, z] = pts.at(-1);
+    legs.push({ t, ms: CAPY_SNIFF_MS, ax: x, az: z, bx: x, bz: z, facing, walk: false });
+    t += CAPY_SNIFF_MS;
+  }
+  if (!legs.length) return;
+  Object.assign(capyWalk, { on: true, legs, period: t });
+  console.debug(`capybara: ${bestSize} walkable cells, a ${Math.round(t / 1000)} s round, built in ${Math.round(performance.now() - t0)} ms`);
 }
 // The last feeding: it sat from `at` to `until` (room clock, ms); `lost` is all the sitting before that.
 let capyFed = { at: 0, until: 0, lost: 0 };
 const roomNow = () => Date.now() + clockOffset;
-// where the room's clock puts it: there and back at one speed, standing still on the clock while it sits
+// where the room's clock puts it on its round, standing still on the clock while it eats
 function walkCapy(t) {
   const eating = t >= capyFed.at && t < capyFed.until;
-  capy.setPose(eating ? "eat" : capyWalk.on ? "walk" : "sit");
-  if (!capyWalk.on) return;
+  if (!capyWalk.on) return capy.setPose(eating ? "eat" : "sit");
   const walked = (t < capyFed.at ? t : eating ? capyFed.at : t - (capyFed.until - capyFed.at)) - capyFed.lost;
-  const length = capyWalk.max - capyWalk.min;
-  const along = ((walked / 1000) * CAPY_SPEED) % (2 * length);
+  const { legs, period } = capyWalk;
+  const w = ((walked % period) + period) % period;
+  let lo = 0,
+    hi = legs.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (legs[mid].t <= w) lo = mid;
+    else hi = mid - 1;
+  }
+  const leg = legs[lo],
+    f = Math.min(1, (w - leg.t) / leg.ms);
   const m = capy.mesh.position;
-  m.x = capyWalk.min + (along < length ? along : 2 * length - along);
-  if (!(Math.abs(m.x - capyWalk.yAt) < 0.5)) m.y = groundHeight((capyWalk.yAt = m.x), m.z); // follows the ground, checked every half unit
-  capy.setFacing(along < length ? 1 : -1);
+  m.x = leg.ax + (leg.bx - leg.ax) * f;
+  m.z = leg.az + (leg.bz - leg.az) * f;
+  // follows the ground, checked every half unit
+  if (!capyWalk.yAt || Math.hypot(m.x - capyWalk.yAt[0], m.z - capyWalk.yAt[1]) > 0.5) {
+    capyWalk.yAt = [m.x, m.z];
+    m.y = groundHeight(m.x, m.z);
+  }
+  capy.setFacing(leg.facing);
+  capy.setPose(eating ? "eat" : leg.walk ? "walk" : "sit");
 }
 // the room says it was fed (to everyone at once), or on joining says how things stand (no phrase)
 function capyWasFed(m) {
