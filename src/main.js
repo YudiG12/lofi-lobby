@@ -183,7 +183,9 @@ const MOBILE = matchMedia("(pointer: coarse)").matches;
 const renderer = new THREE.WebGLRenderer({ antialias: false });
 renderer.setPixelRatio(1);
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+// Hard shadow edges: one depth test a pixel instead of PCF's filtered taps. They suit the pixel art, and
+// reading the lamps' shadows was most of a night frame: ~25 fps instead of ~18 on an integrated card.
+renderer.shadowMap.type = THREE.BasicShadowMap;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 document.body.appendChild(renderer.domElement);
 
@@ -681,11 +683,10 @@ function createLampPost(x, z) {
   light.position.set(0.9, 7.6, 0); // a bit out from the pole, under the arm
   light.castShadow = true;
   // a point light's shadow is 6 maps (one per cube face), colour and depth: ~13 MB of GPU memory
-  // each at 512, ~50 MB at 1024 for no visible gain once the soft edge (radius) blurs it
+  // each at 512, ~50 MB at 1024 for no visible gain
   light.shadow.mapSize.set(512, 512);
   light.shadow.bias = -0.0005;
   light.shadow.normalBias = 0.05;
-  light.shadow.radius = 4;
   const glow = new THREE.Sprite(
     new THREE.SpriteMaterial({
       map: glowTexture,
