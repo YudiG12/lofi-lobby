@@ -42,6 +42,9 @@
 //                                                 (accounts, friends and private chat: worker/social.js; players and chat also carry n)
 //                     { t: "contrib", id, prs }   (that player is a contributor with prs merged pull requests;
 //                                                  players and chat also carry prs)
+//                     { t: "fireworks", at, prs: [n], more }   (a deploy brought these merged pull requests: a show from
+//                                                  at, room clock; at most 5 PR numbers in prs, more = the others; never a
+//                                                  login (ADR 014). Also sent on join while it runs. worker/deploy-prs.js)
 //                     { t: "history", messages: [{ id, name, text, at }] } (on join)
 //                     { t: "notice", msg } | { t: "rename", name } (your name was refused)
 //                     { t: "who", id, tag, names, sameTag } (admin only)
@@ -169,6 +172,7 @@ function safeClose(ws, code = 1000, reason = "") {
 import { badName, cleanChat, hasLink, normalize } from "./moderation.js";
 import { installSocial } from "./social.js";
 import { Accounts, primaryEmail } from "./accounts.js";
+import { deployPrs, showOf, SHOW_MAX_MS } from "./deploy-prs.js";
 
 const DIRS = ["down", "up", "left", "right"];
 const cleanText = (s, max) =>
@@ -571,6 +575,9 @@ export class Room {
     if (radio) server.send(JSON.stringify({ t: "radio", command: radio }));
     const capy = await this.state.storage.get("capy");
     if (capy) server.send(JSON.stringify({ t: "capy", ...capy }));
+    await this.checkDeploy();
+    const show = await this.state.storage.get("fireworks");
+    if (show && Date.now() < show.at + SHOW_MAX_MS) server.send(JSON.stringify({ t: "fireworks", ...show }));
     const cats = await this.state.storage.get("cats");
     if (cats && typeof cats === "object") {
       for (const id of CAT_IDS) {
@@ -937,6 +944,7 @@ export class Room {
     if (!GH_REPO.test(repo)) return;
     this.ghTriedAt = Date.now();
     const counts = {};
+    const merged = []; // the merged PRs' numbers, for the deploy's fireworks
     for (let page = 1; page <= GH_PAGES; page++) {
       const res = await fetch(`${GH_API}/repos/${repo}/pulls?state=closed&per_page=100&page=${page}`, { headers });
       if (!res.ok) return;
@@ -944,11 +952,15 @@ export class Room {
       if (!Array.isArray(list)) return;
       for (const pr of list) {
         const login = typeof pr?.user?.login === "string" ? pr.user.login.toLowerCase() : "";
-        if (pr?.merged_at && GH_LOGIN.test(login)) counts[login] = (counts[login] || 0) + 1;
+        if (pr?.merged_at && GH_LOGIN.test(login)) {
+          counts[login] = (counts[login] || 0) + 1;
+          merged.push(pr.number);
+        }
       }
       if (list.length < 100) break;
     }
     await this.state.storage.put("contributors", { counts, at: Date.now(), v: this.env.VERSION?.id || "" });
+    await this.celebrateDeploy(merged);
     // players already in the room get their new count
     for (const ws of this.openSockets()) {
       const p = ws.deserializeAttachment();
@@ -957,6 +969,34 @@ export class Room {
       ws.serializeAttachment(p);
       this.broadcast({ t: "contrib", id: p.id, prs: p.prs });
     }
+  }
+
+  // A new deploy: remember when the room first saw it (the fireworks are only for a read soon after) and
+  // read the merged pull requests, even if nobody here logged in with GitHub. On every connection and on
+  // the heartbeat alarm: Cloudflare keeps a room that is in use on its old code for up to 5 minutes after
+  // a deploy, and the hibernated WebSockets survive the switch, so the tabs already here may never
+  // reconnect; the alarm (every minute while someone is online) still notices the new version.
+  async checkDeploy() {
+    const version = this.env.VERSION?.id || "";
+    const seen = await this.state.storage.get("deploy-seen");
+    if (seen?.v !== version) await this.state.storage.put("deploy-seen", { v: version, at: Date.now() });
+    await this.contributors().catch(() => {});
+  }
+
+  // Fireworks for the pull requests a new deploy brought (worker/deploy-prs.js): only the first good read
+  // after a new version moves the list of celebrated PRs on. The list is per repository, so pointing
+  // GITHUB_REPO somewhere else starts over instead of celebrating that repository's whole history.
+  async celebrateDeploy(merged) {
+    const v = this.env.VERSION?.id || "";
+    const now = Date.now();
+    const key = "deploy-prs:" + this.env.GITHUB_REPO;
+    const seen = await this.state.storage.get("deploy-seen");
+    const { celebrate, stored } = deployPrs(await this.state.storage.get(key), merged, v, seen?.v === v ? seen.at : now, now);
+    await this.state.storage.put(key, stored);
+    if (!celebrate.length) return;
+    const show = showOf(celebrate, now);
+    await this.state.storage.put("fireworks", show);
+    this.broadcast({ t: "fireworks", ...show });
   }
 
   // a refused name becomes a random trainer name, and the player is told so it shows the same
@@ -1104,6 +1144,7 @@ export class Room {
     }
     for (const ws of stale) this.leave(ws, 1000, "heartbeat timeout");
     await this.maybeStartCatRide(Date.now());
+    await this.checkDeploy();
     if (this.openSockets().length > 0) await this.state.storage.setAlarm(Date.now() + HEARTBEAT_CHECK_MS);
   }
   // Server-only cat-on-head lottery: picks a random online player on the heartbeat alarm,

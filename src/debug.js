@@ -3,6 +3,7 @@
 // Loaded strictly inside `if (import.meta.env.DEV)` so production builds emit zero debug UI/CSS.
 import { createCatDebugModule } from "./cat-debug.js";
 import { createCycleDebugModule } from "./cycle-debug.js";
+import { createFireworksDebugModule } from "./fireworks-debug.js";
 
 const HUB_CSS = `
   #debug-panel { left: 28px; top: 200px; width: 280px; padding: 12px 14px; font-size: 11px; line-height: 1.45; color: #C4C6D4; z-index: 4; }
@@ -220,6 +221,7 @@ export function setupDebug(app) {
     getLook,
     getRainAmount,
     getLampIntensity,
+    playFireworks,
   } = app;
 
   const toggleDebugRide = () => {
@@ -278,6 +280,7 @@ export function setupDebug(app) {
       getRainAmount,
       getLampIntensity,
     }),
+    createFireworksDebugModule({ playFireworks }),
   ]);
 
   // Wrap renderer.render in DEV so frame timing, cat CPU timing, and NavGrid rebuild checks

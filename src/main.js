@@ -5,6 +5,8 @@ import { connectRadioToServer, receiveCommand } from "./radio.js";
 import { setupSocial } from "./social.js";
 import { createBoard, setupWall } from "./board.js";
 import { createStones } from "./stones.js";
+import { createFireworks } from "./fireworks.js";
+import { MAX_ROUNDS } from "./fireworks-plan.js";
 import { addSitFrames, sitFramePos } from "./ground-sit.js";
 import { createCapybara, CAPY_NEAR, CAPY_RADIUS, PHRASES as CAPY_PHRASES } from "./capybara.js";
 import { createOwl } from "./owl.js";
@@ -3535,6 +3537,7 @@ function connect() {
     else if (m.t === "note-del") wall.onNoteDeleted(m.id, m.total);
     else if (m.t === "note-like") wall.onNoteLiked(m.id, m.likes);
     else if (m.t === "capy") capyWasFed(m);
+    else if (m.t === "fireworks") isShow(m) && fireworks.play(m);
     else if (m.t === "stone") stoneThrown(m);
     else if (m.t === "cat") catWasFed(m);
     else if (m.t === "cat-ride") catRideUpdate(m);
@@ -4278,6 +4281,37 @@ function updateCapy() {
 // You plan the throw (where the stone touches the water), see it at once, and the room sends it to
 // everyone; others animate the same path from your hand (src/stones.js).
 const stones = createStones(scene, { surfaceY: (x, z) => topHeight(x, z), camera });
+
+// ---- Deploy fireworks ----
+// After a deploy the room sends the new pull requests' numbers: a short show by the room's clock, the
+// same second in every tab (src/fireworks.js, ADR 016). While it runs the light dims toward the night
+// look, so it shows by day too; the player's own day/night choice stays in currentLook.
+const fireworks = createFireworks();
+scene.add(fireworks.points);
+const dimLook = makeLook(NIGHT_SPEC);
+let dimmed = false;
+// the room is the only sender, but a malformed message must not throw
+const isShow = (m) =>
+  Number.isFinite(m.at) &&
+  Array.isArray(m.prs) &&
+  m.prs.length <= MAX_ROUNDS &&
+  m.prs.every((n) => Number.isInteger(n) && n > 0) &&
+  Number.isInteger(m.more ?? 0) &&
+  (m.more ?? 0) >= 0;
+// after the camera moved, and after updateTimeOfDay and updateRain (both apply currentLook)
+function updateFireworks() {
+  const now = roomNow();
+  fireworks.update(now, pos, camera);
+  const d = fireworks.dim(now);
+  if (d > 0) {
+    lerpLook(dimLook, currentLook, NIGHT_LOOK, d);
+    applyLook(dimLook);
+    dimmed = true;
+  } else if (dimmed) {
+    applyLook(currentLook);
+    dimmed = false;
+  }
+}
 const STONE_NEAR = 4.5; // how close to the pond you must be
 const STONE_EVERY_MS = 1200;
 let lastStone = 0;
@@ -4547,6 +4581,7 @@ if (import.meta.env.DEV) {
       getLook: () => currentLook,
       getRainAmount: () => rainAmount,
       getLampIntensity: () => lampLights[0]?.intensity ?? 0,
+      playFireworks: (prs, more = 0) => fireworks.play({ at: roomNow() + 500, prs, more }),
     });
   });
 }
@@ -4647,6 +4682,7 @@ function loop() {
   shadow.visible = mySeat < 0; // would float under the hanging feet
   camera.position.set(pos.x + slide.x, pos.y + 38, pos.z + 42 + slide.z);
   camera.lookAt(pos.x + slide.x, pos.y + 1, pos.z + slide.z);
+  updateFireworks();
   updateCapy();
   owl.update(performance.now(), pos);
   owl.mesh.rotation.set(camera.rotation.x * 0.5, 0, 0); // faces the camera like the trainers
