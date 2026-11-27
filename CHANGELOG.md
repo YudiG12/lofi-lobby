@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- **A forest around the town**: past the town's edges there used to be only the night sky's dark blue, plain to see from the pond, the rides or anywhere near an edge. Now the town's grass goes on, and its pines stand on in rows to the north, east and west, into the fog. The south side, toward the camera, stays grass, so no tree stands between the camera and the town.
 - **Accounts**: press the GitHub button in the top card, or **log in** on the start screen, and connect GitHub (the only way to make one). Your account gets a number in the order accounts were made: the game's owner is #0, the next one #1, and so on. Nobody else sees your GitHub login, only the number. `/github` still works, and whoever had logged in for the contributor badge gets an account the next time they open the game.
 - **Profile**: click a name, over a trainer or in the chat (yours too), to open that player's profile: their trainer, a green dot when they are online, their account number, their merged pull requests and their medals.
 - A guest is told about the Founding member medal while it can still be had (until the end of November 2026): on the start screen, and in the room on a card that can be closed (it is back the next time the game is opened).
