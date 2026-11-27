@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader.js";
 import { connectRadioToServer, receiveCommand } from "./radio.js";
 import { createBoard, setupWall } from "./board.js";
+import { createHolidayDecor, inHolidaySeason } from "./holidays.js";
 import { createStones } from "./stones.js";
 import { addSitFrames, sitFramePos } from "./ground-sit.js";
 import { createCapybara, CAPY_NEAR, CAPY_RADIUS, PHRASES as CAPY_PHRASES } from "./capybara.js";
@@ -42,6 +43,9 @@ try {
   CAP = capOf(Number(localStorage.getItem("cap") ?? NaN));
 } catch {}
 const myCap = () => CAP ?? SHEET_CAP[GENDER];
+// In the snow every trainer wears a knit beanie instead of the cap (same colour, with a cuff and a
+// pom-pom); the cap comes back when it stops. Set by the weather, read when a sheet is drawn.
+let BEANIES = false;
 window.CAPS = CAPS; // the start screen draws its swatches from these
 window.myCap = () => myCap();
 // my trainer's front frame, for the start screen's preview
@@ -64,7 +68,7 @@ const EYES_FROM_ROW = 14; // no eye is higher than this on a frame (lone cap pix
 function recolorCap(d, width, gender, cap) {
   const from = CAPS[SHEET_CAP[gender]].tones,
     to = CAPS[cap]?.tones;
-  if (!to || cap === SHEET_CAP[gender]) return;
+  if (!to || (cap === SHEET_CAP[gender] && !BEANIES)) return;
   const map = Object.fromEntries(from.map((t, i) => [t.join(","), to[i]]));
   for (const cfg of [CROP[gender], RUN_CROP[gender]])
     for (const dir of Object.keys(cfg.rows))
@@ -94,7 +98,51 @@ function recolorCap(d, width, gender, cap) {
             if (!eyeWhite) paint.push([(yy * width + xx) * 4, to]);
           }
         for (const [i, to] of paint) d.set(to, i); // after looking, so a painted pixel doesn't change its neighbours' answer
+        if (BEANIES) knitBeanie(d, width, y, paint, CAPS[cap].tones, gender === "male");
       }
+}
+// Turns one frame's cap into a beanie: the brim that sticks out past the crown goes (the male's cap
+// seen from the side), the bottom two rows become a ribbed cuff, and a pom-pom sits on top.
+// cells: the cap's pixels on this frame ([index, tone]), already in the player's colour.
+function knitBeanie(d, width, frameTop, cells, tones, brim) {
+  if (!cells.length) return;
+  const at = (xx, yy) => (yy * width + xx) * 4;
+  const px = cells.map(([i]) => [(i / 4) % width, Math.floor(i / 4 / width)]);
+  const top = Math.min(...px.map((q) => q[1]));
+  const bottom = Math.max(...px.map((q) => q[1]));
+  // the crown's columns, a few rows up from the bottom: lower down, whatever reaches past them is brim
+  const crownRow = Math.max(top, bottom - 3);
+  const crown = px.filter((q) => q[1] === crownRow).map((q) => q[0]);
+  const left = Math.min(...crown) - 1,
+    right = Math.max(...crown) + 1;
+  const dark = (i) => d[i + 3] > 0 && d[i] < 70 && d[i + 1] < 70 && d[i + 2] < 70;
+  let keep = px;
+  if (brim) {
+    keep = px.filter(([xx, yy]) => yy <= crownRow || (xx >= left && xx <= right));
+    for (const [xx, yy] of px) {
+      if (yy <= crownRow || (xx >= left && xx <= right)) continue;
+      d[at(xx, yy) + 3] = 0;
+      // and the brim's outline above and below it
+      for (const yy2 of [yy - 1, yy + 1]) if (dark(at(xx, yy2))) d[at(xx, yy2) + 3] = 0;
+    }
+  }
+  // ribbed cuff: the two lowest rows, light and shade in alternate columns
+  const low = Math.max(...keep.map((q) => q[1]));
+  for (const [xx, yy] of keep) if (yy >= low - 1) d.set(xx % 2 ? tones[1] : tones[0], at(xx, yy));
+  // pom-pom: a small cream ball (red on a white beanie) over the middle of the top, outlined like the sprite
+  const topRow = keep.filter((q) => q[1] === top).map((q) => q[0]);
+  const cx = Math.round((Math.min(...topRow) + Math.max(...topRow)) / 2);
+  const outline = [40, 40, 48, 255]; // the sprite's dark outline
+  const ball = tones === CAPS[4].tones ? [CAPS[0].tones[0], CAPS[0].tones[1]] : [[248, 244, 232], [208, 204, 196]];
+  const b = top - 2; // the ball's top row, sitting on the beanie's crown
+  if (b - 1 < frameTop) return;
+  const cellsBall = [[cx - 1, b, 0], [cx, b, 0], [cx - 1, b + 1, 1], [cx, b + 1, 0], [cx + 1, b + 1, 1], [cx + 1, b, 0]];
+  for (const [xx, yy] of cellsBall)
+    for (const [ox, oy] of [[0, -1], [-1, 0], [1, 0], [0, 1]]) {
+      const n = at(xx + ox, yy + oy);
+      if (d[n + 3] === 0) d.set(outline, n);
+    }
+  for (const [xx, yy, shade] of cellsBall) d.set([...ball[shade], 255], at(xx, yy));
 }
 // configured sheets that failed to load (missing file): use the original
 const failedSheets = new Set();
@@ -246,6 +294,7 @@ const waterMaterial = new THREE.MeshPhongMaterial({
 });
 waterMaterial.onBeforeCompile = (shader) => {
   shader.uniforms.uTime = waterUniforms.uTime;
+  shader.uniforms.uIce = snowCoverUniform; // the pond freezes as the snow covers the town
   shader.vertexShader = shader.vertexShader
     .replace("#include <common>", "#include <common>\nvarying vec3 vWorld;")
     .replace(
@@ -257,8 +306,21 @@ waterMaterial.onBeforeCompile = (shader) => {
       "#include <common>",
       `#include <common>
 uniform float uTime;
+uniform float uIce;
 varying vec3 vWorld;
 float wave(vec2 p, vec2 d, float f, float v) { return sin(dot(p, d) * f + uTime * v); }`,
+    )
+    // ice: pale blue, with long drifts of frost and snow over it, no longer see-through
+    .replace(
+      "#include <color_fragment>",
+      `#include <color_fragment>
+float drift = sin(vWorld.x * 0.55 + sin(vWorld.z * 0.4) * 2.2) * 0.5 + 0.5;
+float flecks = sin(vWorld.x * 3.1 + vWorld.z * 1.7) * sin(vWorld.z * 2.6 - vWorld.x * 0.9);
+// thin pale cracks where two slow waves cross zero
+float crack = (1.0 - smoothstep(0.0, 0.035, abs(sin(vWorld.x * 0.8 + vWorld.z * 0.35) + 0.6 * sin(vWorld.z * 1.1 - vWorld.x * 0.2))));
+vec3 ice = mix(vec3(0.36, 0.58, 0.80), vec3(0.82, 0.89, 0.97), smoothstep(0.55, 1.0, drift) * 0.45 + smoothstep(0.7, 1.0, flecks) * 0.15 + crack * 0.5);
+diffuseColor.rgb = mix(diffuseColor.rgb, ice, uIce * 0.9);
+diffuseColor.a = mix(diffuseColor.a, 1.0, uIce);`,
     )
     // perturb the normal with waves in several directions
     .replace(
@@ -267,7 +329,7 @@ float wave(vec2 p, vec2 d, float f, float v) { return sin(dot(p, d) * f + uTime 
 vec2 pa = vWorld.xz * 1.6; // wave size: higher = finer
 float dx = wave(pa, vec2(1.0, 0.3), 1.7, 1.6) * 0.5 + wave(pa, vec2(-0.4, 1.0), 2.9, 2.3) * 0.3 + wave(pa, vec2(0.7, -0.8), 5.3, 3.1) * 0.15;
 float dz = wave(pa, vec2(0.2, 1.0), 2.1, 1.4) * 0.5 + wave(pa, vec2(1.0, -0.5), 3.7, 2.7) * 0.3 + wave(pa, vec2(-0.9, -0.6), 6.1, 3.5) * 0.15;
-normal = normalize(normal + vec3(dx, 0.0, dz) * 0.18);`,
+normal = normalize(normal + vec3(dx, 0.0, dz) * 0.18 * (1.0 - uIce)); // ice: still, flat`,
     )
     // light bands and sparkle added to the final color
     .replace(
@@ -275,7 +337,7 @@ normal = normalize(normal + vec3(dx, 0.0, dz) * 0.18);`,
       `#include <dithering_fragment>
 float band = smoothstep(0.75, 1.0, wave(vWorld.xz, vec2(0.6, 0.8), 0.9, 0.8) * wave(vWorld.xz, vec2(-0.8, 0.5), 1.3, 1.1));
 float sparkle = pow(max(0.0, wave(vWorld.xz, vec2(1.0, 0.2), 7.0, 4.0) * wave(vWorld.xz, vec2(-0.3, 1.0), 6.0, 3.3)), 12.0);
-gl_FragColor.rgb += vec3(0.10, 0.25, 0.6) * band * 0.06 + vec3(0.7, 0.8, 1.0) * sparkle * 0.07;`,
+gl_FragColor.rgb += (vec3(0.10, 0.25, 0.6) * band * 0.06 + vec3(0.7, 0.8, 1.0) * sparkle * 0.07) * (1.0 - uIce);`,
     );
 };
 
@@ -315,6 +377,29 @@ function prepareTown(fbx) {
     placeBenches();
     placeFireflies();
     board.position.y = groundHeight(board.position.x, board.position.z);
+    if (holidays) {
+      // the tree and the snowman stand on open grass, clear of benches, posts, the board and the
+      // capybara's road
+      holidays.decorate(townMeshes, (x0, z0, r, test = () => true) => {
+        for (let d = 0; d <= 8; d += 0.5)
+          for (let a = 0; a < 16; a++) {
+            const x = x0 + Math.cos((a / 16) * Math.PI * 2) * d,
+              z = z0 + Math.sin((a / 16) * Math.PI * 2) * d;
+            if (
+              isOpen(x, z, Math.min(r, 2)) &&
+              benches.every((b) => Math.hypot(b.x - x, b.z - z) > r + 3) &&
+              lampPosts.every((l) => Math.hypot(l.position.x - x, l.position.z - z) > r + 1.5) &&
+              Math.hypot(board.position.x - x, board.position.z - z) > r + 4.5 &&
+              (x < 0 || Math.abs(z - CAPY_ROAD_Z) > r + 1.5) && // the capybara walks the right side
+              test(x, z)
+            )
+              return [x, groundHeight(x, z), z];
+            if (d === 0) break;
+          }
+        return null;
+      }, { lamps: lampPosts, board });
+      solidBoxes.push(...holidays.solids);
+    }
     placeCapybara();
     placeCapyWalk();
     markLampShadowsStale(); // the town, the lamps and everything around them just took their places
@@ -557,6 +642,8 @@ const lampPostSolids = lampPosts.flatMap((p) => p.children.filter((c) => c.isMes
 // message wall: a cork board under the lamp light, in front of the lower-left house's window
 const BOARD_AT = [-7.5, 15];
 const board = createBoard(scene);
+// holiday decorations on the houses (late November to Twelfth Night), put up when the town loads
+const holidays = inHolidaySeason() ? createHolidayDecor(scene) : null;
 board.position.set(BOARD_AT[0], 0, BOARD_AT[1]);
 
 // ---- Benches ----
@@ -764,16 +851,17 @@ const mixColor = (target, [a, b], t) => target.copy(a).lerp(b, t);
 const OVERCAST_SKY = new THREE.Color("#7d8794");
 const OVERCAST_LIGHT = new THREE.Color("#a3adbb");
 let rainAmount = 0; // 0 = dry, 1 = full rain (eased in the loop)
+let snowAmount = 0; // 0 = no snow falling, 1 = full snowfall (eased in the loop)
 // t: 0 = night, 1 = day
 function applyLook(t) {
   mixColor(scene.background, LOOK.background, t);
-  // overcast: by day the rain greys the sky; at night it only dims a little
-  const overcast = rainAmount * t;
+  // overcast: by day the rain greys the sky (snow a little less); at night it only dims a little
+  const overcast = Math.max(rainAmount, 0.6 * snowAmount) * t;
   scene.background.lerp(OVERCAST_SKY, 0.65 * overcast);
   scene.fog.color.copy(scene.background);
   // rain closes the fog in; at night it is always closed in, rain or not, so the town stays
   // dark around the lamps' pools of light
-  const closed = Math.max(rainAmount, 1 - t);
+  const closed = Math.max(rainAmount, 0.7 * snowAmount, 1 - t);
   scene.fog.near = 50 - 12 * closed;
   scene.fog.far = 140 - 22 * closed;
   mixColor(skyLight.color, LOOK.skyTop, t);
@@ -819,12 +907,16 @@ addEventListener("keydown", (e) => {
 // Rain: thin streaks in a box that follows the player, splashes where they land (rings on the
 // pond), shiny wet ground and a little fog.
 // Only for you, remembered (like day/night). Nothing goes to the server.
-let isRaining = false;
-try { isRaining = localStorage.getItem("weather") === "rain"; } catch {}
-if (isRaining) {
-  rainAmount = 1;
-  applyLook(dayAmount); // first frame already overcast
-}
+// R goes through the weather: clear, rain, snow.
+const WEATHERS = ["clear", "rain", "snow"];
+let weather = "clear";
+try { weather = WEATHERS.includes(localStorage.getItem("weather")) ? localStorage.getItem("weather") : "clear"; } catch {}
+let isRaining = weather === "rain";
+let isSnowing = weather === "snow";
+if (isRaining) rainAmount = 1;
+if (isSnowing) snowAmount = 1;
+BEANIES = isSnowing;
+if (isRaining || isSnowing) applyLook(dayAmount); // first frame already overcast
 const RAIN = { count: MOBILE ? 600 : 1800, radius: 40, height: 40, fall: 38, wind: 5 };
 const rainDrops = new Float32Array(RAIN.count * 3); // x, y, z of each drop's head
 const rainFloor = new Float32Array(RAIN.count); // where each drop stops (ground, roof or water)
@@ -961,6 +1053,7 @@ function prepareWet() {
             .replace("#include <lights_fragment_end>", "#include <lights_fragment_end>\nreflectedLight.directSpecular *= smoothstep(0.9, 0.98, abs(vUp));");
         };
         wetMaterials.push({ m: p, base: m.color.clone() });
+        if (snowReady) addSnowCover(p);
         swapped.set(m, p);
       }
       return swapped.get(m);
@@ -1032,15 +1125,29 @@ function updateRain(dt) {
   splashGeometry.attributes.size.needsUpdate = true;
 }
 const rainBtn = document.querySelector("#rain");
+const RAIN_ICON = rainBtn.querySelector("svg").innerHTML;
+const SNOW_ICON =
+  '<path d="M12 2v20M4.9 7l14.2 10M4.9 17 19.1 7"/><path d="m9 4 3 2 3-2M9 20l3-2 3 2"/>';
+// the button shows the weather you have (the cloud unlit when it's clear) and says what comes next
 function drawRain() {
-  const label = isRaining ? "stop the rain" : "make it rain";
-  rainBtn.classList.toggle("on", isRaining);
+  const label = { clear: "make it rain", rain: "make it snow", snow: "clear the sky" }[weather];
+  rainBtn.classList.toggle("on", weather !== "clear");
   rainBtn.setAttribute("aria-label", label);
+  if (rainBtn.dataset.icon !== weather) {
+    rainBtn.dataset.icon = weather;
+    rainBtn.querySelector("svg").innerHTML = isSnowing ? SNOW_ICON : RAIN_ICON;
+  }
 }
 function toggleRain() {
-  isRaining = !isRaining;
-  try { localStorage.setItem("weather", isRaining ? "rain" : "clear"); } catch {}
+  weather = WEATHERS[(WEATHERS.indexOf(weather) + 1) % WEATHERS.length];
+  isRaining = weather === "rain";
+  isSnowing = weather === "snow";
+  try { localStorage.setItem("weather", weather); } catch {}
   drawRain();
+  if (BEANIES !== isSnowing) {
+    BEANIES = isSnowing;
+    redrawTrainers(); // beanies on (or caps back) for everyone you see
+  }
 }
 drawRain();
 rainBtn.addEventListener("click", (e) => {
@@ -1051,6 +1158,139 @@ addEventListener("keydown", (e) => {
   const typing = ["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName);
   if (!typing && !e.repeat && !e.ctrlKey && !e.metaKey && e.key.toLowerCase() === "r") toggleRain();
 });
+
+// ---- Snow ----
+// Soft flakes drifting down in a box that follows the player (like the rain), and a white cover
+// that builds up on everything facing up (ground, roofs, tree tops, benches, lamp posts) while it
+// snows and melts away after; the pond freezes over with it. Only for you, remembered with the rest of the weather. Nothing goes to the server.
+const SNOW = { count: MOBILE ? 500 : 1400, radius: 40, height: 34, fall: 3.2, sway: 0.9, wind: 0.8 };
+const flakePos = new Float32Array(SNOW.count * 3);
+const flakeFloor = new Float32Array(SNOW.count).fill(-1e3); // where each flake lands
+const flakeSpeed = new Float32Array(SNOW.count);
+const flakePhase = new Float32Array(SNOW.count);
+const flakeSize = new Float32Array(SNOW.count);
+for (let i = 0; i < SNOW.count; i++) {
+  flakePos[i * 3] = (Math.random() * 2 - 1) * SNOW.radius;
+  flakePos[i * 3 + 1] = Math.random() * SNOW.height;
+  flakePos[i * 3 + 2] = (Math.random() * 2 - 1) * SNOW.radius;
+  flakeSpeed[i] = 0.7 + Math.random() * 0.6;
+  flakePhase[i] = Math.random() * Math.PI * 2;
+  flakeSize[i] = 0.18 + Math.random() * 0.22; // world units
+}
+const snowGeometry = new THREE.BufferGeometry();
+snowGeometry.setAttribute("position", new THREE.BufferAttribute(flakePos, 3).setUsage(THREE.DynamicDrawUsage));
+snowGeometry.setAttribute("size", new THREE.BufferAttribute(flakeSize, 1));
+const snowUniforms = { uOpacity: { value: 0 }, uColor: { value: new THREE.Color("#ffffff") }, uPx: { value: 400 } };
+const snowMaterial = new THREE.ShaderMaterial({
+  uniforms: snowUniforms,
+  transparent: true,
+  depthWrite: false,
+  vertexShader: `attribute float size; uniform float uPx;
+    void main() {
+      vec4 mv = modelViewMatrix * vec4(position, 1.0);
+      // world size, like a real flake; capped so the ones right by the camera don't turn into blobs
+      gl_PointSize = min(size * projectionMatrix[1][1] * uPx / -mv.z, 7.0);
+      gl_Position = projectionMatrix * mv;
+    }`,
+  fragmentShader: `uniform float uOpacity; uniform vec3 uColor;
+    void main() {
+      float d = length(gl_PointCoord * 2.0 - 1.0);
+      float a = smoothstep(1.0, 0.35, d) * uOpacity; // soft round flake
+      if (a < 0.01) discard;
+      gl_FragColor = vec4(uColor, a);
+    }`,
+});
+const snowMesh = new THREE.Points(snowGeometry, snowMaterial);
+snowMesh.frustumCulled = false; // positions move every frame
+snowMesh.visible = false;
+scene.add(snowMesh);
+
+// The cover: every town material whitens where its surface faces up, by uSnow (0..1).
+let snowCover = isSnowing ? 1 : 0; // builds up slowly while it snows, melts after
+const snowCoverUniform = { value: snowCover };
+let snowReady = false;
+function addSnowCover(m) {
+  if (!m || m === waterMaterial || m.userData.snow) return;
+  m.userData.snow = true;
+  const before = m.onBeforeCompile;
+  m.onBeforeCompile = (sh, r) => {
+    before?.call(m, sh, r);
+    sh.uniforms.uSnow = snowCoverUniform;
+    sh.vertexShader = sh.vertexShader
+      .replace("#include <common>", "#include <common>\nvarying float vSnowUp; varying vec3 vSnowPos;")
+      .replace("#include <beginnormal_vertex>", "#include <beginnormal_vertex>\nvSnowUp = normalize((modelMatrix * vec4(objectNormal, 0.0)).xyz).y;")
+      .replace("#include <begin_vertex>", "#include <begin_vertex>\nvSnowPos = (modelMatrix * vec4(transformed, 1.0)).xyz;");
+    sh.fragmentShader = sh.fragmentShader
+      .replace("#include <common>", "#include <common>\nuniform float uSnow; varying float vSnowUp; varying vec3 vSnowPos;")
+      .replace("#include <color_fragment>", `#include <color_fragment>
+        // flat tops (ground, roofs, seats) go all white; slopes (the pines' branches, the mailbox
+        // tops) get chunky patches, like snow caught on the branches. Each patch also builds up and
+        // melts at its own moment, so the cover comes and goes unevenly.
+        float snowSpeck = fract(sin(dot(floor(vSnowPos.xz * 1.6 + vSnowPos.y * 0.9), vec2(12.9898, 78.233))) * 43758.5453);
+        float snowFlat = smoothstep(0.8, 0.95, vSnowUp);
+        float snowHere = smoothstep(0.15, 0.6, vSnowUp) * mix(mix(0.3, 1.0, step(0.35, snowSpeck)), 1.0, snowFlat);
+        float snowNow = clamp((uSnow - snowSpeck * 0.3) / 0.7, 0.0, 1.0);
+        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.92, 0.94, 0.98), snowNow * snowHere);`);
+  };
+  const key = m.customProgramCacheKey.bind(m);
+  m.customProgramCacheKey = () => key() + "|snow";
+  m.needsUpdate = true;
+}
+function prepareSnow() {
+  if (snowReady || !townMeshes.length) return;
+  snowReady = true;
+  for (const o of townMeshes) (Array.isArray(o.material) ? o.material : [o.material]).forEach(addSnowCover);
+  // the benches' slats and the iron of the benches and lamp posts (tops of the lanterns, armrests)
+  [woodLight, woodDark, ironMaterial].forEach(addSnowCover);
+  // the message board's roof and frame
+  board.traverse((o) => o.isMesh && addSnowCover(o.material));
+  holidays?.materials.forEach(addSnowCover); // a little snow on the wreaths and the garland
+}
+
+function updateSnow(dt) {
+  const target = isSnowing ? 1 : 0;
+  if (snowAmount !== target) {
+    snowAmount += Math.sign(target - snowAmount) * Math.min(dt * 0.5, Math.abs(target - snowAmount));
+    applyLook(dayAmount);
+  }
+  // about a minute to whiten the town, half that to melt
+  const cover = isSnowing ? 1 : 0;
+  if (snowCover !== cover)
+    snowCover += Math.sign(cover - snowCover) * Math.min(dt * (isSnowing ? 1 / 60 : 1 / 30), Math.abs(cover - snowCover));
+  if (snowCover > 0 || isSnowing) prepareSnow();
+  snowCoverUniform.value = snowCover;
+  snowMesh.visible = snowAmount > 0;
+  if (!snowMesh.visible) return;
+  snowUniforms.uOpacity.value = 0.9 * snowAmount;
+  snowUniforms.uColor.value.set(dayAmount > 0.5 ? "#ffffff" : "#d6def0");
+  snowUniforms.uPx.value = renderer.domElement.height * 0.5;
+  surfaceBudget = Math.max(surfaceBudget, 40);
+  const { radius, height, fall, sway, wind } = SNOW;
+  const t = waterUniforms.uTime.value;
+  for (let i = 0; i < SNOW.count; i++) {
+    const j = i * 3;
+    let x = flakePos[j] + (wind + Math.sin(t * 0.9 + flakePhase[i]) * sway) * dt;
+    let y = flakePos[j + 1] - fall * flakeSpeed[i] * dt;
+    let z = flakePos[j + 2] + Math.cos(t * 0.7 + flakePhase[i]) * sway * 0.5 * dt;
+    // keep the flakes in a box around the player (wrap around its edges)
+    if (x - pos.x > radius) x -= radius * 2;
+    else if (x - pos.x < -radius) x += radius * 2;
+    if (z - pos.z > radius) z -= radius * 2;
+    else if (z - pos.z < -radius) z += radius * 2;
+    if (flakeFloor[i] < -100) flakeFloor[i] = surfaceAt(x, z)?.y ?? pos.y;
+    if (y < flakeFloor[i]) {
+      // landed: start again at the top, somewhere around the player
+      x = pos.x + (Math.random() * 2 - 1) * radius;
+      z = pos.z + (Math.random() * 2 - 1) * radius;
+      y = pos.y + height - Math.random() * 4;
+      flakeFloor[i] = surfaceAt(x, z)?.y ?? pos.y;
+    }
+    flakePos[j] = x;
+    flakePos[j + 1] = y;
+    flakePos[j + 2] = z;
+  }
+  snowGeometry.attributes.position.needsUpdate = true;
+}
 
 // ---- Fireflies ----
 // Little blinking lights drifting around the pond at night. Gone by day and in the rain
@@ -1113,7 +1353,7 @@ function placeFireflies() {
   firefliesPlaced = true;
 }
 function updateFireflies() {
-  const opacity = (1 - dayAmount) * (1 - rainAmount);
+  const opacity = (1 - dayAmount) * (1 - Math.max(rainAmount, snowAmount));
   fireflyMesh.visible = firefliesPlaced && opacity > 0.01;
   if (!fireflyMesh.visible) return;
   const t = waterUniforms.uTime.value;
@@ -1447,6 +1687,12 @@ function applyGender(gender) {
   try {
     localStorage.setItem("gender", GENDER);
   } catch {}
+  redrawMyTrainer();
+  if (typeof ws !== "undefined" && ws?.readyState === 1)
+    ws.send(JSON.stringify({ t: "gender", gender: GENDER, cap: myCap() }));
+}
+// a fresh sheet for my trainer (new gender, cap colour, or beanie)
+function redrawMyTrainer() {
   const old = sheetTex;
   sheetTex = createCharacterTexture(GENDER);
   sprite.material.map = sheetTex;
@@ -1458,8 +1704,11 @@ function applyGender(gender) {
     sprite.customDistanceMaterial,
   ].forEach((m) => (m.needsUpdate = true));
   old.dispose();
-  if (typeof ws !== "undefined" && ws?.readyState === 1)
-    ws.send(JSON.stringify({ t: "gender", gender: GENDER, cap: myCap() }));
+}
+// every trainer redrawn: mine, and the others in place (same look, position and seat)
+function redrawTrainers() {
+  redrawMyTrainer();
+  for (const [id, o] of [...others]) recreateOther(id, o, o.gender, o.cap);
 }
 window.applyGender = applyGender; // used by the start screen
 // Switch my cap colour (0-2): redraws my sheet and tells the room
@@ -2346,6 +2595,7 @@ function createOther(p) {
     ground: !!p.ground, // on joining: someone already sitting on the ground
     name: p.name,
     gender: g,
+    cap: p.cap,
     color: p.color,
     admin: !!p.admin,
   };
@@ -2353,6 +2603,13 @@ function createOther(p) {
   others.set(p.id, o);
   updateCount();
   return o;
+}
+// draw a player again from scratch, keeping where they are and what they do
+function recreateOther(id, o, gender, cap) {
+  const p = { id, x: o.target.x, z: o.target.z, dir: o.dir, step: o.step, seat: o.seat, hold: o.hold,
+    name: o.name, color: o.color, gender, cap, admin: o.admin };
+  removeOther(id);
+  createOther(p);
 }
 function removeOther(id) {
   const o = others.get(id);
@@ -2459,23 +2716,7 @@ function connect() {
     } else if (m.t === "gender") {
       // recreate the character with the other gender's look, keeping the position
       const o = others.get(m.id);
-      if (o) {
-        const p = {
-          id: m.id,
-          x: o.target.x,
-          z: o.target.z,
-          dir: o.dir,
-          step: o.step,
-          seat: o.seat,
-          name: o.name,
-          color: o.color,
-          gender: m.gender,
-          cap: m.cap,
-          admin: o.admin,
-        };
-        removeOther(m.id);
-        createOther(p);
-      }
+      if (o) recreateOther(m.id, o, m.gender, m.cap);
     } else if (m.t === "hold") {
       const o = others.get(m.id);
       if (o) o.hold = m.item | 0;
@@ -3213,8 +3454,10 @@ function loop() {
     applyLook(dayAmount);
   }
   updateRain(dt);
+  updateSnow(dt);
   stones.update(dt);
   updateFireflies();
+  holidays?.update(waterUniforms.uTime.value, mixNum(LOOK.lampIntensity, dayAmount) / LOOK.lampIntensity[0], snowCover); // on with the lamps
   let dx = 0,
     dz = 0;
   if (keys.arrowup || keys.w) {
