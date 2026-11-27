@@ -1,8 +1,10 @@
+import { CIGARETTE, DOOR_RANGE, HOUSE_DOORS, HOUSE_SEAT, houseRoom } from "../src/house-layouts.js";
 // Room server: one Durable Object per room, everyone connected over WebSocket.
 // Protocol (JSON):
 //   client -> server: { t: "hello", name, gender, color, cap, x, z, dir } | { t: "pos", x, z, dir, step, run }
 //                     { t: "chat", text } | { t: "name", name } | { t: "gender", gender, cap }
 //                     { t: "color", color }   (name colour: one of NAME_COLORS)
+//                     { t: "house", house, map }   (a house ID to enter, or 0 to return to the street)
 //                     { t: "sit", seat, n }   (bench seat 0..15, carousel horse 16..23, Ferris wheel gondola 24..31, roller coaster 32..36 while it waits at the station, or -1 to stand; n numbers the request)
 //                     { t: "capy" }   (feed the capybara)
 //                     { t: "stone", pts: [[x, z], ...] }   (a stone skipped on the pond: where it touched the water, 1 to 6)
@@ -566,7 +568,7 @@ export class Room {
       country: String(req.cf?.country || "").slice(0, 2), visitor: await visitorOf(ip) });
     await this.ensureHeartbeatAlarm();
     // v: the deploy that is running. A tab that reconnects and sees another one reloads itself.
-    server.send(JSON.stringify({ t: "you", id, v: this.env.VERSION?.id || "", now: Date.now(), token: leaveToken }));
+    server.send(JSON.stringify({ t: "you", id, v: this.env.VERSION?.id || "", now: Date.now(), token: leaveToken, houses: true }));
     const radio = await this.state.storage.get("radio");
     if (radio) server.send(JSON.stringify({ t: "radio", command: radio }));
     const capy = await this.state.storage.get("capy");
@@ -589,13 +591,13 @@ export class Room {
     }
     const messages = await this.history();
     if (messages.length) server.send(JSON.stringify({ t: "history", messages }));
-    server.send(JSON.stringify({ t: "state", players: this.players().filter((p) => p.id !== id) }));
+    server.send(JSON.stringify({ t: "state", players: this.players().filter((p) => p.id !== id && !p.house) }));
     return new Response(null, { status: 101, webSocket: client });
   }
 
   // only each player's public fields (never the IP)
   public(p) {
-    return { id: p.id, name: p.name, gender: p.gender, color: p.color || "", cap: p.cap ?? -1, x: p.x, z: p.z, dir: p.dir, step: p.step, seat: p.seat ?? -1, hold: p.hold | 0, ground: !!p.ground, fish: p.fish || null, admin: !!p.admin, prs: p.prs | 0, n: p.acct ?? -1 };
+    return { id: p.id, house: p.house ?? 0, name: p.name, gender: p.gender, color: p.color || "", cap: p.cap ?? -1, x: p.x, z: p.z, dir: p.dir, step: p.step, seat: p.seat ?? -1, hold: p.hold | 0, ground: !!p.ground, fish: p.fish || null, admin: !!p.admin, prs: p.prs | 0, n: p.acct ?? -1 };
   }
   players() {
     return this.openSockets()
@@ -604,11 +606,11 @@ export class Room {
       .map((p) => this.public(p));
   }
 
-  broadcast(msg, except) {
+  broadcast(msg, except, house) {
     const s = JSON.stringify(msg);
     const dead = [];
     for (const ws of this.openSockets()) {
-      if (ws === except) continue;
+      if (ws === except || (house !== undefined && (ws.deserializeAttachment()?.house ?? 0) !== house)) continue;
       try { ws.send(s); } catch { dead.push(ws); }
     }
     for (const ws of dead) this.leave(ws, 1000, "send failed");
@@ -643,6 +645,7 @@ export class Room {
       if (type === "chat") this.strike(ws, p.ip);
       // a dropped sit would leave the client and the room disagreeing: tell it where it really is
       if (type === "sit") seatReply();
+      if (m.t === "house") ws.send(JSON.stringify({ t: "house", ok: false }));
       return;
     }
 
@@ -663,7 +666,7 @@ export class Room {
       p.joinedAt = Date.now();
       ws.serializeAttachment(p);
       this.stat("join", p);
-      this.broadcast({ t: "joined", player: this.public(p) }, ws);
+      this.broadcast({ t: "joined", player: this.public(p) }, ws, 0);
       await this.rememberName(p);
     } else if (m.t === "gender") {
       p.gender = gender(m.gender);
@@ -689,12 +692,40 @@ export class Room {
       p.step = Math.abs(m.step | 0) % 4;
       ws.serializeAttachment(p);
       // run: the sender is running (others draw the run frames); not kept, the next pos says it again
-      this.broadcast({ t: "pos", id: p.id, x: p.x, z: p.z, dir: p.dir, step: p.step, ...(m.run && { run: 1 }) }, ws);
+      this.broadcast({ t: "pos", id: p.id, x: p.x, z: p.z, dir: p.dir, step: p.step, ...(m.run && { run: 1 }) }, ws, p.house ?? 0);
+    } else if (m.t === "house") {
+      const previous = p.house ?? 0;
+      const target = m.house;
+      const door = HOUSE_DOORS.find((d) => d.id === (previous || target));
+      const near = ([x, z]) => Math.hypot(p.x - x, p.z - z) <= DOOR_RANGE + 0.75;
+      const approach = door && door[m.map === "fallback" ? "fallback" : "town"];
+      if (!p.joinedAt || !door || p.seat >= 0 || p.ground || p.fish ||
+          (previous ? target !== 0 || !near(houseRoom(previous).entry) : !near(approach))) {
+        ws.send(JSON.stringify({ t: "house", ok: false }));
+        return;
+      }
+      this.broadcast({ t: "left", id: p.id }, ws, previous);
+      if (!previous) p.houseReturn = [p.x, p.z];
+      [p.x, p.z] = previous ? p.houseReturn : houseRoom(target).entry;
+      p.house = target;
+      p.step = 0;
+      if (target && p.hold === CIGARETTE) p.hold = 0;
+      delete p.fish;
+      if (!target) delete p.houseReturn;
+      ws.serializeAttachment(p);
+      const players = this.players().filter((q) => q.house === target && q.id !== p.id);
+      ws.send(JSON.stringify({ t: "house", ok: true, player: this.public(p), players }));
+      this.broadcast({ t: "joined", player: this.public(p) }, ws, target);
     } else if (m.t === "sit") {
       // one player per seat; -1 stands up. A taken seat is refused back to the sender only,
       // with the seat the room really has for them
-      const seat = Number.isInteger(m.seat) && m.seat >= 0 && m.seat < MAX_SEATS ? m.seat : -1;
-      if (seat >= 0 && this.players().some((q) => q.id !== p.id && q.seat === seat)) {
+      const house = p.house ?? 0;
+      const spot = house && Number.isInteger(m.seat) ? houseRoom(house).seats[m.seat - HOUSE_SEAT] : null;
+      const valid = house ? spot && Math.hypot(p.x - spot[0], p.z - spot[2]) <= 4.35
+        : Number.isInteger(m.seat) && m.seat >= 0 && m.seat < MAX_SEATS;
+      if (house && m.seat !== -1 && !valid) return seatReply();
+      const seat = valid ? m.seat : -1;
+      if (seat >= 0 && this.players().some((q) => q.id !== p.id && q.house === house && q.seat === seat)) {
         seatReply();
         return;
       }
@@ -706,7 +737,7 @@ export class Room {
       p.seat = seat;
       ws.serializeAttachment(p);
       // not back to the sender: it already moved, and a late echo would undo a quick sit/stand
-      this.broadcast({ t: "seat", id: p.id, seat }, ws);
+      this.broadcast({ t: "seat", id: p.id, seat }, ws, house);
     } else if (m.t === "capy") {
       // Someone fed the capybara. The clients walk it by the room's clock; a feeding stops that clock
       // for it from `at` to `until`, and `lost` adds up every stop before, so everyone computes the
@@ -729,6 +760,7 @@ export class Room {
       ws.serializeAttachment(p);
       this.broadcast({ t: "ground", id: p.id, on: p.ground }, ws);
     } else if (m.t === "fish") {
+      if (p.house) return;
       // the fishing line is out (where the bobber floats, in the town) or back in. Kept on the
       // player, so whoever joins later sees it; the timer itself stays in that player's browser
       p.fish = m.on === true ? [number(m.x), number(m.z)] : null;
@@ -749,7 +781,7 @@ export class Room {
       this.broadcast({ t: "cat", id: m.id, ...fed, phrase: Math.floor(Math.random() * 1000) });
     } else if (m.t === "hold") {
       // what the player holds; the client draws it on someone seated, and the coffee or cigarette also on someone standing still
-      p.hold = [1, 2, 3, 4].includes(m.item) ? m.item : 0;
+      p.hold = [1, 2, 3, CIGARETTE].includes(m.item) && !(p.house && m.item === CIGARETTE) ? m.item : 0;
       ws.serializeAttachment(p);
       this.broadcast({ t: "hold", id: p.id, item: p.hold }, ws);
     } else if (m.t === "github-start") {
