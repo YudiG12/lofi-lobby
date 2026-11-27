@@ -1182,11 +1182,17 @@ if (import.meta.env.DEV) {
   });
 }
 
+// Weather: clear, rain or snow (the R key or the cloud button goes through them, all year). Only for
+// you, remembered (like day/night). Nothing goes to the server. At Christmas it snows anyway.
 // Rain: thin streaks in a box that follows the player, splashes where they land (rings on the
-// pond), shiny wet ground and a little fog.
-// Only for you, remembered (like day/night). Nothing goes to the server.
-let isRaining = false;
-try { isRaining = localStorage.getItem("weather") === "rain"; } catch {}
+// pond), shiny wet ground and a little fog. Snow: src/christmas.js.
+const WEATHERS = ["clear", "rain", "snow"];
+let weather = "clear";
+try {
+  const saved = localStorage.getItem("weather");
+  if (WEATHERS.includes(saved)) weather = saved;
+} catch {}
+let isRaining = weather === "rain";
 if (isRaining) {
   rainAmount = 1;
   applyLook(currentLook); // first frame already overcast
@@ -1404,24 +1410,29 @@ function updateRain(dt) {
   splashGeometry.attributes.size.needsUpdate = true;
 }
 const rainBtn = document.querySelector("#rain");
-function drawRain() {
-  const label = isRaining ? "stop the rain" : "make it rain";
-  rainBtn.classList.toggle("on", isRaining);
-  rainBtn.setAttribute("aria-label", label);
+const RAIN_ICON = rainBtn.innerHTML;
+const SNOW_ICON = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20M4 7l16 10M4 17l16-10M9 4l3 2 3-2M9 20l3-2 3 2"/></svg>';
+// the button shows what the sky is doing (lit when it rains or snows) and says what comes next
+function drawWeather() {
+  rainBtn.innerHTML = weather === "snow" ? SNOW_ICON : RAIN_ICON;
+  rainBtn.classList.toggle("on", weather !== "clear");
+  rainBtn.setAttribute("aria-label", { clear: "make it rain", rain: "make it snow", snow: "clear the sky" }[weather]);
 }
-function toggleRain() {
-  isRaining = !isRaining;
-  try { localStorage.setItem("weather", isRaining ? "rain" : "clear"); } catch {}
-  drawRain();
+function cycleWeather() {
+  weather = WEATHERS[(WEATHERS.indexOf(weather) + 1) % WEATHERS.length];
+  isRaining = weather === "rain";
+  try { localStorage.setItem("weather", weather); } catch {}
+  drawWeather();
+  updateSnowing();
 }
-drawRain();
+drawWeather();
 rainBtn.addEventListener("click", (e) => {
-  toggleRain();
+  cycleWeather();
   e.currentTarget.blur(); // give the keyboard back to the game
 });
 addEventListener("keydown", (e) => {
   const typing = ["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName);
-  if (!typing && !e.repeat && !e.ctrlKey && !e.metaKey && e.key.toLowerCase() === "r") toggleRain();
+  if (!typing && !e.repeat && !e.ctrlKey && !e.metaKey && e.key.toLowerCase() === "r") cycleWeather();
 });
 
 // ---- Fireflies ----
@@ -1766,7 +1777,11 @@ drawChristmasButton();
 setInterval(applyChristmas, 60_000); // the lobby stays open for days: the season starts and ends by itself
 // the capybara dresses as a reindeer, it snows, and the lamp posts get a ribbon
 whenChristmas((on) => capy.setReindeer(on));
-whenChristmas((on) => snow.setOn(on));
+// it snows when you chose snow, or at Christmas (rain still wins: the flakes stop while it rains)
+function updateSnowing() {
+  snow.setOn(weather === "snow" || xmasOn);
+}
+whenChristmas(updateSnowing);
 const lampRibbons = createLampRibbons({ posts: lampPosts });
 whenChristmas((on) => lampRibbons.setOn(on));
 // where the room's clock puts it: there and back at one speed, standing still on the clock while it sits

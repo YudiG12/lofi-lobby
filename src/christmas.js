@@ -3,9 +3,11 @@
 import * as THREE from "three";
 
 // ---- Snow ----
-// Flakes drift down in a box around the player (wrapping at its edges, like the rain) and settle on
-// whatever surface is under them; the town turns white where it faces up (roofs, ground, the top of
-// the pines). It fades in and out over a few seconds, and the flakes stop while it rains.
+// A weather of its own (src/main.js: R goes through clear, rain and snow, all year) that also comes
+// with Christmas. Flakes drift down in a box around the player (wrapping at its edges, like the rain)
+// and settle on whatever surface is under them; the town turns white where it faces up (roofs,
+// ground, the top of the pines). It fades in and out over a few seconds, and the flakes stop while it
+// rains.
 export function createSnow({ scene, count, floorAt }) {
   const BOX = { radius: 36, height: 30 };
   const flakes = new Float32Array(count * 3);
