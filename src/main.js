@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader.js";
 import { connectRadioToServer, receiveCommand } from "./radio.js";
 import { createBoard, setupWall } from "./board.js";
+import { createHolidayDecor, inHolidaySeason } from "./holidays.js";
 import { createCapybara, CAPY_NEAR, CAPY_RADIUS, PHRASES as CAPY_PHRASES } from "./capybara.js";
 
 // ---- Asset config (change here to use other files) ----
@@ -372,6 +373,29 @@ function prepareTown(fbx) {
     placeBenches();
     placeFireflies();
     board.position.y = groundHeight(board.position.x, board.position.z);
+    if (holidays) {
+      // the tree and the snowman stand on open grass, clear of benches, posts, the board and the
+      // capybara's road
+      holidays.decorate(townMeshes, (x0, z0, r, test = () => true) => {
+        for (let d = 0; d <= 8; d += 0.5)
+          for (let a = 0; a < 16; a++) {
+            const x = x0 + Math.cos((a / 16) * Math.PI * 2) * d,
+              z = z0 + Math.sin((a / 16) * Math.PI * 2) * d;
+            if (
+              isOpen(x, z, Math.min(r, 2)) &&
+              benches.every((b) => Math.hypot(b.x - x, b.z - z) > r + 3) &&
+              lampPosts.every((l) => Math.hypot(l.position.x - x, l.position.z - z) > r + 1.5) &&
+              Math.hypot(board.position.x - x, board.position.z - z) > r + 4.5 &&
+              (x < 0 || Math.abs(z - CAPY_ROAD_Z) > r + 1.5) && // the capybara walks the right side
+              test(x, z)
+            )
+              return [x, groundHeight(x, z), z];
+            if (d === 0) break;
+          }
+        return null;
+      }, { lamps: lampPosts, board });
+      solidBoxes.push(...holidays.solids);
+    }
     placeCapybara();
     placeCapyWalk();
 }
@@ -613,6 +637,8 @@ const lampPostSolids = lampPosts.flatMap((p) => p.children.filter((c) => c.isMes
 // message wall: a cork board under the lamp light, in front of the lower-left house's window
 const BOARD_AT = [-7.5, 15];
 const board = createBoard(scene);
+// holiday decorations on the houses (late November to Twelfth Night), put up when the town loads
+const holidays = inHolidaySeason() ? createHolidayDecor(scene) : null;
 board.position.set(BOARD_AT[0], 0, BOARD_AT[1]);
 
 // ---- Benches ----
@@ -1158,6 +1184,7 @@ function prepareSnow() {
   [woodLight, woodDark, ironMaterial].forEach(addSnowCover);
   // the message board's roof and frame
   board.traverse((o) => o.isMesh && addSnowCover(o.material));
+  holidays?.materials.forEach(addSnowCover); // a little snow on the wreaths and the garland
 }
 
 function updateSnow(dt) {
@@ -2978,6 +3005,7 @@ function loop() {
   updateRain(dt);
   updateSnow(dt);
   updateFireflies();
+  holidays?.update(waterUniforms.uTime.value, mixNum(LOOK.lampIntensity, dayAmount) / LOOK.lampIntensity[0], snowCover); // on with the lamps
   let dx = 0,
     dz = 0;
   if (keys.arrowup || keys.w) {
