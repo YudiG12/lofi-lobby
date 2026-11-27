@@ -508,7 +508,7 @@ export function setupSocial(game) {
   let founderCard = null;
   let founderClosed = false;
   function offerFounder() {
-    if (account || founderClosed || founderCard?.isConnected || Date.now() >= FOUNDER_UNTIL) return;
+    if (account || founderClosed || endedCard?.isConnected || founderCard?.isConnected || Date.now() >= FOUNDER_UNTIL) return;
     founderCard = $("div", { className: "glass invite founder" }, $("img", { src: MEDALS.founder.img, alt: "", width: 32, height: 32 }),
       $("span", { innerHTML: "create your account until <b>nov 30</b><br>and get the <b>founding member</b> medal" }),
       icon("github", "log in", () => game.login(), "github"),
@@ -517,6 +517,17 @@ export function setupSocial(game) {
         founderClosed = true;
       }));
     invites.prepend(founderCard);
+  }
+  // This browser was logged in and the room ended its session: a card to log in again, in place of the
+  // one above (this player has an account already, and gets back to it by logging in).
+  let endedCard = null;
+  function sessionEnded() {
+    founderCard?.remove();
+    if (account || endedCard?.isConnected) return;
+    endedCard = $("div", { className: "glass invite founder ended" }, $("span", { className: "glyph", innerHTML: ICON.profile }),
+      $("span", { innerHTML: "your login expired:<br><b>log in again</b> to get back to your account" }),
+      icon("github", "log in", () => game.login(), "github"), icon("no", "close", () => endedCard.remove()));
+    invites.prepend(endedCard);
   }
   // in the room (the start screen is gone), and after the room had a moment to say who this browser is
   addEventListener("game:pause", (e) => !e.detail && setTimeout(offerFounder, 1500));
@@ -543,6 +554,7 @@ export function setupSocial(game) {
     onMessage(m) {
       if (m.t === "account") {
         account = m.n >= 0 ? { n: m.n, login: m.login, at: m.at, medals: m.medals || [] } : null;
+        if (account) endedCard?.remove();
         if (!account) {
           friends = { friends: [], in: [], out: [], chats: [] };
           for (const c of [...chats.values()]) (c.tab?.remove(), c.win?.remove(), chats.delete(c.n)); // the windows keep their place for the next login
@@ -601,6 +613,7 @@ export function setupSocial(game) {
       if (!game.send({ t: "dm", n: active, text })) game.say("you are offline: the message was not sent");
       return true;
     },
+    sessionEnded,
     /** @returns {number} my account number, or -1 */
     myAccount: () => (account ? account.n : -1),
     openProfile,

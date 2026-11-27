@@ -32,9 +32,13 @@ did not hold up:
   GitHub returns. The e-mail stays in D1: no message to a browser carries it, not even to its owner.
   GitHub's own authorization screen is where the player agrees to it; the game adds no notice.
 - **Numbers do not change.** The accounts the room already had are copied to D1 once, with their
-  numbers, dates and looks. A session from before moves the first time its browser comes back, so
-  nobody has to log in again. Those accounts have no GitHub id or e-mail until their next login,
+  numbers, dates and looks. Those accounts have no GitHub id or e-mail until their next login,
   which adopts them by login, once.
+- **Sessions from before do not carry over.** A session only holds for an account that has a GitHub
+  id. A browser logged in from before is told its login expired the next time it opens the game and
+  logs in again, once; it gets the same account, which then has its GitHub id and e-mail. (At first
+  these sessions were moved along, so nobody had to log in again; but then most accounts would have
+  stayed without a GitHub id and an e-mail for as long as their browser kept its session.)
 - **What a player writes about themselves** (the profile's "about me", up to 200 characters, through the chat's word filter) is a column of the account.
 - **Friends, invitations and private messages stay in the room's storage**, keyed by account number.
   Moving them, and reaching a friend in another room, is for when there is a second room.
