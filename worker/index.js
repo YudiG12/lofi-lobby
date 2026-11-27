@@ -9,6 +9,7 @@
 //                     { t: "ground", on }   (sit on the ground, or get up)
 //                     { t: "fish", on, x, z }   (your fishing line is out, the bobber at x, z; or back in)
 //                     { t: "cat", id }   (feed one of the town cats)
+//                     { t: "cat-lift", id } | { t: "cat-throw", x, z }   (pick a cat up over your head; throw it there)
 //                     { t: "github-start" }   (log in with GitHub: ask for a code to type at github.com/login/device)
 //                     { t: "github-poll" }   (has the player typed the code yet?)
 //                     { t: "github", session }   (on reconnect: the session a login gave this browser)
@@ -167,6 +168,7 @@ function safeClose(ws, code = 1000, reason = "") {
 }
 
 import { badName, cleanChat, hasLink, normalize } from "./moderation.js";
+import { CAT_HOLD_MS, clampThrow, heldBy, liftRefusal } from "../src/cat-carry.js";
 import { installSocial } from "./social.js";
 
 const DIRS = ["down", "up", "left", "right"];
@@ -580,7 +582,7 @@ export class Room {
       for (const id of CAT_IDS) {
         const r = rides[id];
         if (r?.playerId && r.until > Date.now() && online.has(r.playerId)) {
-          server.send(JSON.stringify({ t: "cat-ride", id, playerId: r.playerId, at: r.at, until: r.until }));
+          server.send(JSON.stringify({ t: "cat-ride", id, playerId: r.playerId, at: r.at, until: r.until, ...(r.held && { held: true }) }));
         }
       }
     }
@@ -744,6 +746,28 @@ export class Room {
       cats[m.id] = fed;
       await this.state.storage.put("cats", cats);
       this.broadcast({ t: "cat", id: m.id, ...fed, phrase: Math.floor(Math.random() * 1000) });
+    } else if (m.t === "cat-lift") {
+      // pick a cat up: the room checks nobody has it, it isn't eating or still dizzy from a throw,
+      // and the player's hands are free (src/cat-carry.js). Held too long, it hops down on its own
+      if (typeof m.id !== "string" || !CAT_IDS.includes(m.id)) return;
+      const now = Date.now();
+      const [rides = {}, cats = {}] = await Promise.all([this.state.storage.get("cat-rides"), this.state.storage.get("cats")]);
+      const no = liftRefusal({ now, ride: rides[m.id], fed: cats[m.id], holding: !!heldBy(rides, p.id, now) || Object.values(rides).some((r) => r?.playerId === p.id && r.until > now), seated: (p.seat ?? -1) >= 0 || !!p.ground });
+      if (no) return;
+      const ride = { playerId: p.id, at: now, until: now + CAT_HOLD_MS, held: true };
+      rides[m.id] = ride;
+      await this.state.storage.put("cat-rides", rides);
+      this.broadcast({ t: "cat-ride", id: m.id, ...ride, phrase: Math.floor(Math.random() * 1000) });
+    } else if (m.t === "cat-throw") {
+      // throw the cat you hold: it lands where you aimed, never farther than a throw from where you stand
+      const now = Date.now();
+      const rides = (await this.state.storage.get("cat-rides")) || {};
+      const id = heldBy(rides, p.id, now);
+      if (!id) return;
+      const land = clampThrow({ x: number(p.x), z: number(p.z) }, { x: Number(m.x), z: Number(m.z) });
+      rides[id] = { playerId: null, at: rides[id].at, until: now, thrownAt: now };
+      await this.state.storage.put("cat-rides", rides);
+      this.broadcast({ t: "cat-ride", id, playerId: null, at: now, until: now, throw: { x: number(land.x), z: number(land.z) }, phrase: Math.floor(Math.random() * 1000) });
     } else if (m.t === "hold") {
       // what the player holds; the client draws it on someone seated, and the coffee or cigarette also on someone standing still
       p.hold = [1, 2, 3, 4].includes(m.item) ? m.item : 0;

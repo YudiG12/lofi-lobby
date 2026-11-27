@@ -9,6 +9,7 @@ import { addSitFrames, sitFramePos } from "./ground-sit.js";
 import { createCapybara, CAPY_NEAR, CAPY_RADIUS, PHRASES as CAPY_PHRASES } from "./capybara.js";
 import { createOwl } from "./owl.js";
 import { createFishing, createFishingGear, FISH_NEAR, FISH_LEAVE } from "./fishing.js";
+import { CAT_HOLD_MS, CAT_LIFT_REST_MS, CAT_THROW_MS, SAY_EVERY_MS, sayAt, THROW_PHRASES, throwArc, throwTarget } from "./cat-carry.js";
 import { createCat, CATS, CAT_NEAR, CAT_SIT_MS, CAT_RIDE_MS, PHRASES as CAT_PHRASES, RIDE_PHRASES as CAT_RIDE_PHRASES } from "./cat.js";
 import { CAROUSEL, carouselSeat, createCarousel, inClearing, isCarouselSeat, onCarousel } from "./carousel.js";
 import { WHEEL, wheelSeat, createFerrisWheel, inWheelClearing, isWheelSeat, onWheel } from "./ferris-wheel.js";
@@ -2047,6 +2048,7 @@ const CAT_HEAD_OFFSET_Y = 3.85;
 const CAT_GROUND_SCALE = 3.5;
 const CAT_PERCH_SCALE = 2.8;
 const CAT_HOP_MS = 450;
+const CAT_HELD_LIFT = 0.15; // picked up with H: a touch higher than a cat that climbed on by itself
 const CAT_APPROACH_MAX_MS = 2800;
 const CAT_APPROACH_SPEED = 8.5;
 
@@ -2154,6 +2156,20 @@ function startHopOff(cat, t) {
   cat.rideAnim = null;
 }
 
+// thrown: a long spinning arc from the hands to the walkable spot nearest where it was aimed
+function startThrow(cat, t, x, z) {
+  const nodes = catNav.nodes;
+  cat.hopOff = { at: t, until: t + CAT_THROW_MS, from: cat.mesh.position.clone(), landIdx: nodes.length ? nearestCatNode(x, z) : 0, thrown: true };
+  cat.dizzyUntil = t + CAT_LIFT_REST_MS; // the room won't let anyone pick it up again before this
+  cat.ride = null;
+  cat.rideAnim = null;
+}
+// the cat in this player's hands (lifted with H), or null
+const catHeldBy = (playerId) => cats.find((c) => c.ride?.held && c.ride.playerId === playerId && roomNow() < c.ride.until) || null;
+const myCat = () => (MULTIPLAYER ? catHeldBy(myId) : catHeldBy("me"));
+// a cat riding on your head (the room's lottery) or in your hands: no room for another one
+const catOnMe = () => cats.some((c) => c.ride && c.ride.playerId === (MULTIPLAYER ? myId : "me") && roomNow() < c.ride.until);
+
 function walkCat(cat, t) {
   const m = cat.mesh.position;
   const nodes = catNav.nodes;
@@ -2164,6 +2180,19 @@ function walkCat(cat, t) {
       finishLanding(cat, t, cat.hopOff.landIdx);
     } else {
       const land = nodes[cat.hopOff.landIdx] || { x: cat.hopOff.from.x, y: groundHeight(cat.hopOff.from.x, cat.hopOff.from.z), z: cat.hopOff.from.z };
+      if (cat.hopOff.thrown) {
+        const p = throwArc(u, cat.hopOff.from, land, 4);
+        m.set(p.x, p.y, p.z);
+        cat.mesh.scale.setScalar(THREE.MathUtils.lerp(CAT_PERCH_SCALE, CAT_GROUND_SCALE, u));
+        cat.mesh.renderOrder = 12;
+        cat.ridingMesh = null;
+        cat.ridingFeet = null;
+        cat.dir = p.dir;
+        cat.pose = "held"; // still startled in the air
+        cat.sprite.setDir(p.dir);
+        cat.sprite.setPose("held");
+        return;
+      }
       m.set(
         THREE.MathUtils.lerp(cat.hopOff.from.x, land.x, u),
         THREE.MathUtils.lerp(cat.hopOff.from.y, land.y, u) + 2.6 * 4 * u * (1 - u),
@@ -2188,7 +2217,9 @@ function walkCat(cat, t) {
     const rideDuration = Math.max(1, cat.ride.until - cat.ride.at);
     if (!cat.rideAnim || cat.rideAnim.at !== cat.ride.at) {
       const startPos = m.clone();
-      const approachPath = nodes.length
+      const approachPath = cat.ride.held
+        ? [{ x: startPos.x, y: startPos.y, z: startPos.z }] // lifted: straight up into the hands
+        : nodes.length
         ? findCatPath(nearestCatNode(startPos.x, startPos.z), nearestCatNode(target.mesh.position.x, target.mesh.position.z))
         : [{ x: startPos.x, y: startPos.y, z: startPos.z }];
       const { cumDist, totalDist } = measurePath(approachPath);
@@ -2212,7 +2243,7 @@ function walkCat(cat, t) {
     const anim = cat.rideAnim;
     const elapsed = Math.max(0, t - cat.ride.at);
     const hx = target.mesh.position.x;
-    const hy = target.baseY + (target.grounded ? CAT_HEAD_OFFSET_Y - 0.47 : CAT_HEAD_OFFSET_Y);
+    const hy = target.baseY + (target.grounded ? CAT_HEAD_OFFSET_Y - 0.47 : CAT_HEAD_OFFSET_Y) + (cat.ride.held ? CAT_HELD_LIFT : 0);
     const hz = target.mesh.position.z;
 
     if (t >= cat.ride.until) {
@@ -2242,10 +2273,11 @@ function walkCat(cat, t) {
       cat.mesh.renderOrder = 12;
       cat.ridingMesh = target.mesh;
       cat.ridingFeet = target.feet;
-      cat.dir = target.dir;
-      cat.pose = "perch";
+      // held up with H it looks startled, and toward us even from behind (its eyes are the point)
+      cat.dir = cat.ride.held && target.dir === "up" ? "down" : target.dir;
+      cat.pose = cat.ride.held ? "held" : "perch";
       cat.sprite.setDir(cat.dir);
-      cat.sprite.setPose("perch");
+      cat.sprite.setPose(cat.pose);
       return;
     } else if (elapsed < anim.hopOffStart) {
       m.set(hx, hy, hz);
@@ -2253,10 +2285,11 @@ function walkCat(cat, t) {
       cat.mesh.renderOrder = 12;
       cat.ridingMesh = target.mesh;
       cat.ridingFeet = target.feet;
-      cat.dir = target.dir;
-      cat.pose = "perch";
+      // held up with H it looks startled, and toward us even from behind (its eyes are the point)
+      cat.dir = cat.ride.held && target.dir === "up" ? "down" : target.dir;
+      cat.pose = cat.ride.held ? "held" : "perch";
       cat.sprite.setDir(cat.dir);
-      cat.sprite.setPose("perch");
+      cat.sprite.setPose(cat.pose);
       return;
     } else {
       if (!anim.hopOffFrom) {
@@ -2331,11 +2364,21 @@ function catRideUpdate(m) {
   const cat = cats.find((c) => c.id === m.id);
   if (!cat) return;
   const now = roomNow();
+  if (m.throw && Number.isFinite(m.throw.x) && Number.isFinite(m.throw.z)) {
+    hushHolder(cat);
+    startThrow(cat, now, m.throw.x, m.throw.z);
+    if (Number.isInteger(m.phrase)) showBubble(cat.mesh, THROW_PHRASES[Math.abs(m.phrase) % THROW_PHRASES.length]);
+    return;
+  }
   if (!m.playerId || !(m.until > m.at) || m.until <= now) {
+    hushHolder(cat);
     if (cat.ride) startHopOff(cat, now);
     return;
   }
-  cat.ride = { playerId: m.playerId, at: m.at, until: m.until };
+  // a cat picked up with H: the trainer holding it comments now and then (sayHeldLines); someone who
+  // joins mid-hold gets no phrase and stays quiet until the next beat
+  cat.ride = { playerId: m.playerId, at: m.at, until: m.until, held: m.held === true, phrase: Number.isInteger(m.phrase) ? m.phrase : null, said: -1 };
+  if (cat.ride.held) cat.lastRideAt = m.at;
   cat.hopOff = null;
   cat.rideAnim = null;
   if (Number.isInteger(m.phrase) && cat.lastRideAt !== m.at) {
@@ -2818,7 +2861,12 @@ function checkSavedPosition() {
   // judged at the ground height of each spot (unknown when restoring). The saved spot can be a
   // hair inside a lamp post or the pond edge (movement is checked one axis at a time), so look
   // for the nearest free spot around it before giving up
-  const free = (x, z) => isFree(x, z, topHeight(x, z));
+  // on top of something tall (a roof, a spot saved from inside a house) is not a place to stand: from up
+  // there no step down is small enough and you'd be stuck
+  const free = (x, z) => {
+    const top = topHeight(x, z);
+    return top - groundHeight(x, z) <= MAX_STEP && isFree(x, z, top);
+  };
   if (free(pos.x, pos.z)) return;
   for (let r = 0.25; r <= 2; r += 0.25)
     for (let a = 0; a < Math.PI * 2; a += Math.PI / 8) {
@@ -3040,7 +3088,7 @@ const sendGround = () => ws?.readyState === 1 && ws.send(JSON.stringify({ t: "gr
 const groundBtn = document.querySelector("#ground-sit");
 function setGround(on) {
   const now = performance.now();
-  if (on && (gamePaused || mySeat >= 0 || now - lastGround < 350)) return; // stays under the server's rate limit
+  if (on && (gamePaused || mySeat >= 0 || myCat() || now - lastGround < 350)) return; // stays under the server's rate limit
   if (on === onGround) return;
   lastGround = now;
   onGround = on;
@@ -3208,7 +3256,7 @@ const SIT_COOLDOWN = 350;
 let lastToggle = 0;
 const toggleSit = () => {
   const now = performance.now();
-  if (gamePaused || now - lastToggle < SIT_COOLDOWN) return;
+  if (gamePaused || now - lastToggle < SIT_COOLDOWN || (mySeat < 0 && myCat())) return; // no sitting with a cat in your hands
   lastToggle = now;
   if (strappedIn()) return; // strapped in until the sleigh is back
   if (mySeat >= 0) return standUp();
@@ -3696,7 +3744,7 @@ function sendPosition(now, step, running) {
 }
 
 function updateOthers(dt) {
-  for (const o of others.values()) {
+  for (const [oid, o] of others) {
     const m = o.mesh;
     m.position.x = THREE.MathUtils.lerp(
       m.position.x,
@@ -3725,7 +3773,7 @@ function updateOthers(dt) {
     m.position.y -= m.userData.lift;
     // standing still: on the standing frame, a moment after the last step arrived
     const still = !o.step && performance.now() - (o.movedAt || 0) > 300;
-    const hd = grounded ? null : heldDir(o.hold, seat, still, o.dir); // the coffee is drawn for a standing body
+    const hd = grounded || catHeldBy(oid) ? null : heldDir(o.hold, seat, still, o.dir); // the coffee is drawn for a standing body (both hands on a cat: none)
     if (o.held || hd) showHeld((o.held ??= createHeld(o.feet)), m, o.cfg, o.hold, hd);
     // their rod, line and bobber while their line is out (the bobber's height once the pond is loaded)
     if (o.fish && o.fish.y === null) o.fish.y = waterY(o.fish.x, o.fish.z);
@@ -4237,6 +4285,45 @@ catPrompt.addEventListener("click", (e) => {
   e.currentTarget.blur(); // give the keyboard back to the game
 });
 document.body.append(catPrompt);
+// H: pick up the cat next to you, or throw the one in your hands the way you face (src/cat-carry.js).
+// The room decides; offline the same messages are played here.
+const liftPrompt = Object.assign(document.createElement("button"), { id: "lift-prompt", type: "button" });
+document.body.append(liftPrompt);
+let lastLift = 0;
+function liftOrThrow() {
+  const now = performance.now();
+  if (gamePaused || now - lastLift < 350) return; // stays under the server's rate limit
+  const held = myCat();
+  const online = MULTIPLAYER && ws?.readyState === 1;
+  if (held) {
+    lastLift = now;
+    const to = throwTarget(pos.x, pos.z, dir);
+    if (online) ws.send(JSON.stringify({ t: "cat-throw", x: to.x, z: to.z }));
+    else if (!MULTIPLAYER) catRideUpdate({ id: held.id, playerId: null, at: roomNow(), until: roomNow(), throw: to, phrase: Math.floor(Math.random() * 1000) });
+    return;
+  }
+  const cat = nearCat();
+  if (!cat || mySeat >= 0 || onGround || catOnMe() || roomNow() < cat.fed.until || roomNow() < cat.dizzyUntil) return;
+  lastLift = now;
+  if (online) ws.send(JSON.stringify({ t: "cat-lift", id: cat.id }));
+  else if (!MULTIPLAYER) catRideUpdate({ id: cat.id, playerId: "me", at: roomNow(), until: roomNow() + CAT_HOLD_MS, held: true, phrase: Math.floor(Math.random() * 1000) });
+}
+liftPrompt.addEventListener("click", (e) => {
+  liftOrThrow();
+  e.currentTarget.blur(); // give the keyboard back to the game
+});
+addEventListener("keydown", (e) => {
+  if (typing() || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.key.toLowerCase() === "h") liftOrThrow();
+});
+// pausing (or leaving for the menu) puts the cat down at your feet
+addEventListener("game:pause", (e) => {
+  if (!e.detail || !myCat()) return;
+  lastLift = 0;
+  const held = myCat();
+  if (MULTIPLAYER && ws?.readyState === 1) ws.send(JSON.stringify({ t: "cat-throw", x: pos.x, z: pos.z }));
+  else if (!MULTIPLAYER) catRideUpdate({ id: held.id, playerId: null, at: roomNow(), until: roomNow(), throw: { x: pos.x, z: pos.z } });
+});
 // Pick at most one closest animal in interaction range so prompts and E never collide.
 function closestAnimal() {
   if (mySeat >= 0 || nearBoard()) return null;
@@ -4321,7 +4408,7 @@ function planThrow(x, z) {
 }
 function throwStone() {
   const now = performance.now();
-  if (!nearPond() || mySeat >= 0 || now - lastStone < STONE_EVERY_MS) return;
+  if (!nearPond() || mySeat >= 0 || myCat() || now - lastStone < STONE_EVERY_MS) return; // hands full with a cat
   const plan = planThrow(pos.x, pos.z);
   if (!plan) return;
   lastStone = now;
@@ -4351,7 +4438,7 @@ addEventListener("keydown", (e) => {
   if (e.key.toLowerCase() === "t") throwStone();
 });
 function updateStonePrompt() {
-  const show = nearPond() && mySeat < 0 && !wall.isOpen() && !bubbles.has(sprite);
+  const show = nearPond() && mySeat < 0 && !myCat() && !wall.isOpen() && !bubbles.has(sprite);
   stonePrompt.classList.toggle("on", show);
   if (!show) return;
   _v.set(sprite.position.x, sprite.position.y + 6.2, sprite.position.z).project(camera);
@@ -4367,9 +4454,32 @@ function updateWallPrompt() {
   wallPrompt.style.top = `${(-_v.y * 0.5 + 0.5) * innerHeight}px`;
 }
 
+// what a trainer holding a cat says: a line on picking it up and another every SAY_EVERY_MS, the same
+// line for everyone (picked from the room's phrase number)
+function sayHeldLines(cat, t) {
+  const r = cat.ride;
+  if (r?.held && t >= r.until - CAT_HOP_MS) return hushHolder(cat); // held too long: it wriggles free
+  if (!r?.held || r.phrase === null) return;
+  const k = Math.floor((t - r.at) / SAY_EVERY_MS);
+  if (k === r.said) return;
+  r.said = k;
+  const who = resolveRideTarget(r.playerId);
+  if (!who) return;
+  r.line = sayAt(r.phrase, k);
+  r.lineOn = who.mesh;
+  showBubble(who.mesh, r.line);
+}
+// the cat left the hands (thrown, put down, wriggled free): what the trainer was saying about holding
+// it goes with it, unless they have said something else since (a chat message)
+function hushHolder(cat) {
+  const r = cat.ride;
+  const b = r?.lineOn && bubbles.get(r.lineOn);
+  if (b && b.el.textContent === r.line) b.until = Math.min(b.until, performance.now());
+}
 function updateCats() {
   const t = roomNow();
   for (const cat of cats) {
+    sayHeldLines(cat, t);
     walkCat(cat, t);
     cat.sprite.update(t);
     cat.mesh.rotation.set(camera.rotation.x * 0.5, 0, 0);
@@ -4377,10 +4487,25 @@ function updateCats() {
   const active = nearCat();
   const show = eNow === "cat" && !!active && !bubbles.has(active.mesh);
   catPrompt.classList.toggle("on", show);
+  // the H prompt: "throw" over your head while you hold one, "pick up" under the feed prompt
+  const held = myCat();
+  const canLift = !held && show && mySeat < 0 && !onGround && t >= active.fed.until && !(t < active.dizzyUntil) && !catOnMe();
+  const liftText = held ? (MOBILE ? "tap to throw" : "<kbd>H</kbd> throw") : MOBILE ? "pick up" : "<kbd>H</kbd> pick up";
+  if (liftPrompt.dataset.text !== liftText) liftPrompt.innerHTML = liftPrompt.dataset.text = liftText;
+  liftPrompt.classList.toggle("on", !!held || canLift);
+  if (held) {
+    _v.set(held.mesh.position.x, held.mesh.position.y + 3.2, held.mesh.position.z).project(camera);
+    liftPrompt.style.left = `${(_v.x * 0.5 + 0.5) * innerWidth}px`;
+    liftPrompt.style.top = `${(-_v.y * 0.5 + 0.5) * innerHeight}px`;
+  }
   if (!show) return;
   _v.set(active.mesh.position.x, active.mesh.position.y + 4.2, active.mesh.position.z).project(camera);
   catPrompt.style.left = `${(_v.x * 0.5 + 0.5) * innerWidth}px`;
   catPrompt.style.top = `${(-_v.y * 0.5 + 0.5) * innerHeight}px`;
+  if (canLift) {
+    liftPrompt.style.left = catPrompt.style.left;
+    liftPrompt.style.top = `${(-_v.y * 0.5 + 0.5) * innerHeight + 26}px`;
+  }
 }
 
 const fishing = createFishing({
@@ -4453,6 +4578,7 @@ function eAction(seat = nearestFreeSeat()) {
   const p = fishing.phase();
   if (p === "focus" || p === "bite") return "fish";
   if (mySeat >= 0) return "stand";
+  if (myCat()) return null; // a cat in your hands: H throws it, nothing else until then
   if (nearBoard()) return "wall";
   const animal = closestAnimal();
   if (animal) return animal.kind;
@@ -4655,7 +4781,7 @@ function loop() {
   updateOcclusion();
   // facing the camera, tilted only halfway (the shadow looks like a standing body)
   sprite.rotation.set(camera.rotation.x * 0.5, 0, 0);
-  showHeld(myHeld, sprite, CHARACTER.cfg, myHold, grounded ? null : heldDir(myHold, mySeat >= 0 ? seatSpot(mySeat) : null, !walking, dir));
+  showHeld(myHeld, sprite, CHARACTER.cfg, myHold, grounded || myCat() ? null : heldDir(myHold, mySeat >= 0 ? seatSpot(mySeat) : null, !walking, dir));
 
   carousel.update(roomNow(), dayAmount);
   wheel.update(roomNow(), dayAmount);
