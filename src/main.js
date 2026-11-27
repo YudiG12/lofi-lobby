@@ -308,6 +308,7 @@ function prepareTown(fbx) {
     scene.add(fbx);
     townMeshes = [];
     fbx.traverse((o) => o.isMesh && townMeshes.push(o));
+    indexTownForRays();
     computePondBox();
     placeFair(); // before the lamps, benches and capybara look for open ground around it
     fbx.traverse((o) => {
@@ -1298,8 +1299,7 @@ function surfaceAt(x, z) {
   if (s) return s;
   if (!townMeshes.length || surfaceBudget <= 0) return null;
   surfaceBudget--;
-  ray.set(new THREE.Vector3(Math.round(x), 200, Math.round(z)), DOWN);
-  const hits = ray.intersectObjects(townMeshes, false);
+  const hits = rayDown(Math.round(x), Math.round(z));
   const wet = hits.find((h) => waterMeshes.has(h.object));
   s = wet ? { y: wet.point.y, water: true } : hits[0] ? { y: hits[0].point.y, water: false } : { y: 0, water: false };
   surfaceCache.set(key, s);
@@ -1594,8 +1594,7 @@ function inPond(x, z) {
 }
 function isWater(x, z) {
   if (!waterMeshes.size) return false;
-  ray.set(new THREE.Vector3(x, 200, z), DOWN);
-  const hits = ray.intersectObjects(townMeshes, false);
+  const hits = rayDown(x, z);
   return (
     hits.length > 0 &&
     (waterMeshes.has(hits[0].object) || edgeMeshes.has(hits[0].object))
@@ -1603,21 +1602,45 @@ function isWater(x, z) {
 }
 const ray = new THREE.Raycaster();
 const DOWN = new THREE.Vector3(0, -1, 0);
+// Rays going straight down (ground height, roofs, water, where rain and snow land) only test the town
+// meshes under them: a grid of RAY_CELL-wide cells over the town, each listing the meshes whose box
+// covers it. A ray down at (x, z) can only hit a mesh whose box covers (x, z), so the hits are the
+// same; walking used to cast about 20 rays a frame against all ~1,250 meshes (about 5 ms of CPU).
+const RAY_CELL = 4;
+let rayGrid = new Map();
+const rayCellKey = (cx, cz) => (cx + 10000) * 20000 + (cz + 10000);
+const NO_MESHES = [];
+function indexTownForRays() {
+  rayGrid = new Map();
+  const box = new THREE.Box3();
+  for (const o of townMeshes) {
+    box.setFromObject(o);
+    for (let cx = Math.floor(box.min.x / RAY_CELL); cx <= Math.floor(box.max.x / RAY_CELL); cx++)
+      for (let cz = Math.floor(box.min.z / RAY_CELL); cz <= Math.floor(box.max.z / RAY_CELL); cz++) {
+        const key = rayCellKey(cx, cz);
+        if (!rayGrid.has(key)) rayGrid.set(key, []);
+        rayGrid.get(key).push(o);
+      }
+  }
+}
+const meshesUnder = (x, z) => rayGrid.get(rayCellKey(Math.floor(x / RAY_CELL), Math.floor(z / RAY_CELL))) || NO_MESHES;
+const _rayFrom = new THREE.Vector3();
+// the town under (x, z), from the top down
+function rayDown(x, z) {
+  ray.set(_rayFrom.set(x, 200, z), DOWN);
+  return ray.intersectObjects(meshesUnder(x, z), false);
+}
 // Height of the highest surface at that point (ground, or top of house/tree/fence)
 function topHeight(x, z) {
   if (!townMeshes.length) return 0;
-  ray.set(new THREE.Vector3(x, 200, z), DOWN);
   // ignore the pond edge stones: they are walls, not floor
-  const hits = ray
-    .intersectObjects(townMeshes, false)
-    .filter((h) => !edgeMeshes.has(h.object));
+  const hits = rayDown(x, z).filter((h) => !edgeMeshes.has(h.object));
   return hits.length ? hits[0].point.y : 0;
 }
 // Ground height: lowest surface (ignores roofs above)
 function groundHeight(x, z) {
   if (!townMeshes.length) return 0;
-  ray.set(new THREE.Vector3(x, 200, z), DOWN);
-  const hits = ray.intersectObjects(townMeshes, false);
+  const hits = rayDown(x, z);
   return hits.length ? hits[hits.length - 1].point.y : 0;
 }
 
@@ -1846,8 +1869,7 @@ function buildCatNavGrid() {
     const key = `${Math.round(x * 2)},${Math.round(z * 2)}`;
     let hit = groundCache.get(key);
     if (hit) return hit;
-    ray.set(new THREE.Vector3(x, 200, z), DOWN);
-    const hits = ray.intersectObjects(townMeshes, false);
+    const hits = rayDown(x, z);
     const water = hits.length > 0 && (waterMeshes.has(hits[0].object) || edgeMeshes.has(hits[0].object));
     const floorHits = hits.filter((h) => !edgeMeshes.has(h.object));
     hit = {
