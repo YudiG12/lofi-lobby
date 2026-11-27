@@ -5,7 +5,6 @@ import { connectRadioToServer, receiveCommand } from "./radio.js";
 import { createBoard, setupWall } from "./board.js";
 import { createStones } from "./stones.js";
 import { addSitFrames, sitFramePos } from "./ground-sit.js";
-import { addLiftFrames, liftFramePos } from "./lift-frames.js";
 import { createCapybara, CAPY_NEAR, CAPY_RADIUS, PHRASES as CAPY_PHRASES } from "./capybara.js";
 import { createOwl } from "./owl.js";
 import { createFishing, createFishingGear, FISH_NEAR, FISH_LEAVE } from "./fishing.js";
@@ -2020,7 +2019,7 @@ const CAT_HEAD_OFFSET_Y = 3.85;
 const CAT_GROUND_SCALE = 3.5;
 const CAT_PERCH_SCALE = 2.8;
 const CAT_HOP_MS = 450;
-const CAT_HELD_LIFT = 0.35; // held up in both hands: resting on the raised hands, just above the head
+const CAT_HELD_LIFT = 0.15; // picked up with H: a touch higher than a cat that climbed on by itself
 const CAT_APPROACH_MAX_MS = 2800;
 const CAT_APPROACH_SPEED = 8.5;
 
@@ -2488,23 +2487,10 @@ addEventListener("keydown", (e) => {
 // female: coral beanie, long hair, teal coat, skirt, yellow bag.
 // a trainer's sheet with its sitting-on-the-ground frames drawn under it (src/ground-sit.js); the row's
 // place rides on the canvas
-// and its holding-something-up frames under those (src/lift-frames.js), for a cat picked up with H
 function withSitFrames(cv, cfg) {
   const { canvas, row } = addSitFrames(cv, cfg, framePos);
   canvas.sitRow = row;
-  const lifted = addLiftFrames(canvas, cfg, framePos, cfg.steps || 4);
-  lifted.canvas.liftRows = lifted.rows;
-  return lifted.canvas;
-}
-// the holding-up frame facing `d` on `step` (false if this texture has none yet)
-function setLiftFrameTex(tex, d, step) {
-  const img = tex.image,
-    rows = img?.liftRows;
-  if (!rows) return false;
-  const { x, y, w, h } = liftFramePos(rows, d, step);
-  tex.repeat.set(w / img.width, h / img.height);
-  tex.offset.set(x / img.width, 1 - (y + h) / img.height);
-  return true;
+  return canvas;
 }
 function generateOriginalTrainer(gender = "male", cap = null) {
   const fem = gender === "female";
@@ -3737,8 +3723,7 @@ function updateOthers(dt) {
     // on the ground, facing the way they stood (walking or a bench gets them up)
     if (o.ground && (seat || o.step)) o.ground = false;
     const grounded = o.ground && setSitFrameTex(o.tex, o.dir);
-    const lifting = !grounded && !seat && catHeldBy(oid) && setLiftFrameTex(o.tex, o.dir, o.step | 0); // a cat over their head
-    if (!grounded && !lifting) setFrameTex(o.tex, running ? RUN_CROP[o.gender] : o.cfg, seat ? seat.dir : o.dir, seat ? 0 : o.step);
+    if (!grounded) setFrameTex(o.tex, running ? RUN_CROP[o.gender] : o.cfg, seat ? seat.dir : o.dir, seat ? 0 : o.step);
     m.userData.lift = running && o.gender === "male" ? 0.8 : 0; // the male run frames sit higher in their cell
     m.position.y -= m.userData.lift;
     // standing still: on the standing frame, a moment after the last step arrived
@@ -4679,7 +4664,7 @@ function loop() {
   const running = Boolean(walking && run);
   if (onGround && walking) setGround(false); // moving gets you up
   const grounded = onGround && setSitFrameTex(sheetTex, dir); // facing the way you stood
-  if (!grounded && !(myCat() && setLiftFrameTex(sheetTex, dir, currentStep))) setFrame(dir, currentStep, running);
+  if (!grounded) setFrame(dir, currentStep, running);
   // a rider's spot comes from the seat and the clock in every browser: nothing to send while it turns
   if (!riding) sendPosition(now, currentStep, running);
   const freeSeat = mySeat >= 0 ? -1 : nearestFreeSeat();
