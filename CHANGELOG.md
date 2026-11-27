@@ -68,6 +68,7 @@
 - A single room, `lobby`: `?room=` is gone and the server refuses other room names, so nobody can open extra rooms to run up the bill.
 
 ### Fixed
+- **The camera holds still on the Ferris wheel and the carousel**: it used to follow your seat, so a ride on the wheel took the whole town round in a circle 12 units across, up and down, every minute, and the carousel swayed it. Now it glides to the ride's middle and stays there while you go round, and back to you when you get off. On the roller coaster it still goes along with the train.
 - **Room to walk between the pond and the Ferris wheel**: the wheel stood so close to the pond's corner that nobody could pass. It moved a little to the right and blocks less of the grass, so you can walk by on both sides of it.
 - The game no longer fails to start when you come back to a fishing line whose fish got away while the tab was closed.
 - **Stones thrown while your tab was hidden** no longer all fly at once when you come back: a stone someone throws while you are on another tab is skipped.

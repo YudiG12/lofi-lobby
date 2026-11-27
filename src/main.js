@@ -4552,6 +4552,26 @@ if (import.meta.env.DEV) {
   });
 }
 
+// What the camera looks at: you, or the ride you are on. It sits at a fixed offset from it, so
+// following a Ferris wheel gondola took the whole town round in a circle 12 units across, up and
+// down, every minute, and the carousel swayed it too. On those two the camera glides to the ride's
+// middle and holds still: the ride turns and you go round in it. Getting off, it glides back to you.
+// The roller coaster is a trip, so the camera goes along with the train.
+const RIDE_FOCUS_Y = 3; // over the ride's base: the wheel's 14-unit height and its riders fit in view
+const rideFocus = new THREE.Vector3();
+let rideHold = 0; // 0 = on you, 1 = on the ride
+const _focus = new THREE.Vector3();
+function cameraFocus(dt) {
+  const still = mySeat >= 0 && (isWheelSeat(mySeat) || isCarouselSeat(mySeat));
+  if (still) {
+    const root = isWheelSeat(mySeat) ? wheel.root : carousel.root;
+    const center = isWheelSeat(mySeat) ? WHEEL : CAROUSEL;
+    rideFocus.set(center.x, root.position.y + RIDE_FOCUS_Y, center.z);
+  }
+  rideHold += ((still ? 1 : 0) - rideHold) * (1 - Math.exp(-dt * 4));
+  if (Math.abs(rideHold - (still ? 1 : 0)) < 0.001) rideHold = still ? 1 : 0;
+  return _focus.set(pos.x + slide.x, pos.y, pos.z + slide.z).lerp(rideFocus, rideHold);
+}
 function loop() {
   const now = performance.now();
   const dt = Math.min(clock.getDelta(), 0.05);
@@ -4646,8 +4666,9 @@ function loop() {
   if (running && GENDER === "male") sprite.position.y -= 0.8;
   shadow.position.set(pos.x + slide.x, pos.y + 0.05, pos.z + slide.z);
   shadow.visible = mySeat < 0; // would float under the hanging feet
-  camera.position.set(pos.x + slide.x, pos.y + 38, pos.z + 42 + slide.z);
-  camera.lookAt(pos.x + slide.x, pos.y + 1, pos.z + slide.z);
+  const focus = cameraFocus(dt);
+  camera.position.set(focus.x, focus.y + 38, focus.z + 42);
+  camera.lookAt(focus.x, focus.y + 1, focus.z);
   updateCapy();
   owl.update(performance.now(), pos);
   owl.mesh.rotation.set(camera.rotation.x * 0.5, 0, 0); // faces the camera like the trainers
@@ -4676,3 +4697,4 @@ function loop() {
   requestAnimationFrame(loop);
 }
 loop();
+
