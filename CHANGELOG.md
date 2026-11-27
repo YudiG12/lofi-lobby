@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- **Owl**: an owl sits on the message wall's roof and every so often flies, flapping, to the cap of one of the two nearest lamp posts and on to another perch. Walk up to its perch and it flies off. Only for you.
 - **Skipping stones**: by the pond, press **T** (or tap the note over you) to throw a stone into the water. It flies from your hand in an arc, skips one to four times (a ring and a few drops at each touch, each hop shorter and lower) and sinks with a bigger splash. Everyone sees the same throw: the thrower plans where it touches the water and the room passes it on. No new assets: the pebble, the rings and the drops are made in code.
 - **Cigarette**: **Q** now goes coffee, cigarette, empty hands while you stand (and through it on a bench too). The ember glows at night and a thin trail of smoke rises from the tip; everyone sees it, and like the coffee it goes away while you walk.
 - **Sit on the ground**: press **C** (or the sitting button in the top card) to sit down wherever you are, facing the way you stand: front, back, left or right. Everyone sees it, also whoever joins later; walking, sitting on a bench or C again gets you up. The sitting frames are drawn in code from each trainer's own standing frames (with its cap colour), so there are no new assets.
