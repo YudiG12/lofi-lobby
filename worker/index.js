@@ -139,7 +139,7 @@ const NOTE_ID = /^note:\d{15}-[a-z0-9]{6}$/;
 const AFTER_EVERY_NOTE = "note:999999999999999-zzzzzz"; // a cursor above every note id
 const topKey = (likes, id) => `top:${String(likes).padStart(6, "0")}:${id}`;
 // rate buckets: capacity, refill per second
-const RATES = { pos: [30, 20], chat: [8, 1], sit: [20, 6], like: [30, 0.5], github: [4, 1 / 30], social: [20, 2], other: [10, 1] };
+const RATES = { pos: [30, 20], chat: [8, 1], sit: [20, 6], activity: [6, 2], like: [30, 0.5], github: [4, 1 / 30], social: [20, 2], other: [10, 1] };
 // accounts, profiles, friends and private chat (worker/social.js); a private message spends the chat budget
 const SOCIAL = ["profile", "friend", "friends", "dm-open", "dm-read", "chat-invite", "chat-accept"];
 // contributors: a player proves their GitHub login (OAuth device flow, GITHUB_CLIENT_ID) and the room counts
@@ -595,7 +595,7 @@ export class Room {
 
   // only each player's public fields (never the IP)
   public(p) {
-    return { id: p.id, name: p.name, gender: p.gender, color: p.color || "", activity: activityStatus(p.activity), cap: p.cap ?? -1, x: p.x, z: p.z, dir: p.dir, step: p.step, seat: p.seat ?? -1, hold: p.hold | 0, ground: !!p.ground, fish: p.fish || null, admin: !!p.admin, prs: p.prs | 0 };
+    return { id: p.id, name: p.name, gender: p.gender, color: p.color || "", activity: activityStatus(p.activity), cap: p.cap ?? -1, x: p.x, z: p.z, dir: p.dir, step: p.step, seat: p.seat ?? -1, hold: p.hold | 0, ground: !!p.ground, fish: p.fish || null, admin: !!p.admin, prs: p.prs | 0, n: p.acct ?? -1 };
   }
   players() {
     return this.openSockets()
@@ -617,7 +617,7 @@ export class Room {
   // rate limit (token bucket): movement and seats per connection, chat and the rest shared by everyone on one IP
   allowed(p, type) {
     const [cap, refill] = RATES[type] || RATES.other;
-    const key = (type === "pos" || type === "sit" ? p.id : p.ip) + "|" + type;
+    const key = (type === "pos" || type === "sit" || type === "activity" ? p.id : p.ip) + "|" + type;
     const now = Date.now() / 1000;
     let k = this.buckets.get(key);
     if (!k) this.buckets.set(key, (k = { tokens: cap, at: now }));
@@ -636,7 +636,7 @@ export class Room {
     const p = ws.deserializeAttachment();
     if (!p) return;
     if (!p.joinedAt && m.t !== "hello") return;
-    const type = m.t === "pos" ? "pos" : m.t === "chat" || m.t === "dm" ? "chat" : m.t === "sit" ? "sit" : m.t === "github-start" ? "github" : SOCIAL.includes(m.t) ? "social" : "other";
+    const type = m.t === "pos" ? "pos" : m.t === "chat" || m.t === "dm" ? "chat" : m.t === "sit" ? "sit" : m.t === "activity" ? "activity" : m.t === "github-start" ? "github" : SOCIAL.includes(m.t) ? "social" : "other";
     // the seat the room really has for this player, tagged with the request it answers
     const seatReply = () => ws.send(JSON.stringify({ t: "seat", id: p.id, seat: p.seat ?? -1, n: Number.isSafeInteger(m.n) ? m.n : 0 }));
     if (!this.allowed(p, type)) {
@@ -675,7 +675,6 @@ export class Room {
       p.color = nameColor(m.color);
       ws.serializeAttachment(p);
       this.broadcast({ t: "color", id: p.id, color: p.color }, ws);
-      await this.saveLook(p);
     } else if (m.t === "activity") {
       if (m.status !== null && !ACTIVITY_STATUSES.has(m.status)) return;
       p.activity = m.status;
