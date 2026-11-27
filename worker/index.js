@@ -34,7 +34,7 @@
 //  - allowed origins (ALLOWED_ORIGINS) so other sites can't use this server
 //  - per IP: few connections, shared chat budget, admin lockout, progressive mute for spam
 //  - all text is stripped of control characters and truncated; numbers finite and clamped
-//  - word filter: bad names refused, bad chat words become LOBBA (worker/moderation.js)
+//  - word filter: bad names refused, bad chat words become "lobba" (worker/moderation.js)
 //  - admin kick (short IP ban) and ban (long IP ban), kept in storage
 //
 // Message wall (HTTP, a note is too long for a WebSocket frame): notes kept forever in this room's storage,
@@ -102,6 +102,7 @@ const topKey = (likes, id) => `top:${String(likes).padStart(6, "0")}:${id}`;
 const RATES = { pos: [30, 20], chat: [8, 1], sit: [20, 6], like: [30, 0.5], other: [10, 1] };
 const HEARTBEAT_CHECK_MS = 60_000;
 const HEARTBEAT_TIMEOUT_MS = 120_000; // > 60s background tab timer throttling
+const HELLO_TIMEOUT_MS = 15_000; // pre-hello sockets cannot hold room slots via edge pings
 const LEAVE_BYTES = 256;
 
 // RFC 6455 forbids passing reserved close codes (1005, 1006, 1015) to ws.close()
@@ -310,7 +311,7 @@ export class Room {
       const raw = cleanNote(m?.text);
       if (!raw) return json({ error: "write something first" }, 400);
       if (hasLink(raw)) return json({ error: "links are not allowed on the wall" }, 400);
-      const text = cleanChat(raw);
+      const text = cleanChat(raw, NOTE_MAX);
       if (text === null) return json({ error: "note blocked" }, 400);
       let name = cleanText(m.name, 16) || "trainer";
       if (badName(name) || /admin|moderador|moderator|staff/.test(normalize(name))) name = "trainer";
@@ -337,7 +338,7 @@ export class Room {
       const raw = cleanNote(m?.text);
       if (!raw) return json({ error: "write something first" }, 400);
       if (hasLink(raw)) return json({ error: "links are not allowed on the wall" }, 400);
-      const text = cleanChat(raw);
+      const text = cleanChat(raw, NOTE_MAX);
       if (text === null) return json({ error: "note blocked" }, 400);
       const now = Date.now();
       const [ban, note] = await Promise.all([this.state.storage.get("ban:" + ip), this.state.storage.get(del[1])]);
@@ -557,6 +558,7 @@ export class Room {
     if (!m || typeof m !== "object") return;
     const p = ws.deserializeAttachment();
     if (!p) return;
+    if (!p.joinedAt && m.t !== "hello") return;
     const type = m.t === "pos" ? "pos" : m.t === "chat" ? "chat" : m.t === "sit" ? "sit" : "other";
     // the seat the room really has for this player, tagged with the request it answers
     const seatReply = () => ws.send(JSON.stringify({ t: "seat", id: p.id, seat: p.seat ?? -1, n: Number.isSafeInteger(m.n) ? m.n : 0 }));
@@ -660,7 +662,7 @@ export class Room {
       await this.state.storage.put("radio", command);
       this.broadcast({ t: "radio", command });
     } else if (m.t === "chat") {
-      const text = cleanChat(cleanText(m.text, 140));
+      const text = cleanChat(cleanText(m.text, 140), 140);
       if (text === null) return void ws.send(JSON.stringify({ t: "error", msg: "message blocked" }));
       if (!text) return;
       const now = Date.now();
@@ -811,6 +813,10 @@ export class Room {
       const p = ws.deserializeAttachment();
       if (ws.readyState !== 1 || !p || p.left) {
         stale.push(ws);
+        continue;
+      }
+      if (!p.joinedAt) {
+        if (now - (p.connectedAt ?? now) > HELLO_TIMEOUT_MS) stale.push(ws);
         continue;
       }
       const lastSeen = this.state.getWebSocketAutoResponseTimestamp?.(ws)?.getTime() ?? p.connectedAt ?? p.joinedAt ?? now;

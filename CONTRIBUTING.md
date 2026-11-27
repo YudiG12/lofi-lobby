@@ -16,7 +16,7 @@ To deploy your own: `npm run deploy-your-own` ([README](README.md#deploy-your-ow
 
 ## How changes are made
 
-1. **One change per PR**, with the why in the description. Design decisions become an ADR in `docs/adr/`.
+1. **One change per PR**, with the why in the description. Design decisions become an ADR in `docs/adr/`, linked in the `README.md` Architecture table in ascending ADR number order (before non-ADR references like `SECURITY.md`).
 2. **Check it in the browser** (two tabs for anything multiplayer) before opening the PR.
 3. **Review** by a separate reviewer with a clean context (only the diff and the docs).
 4. **Docs and diagrams** are merged only after the owner approves them.

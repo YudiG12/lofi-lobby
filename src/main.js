@@ -4,6 +4,7 @@ import { connectRadioToServer, receiveCommand } from "./radio.js";
 import { createBoard, setupWall } from "./board.js";
 import { createHolidayDecor, inHolidaySeason } from "./holidays.js";
 import { createCapybara, CAPY_NEAR, CAPY_RADIUS, PHRASES as CAPY_PHRASES } from "./capybara.js";
+import { createFishing, FISH_NEAR, FISH_LEAVE } from "./fishing.js";
 
 // ---- Asset config (change here to use other files) ----
 const TOWN = {
@@ -265,7 +266,8 @@ resize();
 
 // ---- Town (FBX) ----
 const texLoader = new THREE.TextureLoader();
-const atlas = texLoader.load(TOWN.texture);
+// the atlas cuts out leaves and fences (alphaTest), in the lamp shadows too
+const atlas = texLoader.load(TOWN.texture, () => markLampShadowsStale());
 atlas.magFilter = THREE.NearestFilter;
 atlas.minFilter = THREE.NearestFilter;
 atlas.colorSpace = THREE.SRGBColorSpace;
@@ -398,6 +400,7 @@ function prepareTown(fbx) {
     }
     placeCapybara();
     placeCapyWalk();
+    markLampShadowsStale(); // the town, the lamps and everything around them just took their places
 }
 
 // ---- Original village (default on the published site) ----
@@ -762,6 +765,61 @@ for (const k in LOOK)
   if (typeof LOOK[k][0] === "string") LOOK[k] = LOOK[k].map((c) => new THREE.Color(c));
 const lampLights = lampPosts.flatMap((p) => p.children.filter((c) => c.isPointLight));
 const lampGlows = lampPosts.flatMap((p) => p.children.filter((c) => c.isSprite));
+
+// ---- Lamp shadows on demand ----
+// A lamp's shadow is 6 renders (one per cube face) of everything within its reach, which three.js
+// would redo every frame: 24 extra passes for the 4 lamps, more than half of all draw calls.
+// Houses, trees, benches and the wall never move, so a lamp redraws its shadow only when it can
+// change: once the town is in place, when it comes on at dusk, and when something that moves (a
+// trainer, the capybara) changed within its reach. By day the lamps are off and nothing is redrawn.
+// Something moving redraws them when it has gone SHADOW_STEP since the last drawing, changed its
+// animation frame, or stopped (so the shadow settles exactly under it): every frame or so for a
+// walking trainer, about 10 times a second for the capybara, which strolls by the pond all night.
+for (const l of lampLights) (l.shadow.autoUpdate = false), (l.userData.shadowStale = true);
+function markLampShadowsStale() {
+  for (const l of lampLights) l.userData.shadowStale = true;
+}
+const SHADOW_REACH = 3; // a trainer's sprite is 5 units tall: past the light's range it can still reach in
+const SHADOW_STEP = 0.25; // about one texel of a lamp's 512 shadow map, a few units from the lamp
+const drawnMovers = new Map(); // object -> { x, y, z, look, px, py, pz }: where its shadow was drawn, and last frame's spot
+const _lampAt = new THREE.Vector3();
+function updateLampShadows(movers) {
+  // where a shadow must change this frame: where it was drawn and where it goes (one that left, only the old)
+  const changed = [];
+  const seen = new Set();
+  for (const o of movers) {
+    seen.add(o);
+    const { x, y, z } = o.position;
+    // the frame of the sheet it casts its shadow with (the capybara uses its own material's)
+    const map = (o.customDistanceMaterial || o.material)?.map;
+    const look = [o.visible, map?.id, map?.image?.width, map?.offset.x, map?.offset.y, map?.repeat.x].join();
+    const d = drawnMovers.get(o);
+    if (!d) {
+      changed.push({ x, z });
+      drawnMovers.set(o, { x, y, z, look, px: x, py: y, pz: z });
+      continue;
+    }
+    const away = Math.hypot(x - d.x, y - d.y, z - d.z);
+    const stopped = x === d.px && y === d.py && z === d.pz;
+    Object.assign(d, { px: x, py: y, pz: z });
+    if (look === d.look && away < SHADOW_STEP && !(stopped && away > 0)) continue;
+    changed.push({ x: d.x, z: d.z }, { x, z });
+    Object.assign(d, { x, y, z, look });
+  }
+  for (const [o, d] of drawnMovers) if (!seen.has(o)) changed.push(d), drawnMovers.delete(o);
+  for (const l of lampLights) {
+    if (l.intensity <= 0) {
+      l.userData.shadowStale = true; // off: redraw once it comes back on
+      continue;
+    }
+    l.getWorldPosition(_lampAt);
+    const reach = l.distance + SHADOW_REACH;
+    if (l.userData.shadowStale || changed.some((c) => Math.hypot(c.x - _lampAt.x, c.z - _lampAt.z) < reach)) {
+      l.shadow.needsUpdate = true; // three.js clears it once drawn
+      l.userData.shadowStale = false;
+    }
+  }
+}
 // A few candles on the grass between the two pond benches, so sitters aren't in the dark (the posts
 // are far, at the pond's ends): chunky square wax stubs of different heights, small flames, and a
 // very faint warm light that wavers. No shadows, and out by day with the lamps.
@@ -2262,11 +2320,9 @@ const toggleSit = () => {
 addEventListener("keydown", (e) => {
   const typing = ["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName);
   const k = e.key.toLowerCase();
-  // by the message board, E opens it (unless you're seated: then it stands you up)
   if (!typing && !e.repeat && !e.ctrlKey && !e.metaKey && k === "q") cycleHold();
-  if (!typing && !e.repeat && !e.ctrlKey && !e.metaKey && k === "e") (mySeat >= 0 || (!nearBoard() && !nearCapy())) && toggleSit();
   // a quick tap on a move key can end before the next frame: stand up right away
-  else if (!typing && !gamePaused && mySeat >= 0 && MOVE_KEYS[k]) {
+  if (!typing && !gamePaused && mySeat >= 0 && MOVE_KEYS[k]) {
     dir = MOVE_KEYS[k];
     standUp(true, FACING[dir]);
   }
@@ -2608,7 +2664,8 @@ function connect() {
         if (o) o.seat = m.seat;
       }
     } else if (m.t === "pos") {
-      const o = others.get(m.id) || createOther(m);
+      const o = others.get(m.id);
+      if (!o) return;
       if (o.target.x !== m.x || o.target.z !== m.z) o.movedAt = performance.now();
       o.target.set(m.x, 0, m.z);
       o.dir = m.dir;
@@ -2707,6 +2764,48 @@ const bubbles = new Map(); // owner (mesh) -> { el, until }
 // any text field (chat or the admin login): game keys and the Enter shortcut stay out of it
 const typing = () => ["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName);
 
+// ---- Mentions: "@name" in the chat ----
+// Everyone sees the message; it's highlighted only for whoever it names. Names aren't unique and can
+// have spaces, so "@" is matched against the names in the room (the longest that fits wins), without
+// telling upper from lower case, and must end where the name ends (not in the middle of a word).
+const roomNames = () => {
+  const all = new Map(); // lower case -> { name, color }
+  for (const o of others.values()) if (o.name) all.set(o.name.toLowerCase(), { name: o.name, color: o.color });
+  all.set(NAME.toLowerCase(), { name: NAME, color: COLOR });
+  return [...all.values()].sort((a, b) => b.name.length - a.name.length);
+};
+const endsWord = (text, i) => i >= text.length || !/[\p{L}\p{N}_]/u.test(text[i]);
+// the text split into plain parts and mentions: [{ text }, { text, at: { name, color } }, ...]
+function mentionParts(text) {
+  const names = roomNames(),
+    lower = text.toLowerCase(),
+    parts = [];
+  let from = 0;
+  for (let i = text.indexOf("@"); i >= 0; i = text.indexOf("@", i + 1)) {
+    const hit = names.find((n) => lower.startsWith(n.name.toLowerCase(), i + 1) && endsWord(text, i + 1 + n.name.length));
+    if (!hit) continue;
+    const end = i + 1 + hit.name.length;
+    if (i > from) parts.push({ text: text.slice(from, i) });
+    parts.push({ text: text.slice(i, end), at: hit });
+    from = end;
+    i = end - 1; // the next "@" is searched for after this mention
+  }
+  if (from < text.length) parts.push({ text: text.slice(from) });
+  return parts;
+}
+const mentionsMe = (parts) => parts.some((p) => p.at && p.at.name.toLowerCase() === NAME.toLowerCase());
+// the message's text with each "@name" in bold, in that player's name colour (textContent only: no HTML)
+function mentionText(el, parts) {
+  el.replaceChildren(
+    ...parts.map((p) => {
+      if (!p.at) return document.createTextNode(p.text);
+      const b = Object.assign(document.createElement("b"), { className: "at", textContent: p.text });
+      paintName(b, p.at.color);
+      return b;
+    }),
+  );
+}
+
 function addToHistory(name, text, id, admin, color) {
   const d = document.createElement("div");
   d.className = admin ? "m admin" : "m";
@@ -2718,7 +2817,13 @@ function addToHistory(name, text, id, admin, color) {
     s.addEventListener("click", (e) => openModMenu(e, id, name));
   }
   const t = document.createElement("span");
-  t.textContent = text; // textContent: no HTML from the chat
+  if (name === "system") t.textContent = text; // textContent: no HTML from the chat
+  else {
+    const parts = mentionParts(text);
+    mentionText(t, parts);
+    // someone else named you: highlighted for you only
+    if (mentionsMe(parts) && id !== myId && id !== "me") d.classList.add("mention");
+  }
   d.append(s, t);
   // follow new messages only if already at the bottom (don't yank someone reading old ones)
   const atBottom = elMsgs.scrollHeight - elMsgs.scrollTop - elMsgs.clientHeight < 40;
@@ -2727,7 +2832,7 @@ function addToHistory(name, text, id, admin, color) {
   if (atBottom || name === NAME) elMsgs.scrollTop = elMsgs.scrollHeight;
 }
 
-function showBubble(owner, text) {
+function showBubble(owner, text, mention = false) {
   let b = bubbles.get(owner);
   if (!b) {
     b = {
@@ -2737,6 +2842,7 @@ function showBubble(owner, text) {
     document.body.append(b.el);
     bubbles.set(owner, b);
   }
+  b.el.classList.toggle("mention", mention);
   b.el.replaceChildren(
     Object.assign(document.createElement("span"), { textContent: text }),
   );
@@ -2862,7 +2968,7 @@ function updateBubbles() {
 function receiveChat(id, name, text, admin, color) {
   addToHistory(name, text, id, admin, color);
   const owner = id === myId || id === "me" ? sprite : others.get(id)?.mesh;
-  if (owner) showBubble(owner, text);
+  if (owner) showBubble(owner, text, owner !== sprite && mentionsMe(mentionParts(text)));
 }
 
 // tapping send must not steal focus from the box (it would close the phone keyboard)
@@ -2929,6 +3035,75 @@ elInput.addEventListener("focus", () => {
 });
 elInput.addEventListener("blur", () => !MOBILE && (elInput.placeholder = idlePlaceholder));
 
+// Typing "@" lists the players in the room whose names start with what follows; arrows pick,
+// Tab or Enter puts the name in, Esc closes the list.
+const atList = Object.assign(document.createElement("div"), { id: "at-list", hidden: true });
+atList.setAttribute("role", "listbox");
+document.querySelector("#chat form").before(atList);
+let atPick = 0,
+  atFrom = -1;
+const atMatches = () => {
+  const caret = elInput.selectionStart ?? elInput.value.length;
+  const before = elInput.value.slice(0, caret);
+  const i = before.lastIndexOf("@");
+  if (i < 0 || (i > 0 && !/\s/.test(before[i - 1]))) return null; // "@" starts a word
+  const query = before.slice(i + 1).toLowerCase();
+  if (query.length > 16) return null;
+  const names = roomNames()
+    .filter((n) => n.name.toLowerCase() !== NAME.toLowerCase() && n.name.toLowerCase().startsWith(query))
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .slice(0, 6);
+  return names.length ? { at: i, names } : null;
+};
+function drawAtList() {
+  const m = atMatches();
+  atList.hidden = !m;
+  if (!m) return;
+  atFrom = m.at;
+  atPick = Math.min(atPick, m.names.length - 1);
+  atList.replaceChildren(
+    ...m.names.map((n, i) => {
+      const b = Object.assign(document.createElement("button"), { type: "button", textContent: "@" + n.name });
+      b.setAttribute("role", "option");
+      b.setAttribute("aria-selected", i === atPick);
+      b.classList.toggle("on", i === atPick);
+      paintName(b, n.color);
+      b.addEventListener("pointerdown", (e) => e.preventDefault()); // keep the focus (and the phone keyboard) in the box
+      b.addEventListener("click", () => putAt(n.name));
+      return b;
+    }),
+  );
+}
+function putAt(name) {
+  const caret = elInput.selectionStart ?? elInput.value.length;
+  const v = elInput.value;
+  const text = (v.slice(0, atFrom) + "@" + name + " " + v.slice(caret)).slice(0, 140);
+  elInput.value = text;
+  const at = Math.min(140, atFrom + name.length + 2);
+  elInput.setSelectionRange(at, at);
+  atList.hidden = true;
+  atPick = 0;
+}
+elInput.addEventListener("input", () => ((atPick = 0), drawAtList()));
+elInput.addEventListener("click", drawAtList);
+elInput.addEventListener("blur", () => (atList.hidden = true));
+elInput.addEventListener("keydown", (e) => {
+  if (atList.hidden) return;
+  const n = atList.children.length;
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault();
+    atPick = (atPick + (e.key === "ArrowDown" ? 1 : n - 1)) % n;
+    drawAtList();
+  } else if (e.key === "Tab" || e.key === "Enter") {
+    e.preventDefault(); // pick the name instead of sending
+    e.stopPropagation();
+    atList.children[atPick]?.click();
+  } else if (e.key === "Escape") {
+    e.stopPropagation(); // close the list, stay in the box
+    atList.hidden = true;
+  }
+});
+
 // ---- Message wall ----
 const wall = setupWall({ getName: () => NAME, getGender: () => GENDER, isAdmin: () => IS_ADMIN });
 // near the board: a prompt over it ("E" or tap to read)
@@ -2940,7 +3115,7 @@ const nearBoard = () => Math.hypot(pos.x - board.position.x, pos.z - board.posit
 addEventListener("keydown", (e) => {
   if (typing() || e.repeat || gamePaused || e.metaKey || e.ctrlKey || e.altKey) return;
   const k = e.key.toLowerCase();
-  if ((k === "e" && nearBoard()) || k === "b") wall.show();
+  if (k === "b") wall.show();
 });
 // near the capybara: a prompt over it ("E" or tap to feed); feeding opens its ironic thank-you bubble
 const capyPrompt = Object.assign(document.createElement("button"), { id: "capy-prompt", type: "button" });
@@ -2960,16 +3135,12 @@ capyPrompt.addEventListener("click", (e) => {
 document.body.append(capyPrompt);
 const nearCapy = () =>
   mySeat < 0 && !nearBoard() && Math.hypot(pos.x - capy.mesh.position.x, pos.z - capy.mesh.position.z) < CAPY_NEAR;
-addEventListener("keydown", (e) => {
-  if (typing() || e.repeat || gamePaused || wall.isOpen() || e.metaKey || e.ctrlKey || e.altKey) return;
-  if (e.key.toLowerCase() === "e" && nearCapy()) feedCapy();
-});
 function updateCapy() {
   const t = roomNow();
   walkCapy(t);
   capy.update(t);
   capy.mesh.rotation.set(camera.rotation.x * 0.5, 0, 0); // faces the camera like the trainers
-  const show = nearCapy() && !wall.isOpen() && !gamePaused && !bubbles.has(capy.mesh);
+  const show = eNow === "capy" && !bubbles.has(capy.mesh);
   capyPrompt.classList.toggle("on", show);
   if (!show) return;
   _v.set(capy.mesh.position.x, capy.mesh.position.y + 5, capy.mesh.position.z).project(camera);
@@ -2977,12 +3148,136 @@ function updateCapy() {
   capyPrompt.style.top = `${(-_v.y * 0.5 + 0.5) * innerHeight}px`;
 }
 function updateWallPrompt() {
-  const show = nearBoard() && !wall.isOpen() && !gamePaused;
+  const show = eNow === "wall";
   wallPrompt.classList.toggle("on", show);
   if (!show) return;
   _v.set(board.position.x, board.position.y + 7.4, board.position.z).project(camera);
   wallPrompt.style.left = `${(_v.x * 0.5 + 0.5) * innerWidth}px`;
   wallPrompt.style.top = `${(-_v.y * 0.5 + 0.5) * innerHeight}px`;
+}
+
+const fishing = createFishing({
+  scene,
+  button: document.querySelector("#fish"),
+  say: (text) => showBubble(sprite, text),
+  feetDepth: (mesh) => useFeetDepth(mesh, myFeet, 12),
+  camera,
+  shape: (d) => bodyShape(sprite.material.map, CHARACTER.cfg, d),
+});
+/**
+ * Where you could cast from: at the pond's edge (standing or seated), facing the water.
+ * @returns {{x: number, z: number, d: number, face: string, seat: number} | null} d: distance to the pond's box
+ */
+function fishSpot() {
+  if (!pondBox) return null;
+  const s = mySeat >= 0 ? seatSpot(mySeat) : null;
+  const x = s ? s.x : pos.x,
+    z = s ? s.z : pos.z,
+    face = s ? s.dir : dir;
+  const { min, max } = pondBox;
+  const cx = THREE.MathUtils.clamp(x, min.x, max.x),
+    cz = THREE.MathUtils.clamp(z, min.z, max.z);
+  const d = Math.hypot(cx - x, cz - z);
+  if (!d || d > FISH_NEAR) return null;
+  const [fx, fz] = FACING[face];
+  if ((fx * (cx - x) + fz * (cz - z)) / d < 0.5) return null;
+  return { x, z, d, face, seat: mySeat };
+}
+const _castFrom = new THREE.Vector3();
+/** Casts from where you are now, if still at the edge; the bobber lands a few steps out. */
+function castHere(minutes) {
+  const s = fishSpot();
+  if (!s) return;
+  const [fx, fz] = FACING[s.face];
+  const { min, max } = pondBox;
+  const tx = THREE.MathUtils.clamp(s.x + fx * (s.d + 3.5), min.x + 1.5, max.x - 1.5),
+    tz = THREE.MathUtils.clamp(s.z + fz * (s.d + 3.5), min.z + 1.5, max.z - 1.5);
+  ray.set(_castFrom.set(tx, 200, tz), DOWN);
+  const hit = ray.intersectObjects([...waterMeshes], false)[0];
+  fishing.cast({ x: s.x, z: s.z, face: s.face, seat: s.seat, target: { x: tx, y: hit ? hit.point.y : pos.y, z: tz } }, minutes);
+}
+/** @param {number} id seat @returns {number} distance from you to that seat */
+const seatDistance = (id) => {
+  const s = seatSpot(id);
+  return s ? Math.hypot(s.x - pos.x, s.z - pos.z) : Infinity;
+};
+
+let eNow = null;
+/**
+ * What E does right now: the line if it is out, standing up if seated, then the wall, the capybara,
+ * and last the pond's edge or the free seat, whichever is closer. Only that action's prompt shows.
+ * @param {number} [seat] nearest free seat, if already known this frame
+ * @returns {"fish" | "stand" | "wall" | "capy" | "cast" | "sit" | null}
+ */
+function eAction(seat = nearestFreeSeat()) {
+  if (gamePaused || wall.isOpen()) return null;
+  const p = fishing.phase();
+  if (p === "focus" || p === "bite") return "fish";
+  if (mySeat >= 0) return "stand";
+  if (nearBoard()) return "wall";
+  if (nearCapy()) return "capy";
+  const spot = fishSpot();
+  if (spot && (seat < 0 || spot.d < seatDistance(seat))) return "cast";
+  return seat >= 0 ? "sit" : null;
+}
+/** Runs an action from eAction (E, a prompt or the fish button). */
+function doE(action = eAction()) {
+  if (action === "fish") fishing.press();
+  else if (action === "cast") fishSpot() && fishing.choose(castHere);
+  else if (action === "wall") wall.show();
+  else if (action === "capy") feedCapy();
+  else if (action === "stand" || action === "sit") toggleSit();
+}
+addEventListener("keydown", (e) => {
+  if (typing() || e.repeat || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.key.toLowerCase() === "e") doE();
+});
+const fishBtn = document.querySelector("#fish");
+fishBtn.addEventListener("click", (e) => {
+  if (!gamePaused) doE(fishing.phase() === "idle" ? "cast" : "fish");
+  e.currentTarget.blur();
+});
+const fishPrompt = Object.assign(document.createElement("button"), { id: "fish-prompt", type: "button" });
+fishPrompt.addEventListener("click", (e) => {
+  doE(fishPrompt.dataset.action);
+  e.currentTarget.blur();
+});
+document.body.append(fishPrompt);
+let fishRestored = false;
+/**
+ * Each frame: puts you back where a line was cast after a reload, reels it in if you walk away,
+ * draws the gear and places the fish prompt.
+ */
+function updateFishing() {
+  const now = Date.now();
+  let s = fishing.spot();
+  if (!fishRestored && savedPosChecked && pondBox) {
+    fishRestored = true;
+    if (s && s.seat >= 0 && seatSpot(s.seat)) sit(s.seat);
+    else if (s && isFree(s.x, s.z, topHeight(s.x, s.z))) pos.set(s.x, topHeight(s.x, s.z), s.z), (dir = s.face);
+  }
+  if (fishing.choosing() && (gamePaused || !fishSpot())) fishing.closePicker();
+  if (fishRestored && s && Math.hypot(pos.x - s.x, pos.z - s.z) > FISH_LEAVE) fishing.reelIn(), (s = null);
+  fishing.draw(now, sprite, dir);
+  const p = fishing.phase(now),
+    here = s ? null : fishSpot();
+  fishBtn.hidden = p === "idle" && !here;
+  const text = eNow === "cast" ? "fish" : eNow === "fish" && p === "bite" ? "pull it in!" : eNow === "fish" && fishing.confirming() ? "again to reel in" : "";
+  const show = !!text && !typing() && !!(s || here);
+  fishPrompt.classList.toggle("on", show);
+  fishPrompt.classList.toggle("bite", p === "bite");
+  if (!show) return;
+  const html = MOBILE ? `tap ${text === "fish" ? "to fish" : text === "pull it in!" ? "to pull it in!" : "again to reel in"}` : `<kbd>E</kbd> ${text}`;
+  if (fishPrompt.innerHTML !== html) fishPrompt.innerHTML = html;
+  fishPrompt.dataset.action = eNow;
+  if (s) _v.set(s.target.x, s.target.y + 2.2, s.target.z);
+  else {
+    const [fx, fz] = FACING[here.face];
+    _v.set(here.x + fx * (here.d + 2.5), pos.y + 2.2, here.z + fz * (here.d + 2.5));
+  }
+  _v.project(camera);
+  fishPrompt.style.left = `${(_v.x * 0.5 + 0.5) * innerWidth}px`;
+  fishPrompt.style.top = `${(-_v.y * 0.5 + 0.5) * innerHeight}px`;
 }
 
 function loop() {
@@ -3052,6 +3347,7 @@ function loop() {
   setFrame(dir, currentStep, running);
   sendPosition(performance.now(), currentStep, running);
   const freeSeat = mySeat >= 0 ? -1 : nearestFreeSeat();
+  eNow = eAction(freeSeat);
   updateHoldButton();
   updateOthers(dt);
 
@@ -3071,15 +3367,17 @@ function loop() {
   camera.position.set(pos.x + slide.x, pos.y + 38, pos.z + 42 + slide.z);
   camera.lookAt(pos.x + slide.x, pos.y + 1, pos.z + slide.z);
   updateCapy();
+  updateFishing();
   updateOcclusion();
   // facing the camera, tilted only halfway (the shadow looks like a standing body)
   sprite.rotation.set(camera.rotation.x * 0.5, 0, 0);
   showHeld(myHeld, sprite, CHARACTER.cfg, myHold, heldDir(myHold, mySeat >= 0 ? seatSpot(mySeat) : null, !walking, dir));
 
+  updateLampShadows([sprite, capy.mesh, ...[...others.values()].map((o) => o.mesh)]);
   renderer.render(scene, camera);
   updateNameTags();
   updateBubbles();
-  updateSitPrompt(freeSeat);
+  updateSitPrompt(eNow === "sit" ? freeSeat : -1);
   updateWallPrompt();
   requestAnimationFrame(loop);
 }
