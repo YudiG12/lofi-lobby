@@ -8,6 +8,7 @@
 //                     { t: "stone", pts: [[x, z], ...] }   (a stone skipped on the pond: where it touched the water, 1 to 6)
 //                     { t: "ground", on }   (sit on the ground, or get up)
 //                     { t: "fish", on, x, z }   (your fishing line is out, the bobber at x, z; or back in)
+//                     { t: "cat", id }   (feed one of the town cats)
 //                     { t: "radio", idx, password }   (admin)
 //                     { t: "auth", password, quiet }   (admin login: admin-ok or an error; quiet = on reconnect, no admin-ok)
 //                     { t: "who", id, password }   (admin: who is this player)
@@ -26,6 +27,10 @@
 //                     { t: "capy", at, until, lost, phrase }   (the capybara was fed: it sits from at to until, room clock;
 //                                                               lost = all its sitting before; phrase picks what it says.
 //                                                               Also sent on join, without phrase)
+//                     { t: "cat", id, at, until, lost, phrase }   (same clock-pause feeding state, per cat id)
+//                     { t: "cat-ride", id, playerId, at, until, phrase }   (the room picked a player for that cat to
+//                                                               sit on their head from at to until; playerId null ends it early.
+//                                                               Only the server starts rides. Also sent on join, without phrase)
 //                     { t: "history", messages: [{ id, name, text, at }] } (on join)
 //                     { t: "notice", msg } | { t: "rename", name } (your name was refused)
 //                     { t: "who", id, tag, names, sameTag } (admin only)
@@ -99,6 +104,14 @@ const NOTE_COLORS = ["cream", "yellow", "pink", "blue", "green", "lilac"];
 // the capybara: fed, it sits for a while, and then walks a little before it can be fed again
 const CAPY_SIT_MS = 6000;
 const CAPY_REST_MS = 3000;
+// cats: same clock-pause sync per id so multiple cats can be added from config
+const CAT_IDS = ["black", "orange", "calico", "tuxedo", "siamese"];
+const CAT_SIT_MS = 6000;
+const CAT_REST_MS = 3000;
+// now and then (on the heartbeat alarm) a cat climbs onto a random online player's head
+const CAT_RIDE_MS = 18_000;
+const CAT_RIDE_EVERY_MS = 90_000;
+const CAT_RIDE_CHANCE = 0.65;
 const LIKES_PER_IP = 3; // on one note: a house can share an IP, a like farm can't hide behind fresh wall keys
 const LIKES_MAX = 2000; // likers kept per note (one storage value)
 const NOTE_ID = /^note:\d{15}-[a-z0-9]{6}$/;
@@ -516,6 +529,22 @@ export class Room {
     if (radio) server.send(JSON.stringify({ t: "radio", command: radio }));
     const capy = await this.state.storage.get("capy");
     if (capy) server.send(JSON.stringify({ t: "capy", ...capy }));
+    const cats = await this.state.storage.get("cats");
+    if (cats && typeof cats === "object") {
+      for (const id of CAT_IDS) {
+        if (cats[id]) server.send(JSON.stringify({ t: "cat", id, ...cats[id] }));
+      }
+    }
+    const rides = await this.state.storage.get("cat-rides");
+    if (rides && typeof rides === "object") {
+      const online = new Set(this.players().map((q) => q.id));
+      for (const id of CAT_IDS) {
+        const r = rides[id];
+        if (r?.playerId && r.until > Date.now() && online.has(r.playerId)) {
+          server.send(JSON.stringify({ t: "cat-ride", id, playerId: r.playerId, at: r.at, until: r.until }));
+        }
+      }
+    }
     const messages = await this.history();
     if (messages.length) server.send(JSON.stringify({ t: "history", messages }));
     server.send(JSON.stringify({ t: "state", players: this.players().filter((p) => p.id !== id) }));
@@ -655,6 +684,19 @@ export class Room {
       p.fish = m.on === true ? [number(m.x), number(m.z)] : null;
       ws.serializeAttachment(p);
       this.broadcast({ t: "fish", id: p.id, fish: p.fish }, ws);
+    } else if (m.t === "cat") {
+      if (typeof m.id !== "string" || !CAT_IDS.includes(m.id)) return;
+      const now = Date.now();
+      const cats = (await this.state.storage.get("cats")) || {};
+      const c = cats[m.id] || { at: 0, until: 0, lost: 0 };
+      if (now < c.until + CAT_REST_MS) return;
+      // a cat riding someone's head cannot be fed until it hops back down
+      const rides = (await this.state.storage.get("cat-rides")) || {};
+      if (rides[m.id]?.playerId && rides[m.id].until > now) return;
+      const fed = { at: now, until: now + CAT_SIT_MS, lost: c.lost + (c.until - c.at) };
+      cats[m.id] = fed;
+      await this.state.storage.put("cats", cats);
+      this.broadcast({ t: "cat", id: m.id, ...fed, phrase: Math.floor(Math.random() * 1000) });
     } else if (m.t === "hold") {
       // what the player holds; the client draws it on someone seated, and the coffee or cigarette also on someone standing still
       p.hold = [1, 2, 3, 4].includes(m.item) ? m.item : 0;
@@ -846,7 +888,52 @@ export class Room {
       if (now - lastSeen > HEARTBEAT_TIMEOUT_MS) stale.push(ws);
     }
     for (const ws of stale) this.leave(ws, 1000, "heartbeat timeout");
+    await this.maybeStartCatRide(Date.now());
     if (this.openSockets().length > 0) await this.state.storage.setAlarm(Date.now() + HEARTBEAT_CHECK_MS);
+  }
+  // Server-only cat-on-head lottery: picks a random online player on the heartbeat alarm,
+  // avoiding players already carrying another cat and launching at most one new ride per tick.
+  async maybeStartCatRide(now) {
+    const players = this.players();
+    if (!players.length) return;
+    const rides = (await this.state.storage.get("cat-rides")) || {};
+    const cats = (await this.state.storage.get("cats")) || {};
+    const occupied = new Set(
+      Object.values(rides)
+        .filter((r) => r?.playerId && r.until > now)
+        .map((r) => r.playerId),
+    );
+    const available = players.filter((p) => !occupied.has(p.id));
+    if (!available.length) return;
+    let changed = false;
+    for (const id of CAT_IDS) {
+      const r = rides[id];
+      if (r && now < r.until + CAT_RIDE_EVERY_MS) continue;
+      if (cats[id]?.until > now) continue;
+      if (Math.random() > CAT_RIDE_CHANCE) continue;
+      const pick = available[Math.floor(Math.random() * available.length)];
+      const ride = { playerId: pick.id, at: now, until: now + CAT_RIDE_MS };
+      rides[id] = ride;
+      changed = true;
+      this.broadcast({ t: "cat-ride", id, ...ride, phrase: Math.floor(Math.random() * 1000) });
+      break;
+    }
+    if (changed) await this.state.storage.put("cat-rides", rides);
+  }
+  async clearCatRideFor(playerId) {
+    const rides = await this.state.storage.get("cat-rides");
+    if (!rides || typeof rides !== "object") return;
+    const now = Date.now();
+    let changed = false;
+    for (const id of CAT_IDS) {
+      const r = rides[id];
+      if (r?.playerId === playerId && r.until > now) {
+        rides[id] = { playerId: null, at: r.at, until: now };
+        changed = true;
+        this.broadcast({ t: "cat-ride", id, playerId: null, at: now, until: now });
+      }
+    }
+    if (changed) await this.state.storage.put("cat-rides", rides);
   }
   async leaveByBeacon(req) {
     const bytes = req.headers.get("Content-Length");
@@ -890,7 +977,10 @@ export class Room {
       if (p.joinedAt) this.stat("leave", p, [Math.round((Date.now() - p.joinedAt) / 1000)]);
       for (const k of this.buckets.keys()) if (k.startsWith(p.id + "|")) this.buckets.delete(k);
       safeClose(ws, code, reason);
-      if (p.joinedAt) this.broadcast({ t: "left", id: p.id }, ws);
+      if (p.joinedAt) {
+        this.broadcast({ t: "left", id: p.id }, ws);
+        this.clearCatRideFor(p.id).catch(() => {});
+      }
     } else {
       safeClose(ws, code, reason);
     }
