@@ -3,7 +3,7 @@
 //   client -> server: { t: "hello", name, gender, color, cap, look, x, z, dir } | { t: "pos", x, z, dir, step, run }
 //                     { t: "chat", text } | { t: "name", name } | { t: "gender", gender, cap, look }
 //                     { t: "color", color }   (name colour: one of NAME_COLORS)
-//                     { t: "sit", seat, n }   (bench seat 0..15 or -1 to stand; n numbers the request)
+//                     { t: "sit", seat, n }   (bench seat 0..15, carousel horse 16..23, Ferris wheel gondola 24..31, or -1 to stand; n numbers the request)
 //                     { t: "capy" }   (feed the capybara)
 //                     { t: "stone", pts: [[x, z], ...] }   (a stone skipped on the pond: where it touched the water, 1 to 6)
 //                     { t: "ground", on }   (sit on the ground, or get up)
@@ -86,7 +86,7 @@ const MAX_BYTES = 1024;
 const COORD_LIMIT = 500;
 const ADMIN_ATTEMPTS = 20; // per IP, then locked for ADMIN_LOCK_MS (the "other" rate limit already caps tries at ~1/s)
 const ADMIN_LOCK_MS = 60_000;
-const MAX_SEATS = 16; // bench seats numbered 0..15 (bench * 2 + side); the client knows where each is
+const MAX_SEATS = 32; // bench seats 0..15 (bench * 2 + side), carousel horses 16..23, Ferris wheel gondolas 24..31; the client knows where each is
 const MAX_PER_IP = 3; // tabs/devices behind one IP
 const KICK_MS = 10 * 60_000; // kick = a short ban, so the client's auto-reconnect doesn't undo it
 const BAN_MS = 7 * 24 * 60 * 60_000;
@@ -879,9 +879,12 @@ export class Room {
     return p.prs;
   }
   // { login: merged pull requests }, from storage; read again from GitHub in the background when it gets old
+  // or after a deploy
   async contributors() {
     const saved = (await this.state.storage.get("contributors")) || { counts: {}, at: 0 };
-    if (Date.now() - saved.at > GH_COUNTS_FRESH_MS && Date.now() - this.ghTriedAt > GH_RETRY_MS) this.state.waitUntil(this.readContributors().catch(() => {}));
+    // old, or counted by another deploy: a deploy often follows a merge, so the first read after one is fresh
+    const stale = Date.now() - saved.at > GH_COUNTS_FRESH_MS || (saved.v || "") !== (this.env.VERSION?.id || "");
+    if (stale && Date.now() - this.ghTriedAt > GH_RETRY_MS) this.state.waitUntil(this.readContributors().catch(() => {}));
     return saved.counts;
   }
   // Counts the merged pull requests of GITHUB_REPO per author. With a player's token on a login, without one
@@ -902,7 +905,7 @@ export class Room {
       }
       if (list.length < 100) break;
     }
-    await this.state.storage.put("contributors", { counts, at: Date.now() });
+    await this.state.storage.put("contributors", { counts, at: Date.now(), v: this.env.VERSION?.id || "" });
     // players already in the room get their new count
     for (const ws of this.openSockets()) {
       const p = ws.deserializeAttachment();

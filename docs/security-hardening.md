@@ -243,7 +243,7 @@ Os riscos remanescentes concentram-se em: **(a)** resiliência contra DoS e exau
 
 ### Item 9 — Griefing de Performance nos Clientes (`gender`/`cap`) e Limites Espaciais
 
-> **Status:** **Parte 1 (cache por variante) feita** no [ADR 011](adr/011-trainer-look-drawn-in-code.md): os sheets dos outros jogadores são preparados uma vez por `gender|cap|look` e compartilhados por um único `THREE.Source` (um canvas e um upload na GPU por variante). A parte 2 (baldes de rate limit para `gender`/`name` e `COORD_LIMIT`) continua pendente.
+> **Status:** **Parte 1 (cache por variante) feita** no [ADR 013](adr/013-trainer-look-drawn-in-code.md): os sheets dos outros jogadores são preparados uma vez por `gender|cap|look` e compartilhados por um único `THREE.Source` (um canvas e um upload na GPU por variante). A parte 2 (baldes de rate limit para `gender`/`name` e `COORD_LIMIT`) continua pendente.
 
 - **Severidade:** Baixa
 - **Onde no código:**

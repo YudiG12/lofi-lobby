@@ -15,6 +15,12 @@
   #place { left: 28px; top: 28px; padding: 12px 20px; }
   #place b { display: block; font-size: 22px; font-weight: 400; }
   #place small { color: #C4C6D4; font-size: 12px; }
+  /* frames per second, beside the player count (P, or a tap on the count): only for you */
+  #online { cursor: pointer; }
+  #fps { margin-left: 8px; font-variant-numeric: tabular-nums; }
+  #fps[hidden] { display: none; }
+  #fps.slow { color: #ffc95a; }
+  #fps.bad { color: #ff8a7a; }
   #place .tools { display: flex; gap: 6px; margin-top: 10px; }
   #place .tools button { display: grid; place-items: center; width: 32px; height: 32px; padding: 0; font: inherit; font-size: 14px;
                          color: #F2F2F5; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.2); border-radius: 6px; cursor: pointer; }
@@ -252,6 +258,7 @@
     #place .tools { flex-wrap: wrap; }
     #place .tools button { width: 36px; height: 36px; }
     #place small { margin-top: 2px; }
+    #place #online, #place #fps:not([hidden]) { display: inline-block; } /* the count and the fps side by side */
     #radio { left: 12px; bottom: calc(12px + env(safe-area-inset-bottom)); max-width: calc(100vw - 130px); padding: 6px; gap: 8px; }
     #radio .tv { width: 96px; height: 54px; }
     #radio > div:last-child { min-width: 0; }
@@ -278,7 +285,7 @@
 </style>
 </head>
 <body>
-<div id="place" class="glass"><b>Lofi Lobby</b><small>1 online</small>
+<div id="place" class="glass"><b>Lofi Lobby</b><small id="online" title="show fps (P)">1 online</small><small id="fps" hidden></small>
   <div class="me">you: <button id="my-name" title="change name"></button> ✎ <button id="my-color" type="button" title="change name colour" aria-label="change name colour"></button></div>
   <div class="colors" id="my-colors" role="radiogroup" aria-label="name colour" hidden></div>
   <div id="my-look">
@@ -313,7 +320,7 @@
 <button id="sit-prompt" type="button" hidden><span class="key">press <kbd>E</kbd> to sit</span><span class="tap">tap to sit</span></button>
 <div id="hint" class="glass" hidden><b>shortcuts</b>
   <dl><dt>WASD / arrows</dt><dd>walk</dd><dt>Shift</dt><dd>run</dd><dt>Enter</dt><dd>chat</dd><dt>N</dt><dd>day / night / auto</dd><dt>R</dt><dd>rain</dd>
-  <dt>C</dt><dd>sit on the ground / get up</dd><dt>E</dt><dd>sit / stand up (near a bench)</dd><dt>E</dt><dd>fish: a focus timer (at the pond's edge)</dd><dt>T</dt><dd>skip a stone (by the pond)</dd><dt>Q</dt><dd>coffee / cigarette (laptop / book too when sitting)</dd><dt>G</dt><dd>switch trainer</dd><dt>B</dt><dd>message wall</dd><dt>F</dt><dd>full screen</dd><dt>M</dt><dd>mute</dd><dt>Space</dt><dd>pause / change your look</dd></dl></div>
+  <dt>C</dt><dd>sit on the ground / get up</dd><dt>E</dt><dd>sit / stand up (near a bench)</dd><dt>E</dt><dd>fish: a focus timer (at the pond's edge)</dd><dt>T</dt><dd>skip a stone (by the pond)</dd><dt>Q</dt><dd>coffee / cigarette (laptop / book too when sitting)</dd><dt>G</dt><dd>switch trainer</dd><dt>B</dt><dd>message wall</dd><dt>F</dt><dd>full screen</dd><dt>M</dt><dd>mute</dd><dt>P</dt><dd>frames per second</dd><dt>Space</dt><dd>pause / change your look</dd></dl></div>
 <div id="radio" class="glass">
   <div class="tv"><div id="yt"></div></div>
   <div><small>now playing <button id="mute" type="button" title="mute (M)" aria-label="mute"></button><input id="volume" type="range" min="0" max="100" step="5" title="volume" aria-label="volume" /></small><b id="title">—</b>

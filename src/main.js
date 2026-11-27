@@ -7,8 +7,11 @@ import { createStones } from "./stones.js";
 import { addSitFrames, sitFramePos } from "./ground-sit.js";
 import { dressSheet, lookOf, lookKey, HAIRS, TOPS, BOTTOMS, SKINS, ACCESSORIES } from "./look.js";
 import { createCapybara, CAPY_NEAR, CAPY_RADIUS, PHRASES as CAPY_PHRASES } from "./capybara.js";
+import { createOwl } from "./owl.js";
 import { createFishing, createFishingGear, FISH_NEAR, FISH_LEAVE } from "./fishing.js";
 import { createCat, CATS, CAT_NEAR, CAT_SIT_MS, CAT_RIDE_MS, PHRASES as CAT_PHRASES, RIDE_PHRASES as CAT_RIDE_PHRASES } from "./cat.js";
+import { CAROUSEL, carouselSeat, createCarousel, inClearing, isCarouselSeat, onCarousel } from "./carousel.js";
+import { WHEEL, wheelSeat, createFerrisWheel, inWheelClearing, isWheelSeat, onWheel } from "./ferris-wheel.js";
 
 // ---- Asset config (change here to use other files) ----
 const TOWN = {
@@ -309,10 +312,12 @@ function prepareTown(fbx) {
     fbx.position.z -= c.z;
     fbx.position.y -= box2.min.y;
     townBox = new THREE.Box3().setFromObject(fbx);
+    clearFairGround(fbx);
     scene.add(fbx);
     townMeshes = [];
     fbx.traverse((o) => o.isMesh && townMeshes.push(o));
     computePondBox();
+    placeFair(); // before the lamps, benches and capybara look for open ground around it
     fbx.traverse((o) => {
       if (o.isMesh && /mailbox|sign|fence/i.test(o.name))
         solidBoxes.push(new THREE.Box3().setFromObject(o));
@@ -327,10 +332,39 @@ function prepareTown(fbx) {
     board.position.y = groundHeight(board.position.x, board.position.z);
     placeCapybara();
     placeCapyWalk();
+    placeOwl();
     mergeTown(fbx);
     markLampShadowsStale(); // the town, the lamps and everything around them just took their places
     buildCatNavGrid();
 }
+
+// ---- The fair: carousel and Ferris wheel ----
+// The pines standing where the rides go (on each side of the pond, below it) come out of the town
+// as it loads. Here, and not earlier or later: after the scaling and townBox (they stand on the
+// town's edge, so earlier would shrink or move the town), and before townMeshes, since a hidden
+// mesh would still block the way and hold up the ground (rays ignore visibility).
+function clearFairGround(root) {
+  const pines = [];
+  const at = new THREE.Vector3();
+  root.traverse((o) => {
+    if (!o.isMesh || !/tree/i.test(o.name)) return;
+    new THREE.Box3().setFromObject(o).getCenter(at);
+    if (inClearing(at.x, at.z) || inWheelClearing(at.x, at.z)) pines.push(o);
+  });
+  for (const o of pines) o.removeFromParent();
+}
+const carousel = createCarousel();
+const wheel = createFerrisWheel();
+let fairPlaced = false;
+function placeFair() {
+  carousel.root.position.y = groundHeight(CAROUSEL.x, CAROUSEL.z);
+  wheel.root.position.y = groundHeight(WHEEL.x, WHEEL.z);
+  for (const p of fairPosts) p.position.y = groundHeight(p.position.x, p.position.z);
+  if (!fairPlaced) scene.add(carousel.root, wheel.root);
+  fairPlaced = true;
+}
+// the seats on a ride: their spot comes from the clock, they need no message while it turns
+const isRideSeat = (id) => isCarouselSeat(id) || isWheelSeat(id);
 
 // ---- Drawing the town in few draw calls ----
 // The town comes as ~1,300 meshes sharing one or a few materials, and each one would be a draw call
@@ -637,6 +671,24 @@ const LAMP_POSTS = [
   [10.5, 24],
 ];
 const lampPosts = LAMP_POSTS.map(([x, z]) => createLampPost(x, z));
+// Lamps around the rides, two on each side, their arm toward the ride. They stand where they are
+// put (not in pairs along the road) and their light casts no shadow: a shadowed point light is 6
+// shadow passes each time something moves near it, and the rides already glow.
+const FAIR_POSTS = [
+  [-27, 31, CAROUSEL],
+  [-11, 46, CAROUSEL],
+  [27, 31, WHEEL],
+  [11, 46, WHEEL],
+];
+const fairPosts = FAIR_POSTS.map(([x, z, ride]) => {
+  const p = createLampPost(x, z);
+  p.rotation.y = Math.atan2(-(ride.z - z), ride.x - x); // the arm (+x) toward the ride
+  const light = p.children.find((c) => c.isPointLight);
+  light.castShadow = false;
+  light.userData.dim = 0.8;
+  return p;
+});
+lampPosts.push(...fairPosts); // they light up at dusk like the others, and nobody walks through them
 const lampPostSolids = lampPosts.flatMap((p) => p.children.filter((c) => c.isMesh));
 // message wall: a cork board under the lamp light, in front of the lower-left house's window
 const BOARD_AT = [-7.5, 15];
@@ -694,7 +746,7 @@ function createBench(x, y, z, face) {
   benchBoxes.push(box); // and it hides whoever stands behind it (updateOcclusion)
 }
 // Each bench goes on the open spot nearest its wish (spiral search), so a town with another
-// layout still gets them. Seats stay under MAX_SEATS (16 = 8 benches).
+// layout still gets them. Bench seats stay under 16 (8 benches): 16..23 are the carousel horses.
 function placeBenches() {
   const clear = (x, z) =>
     isOpen(x, z, 2.6) &&
@@ -727,6 +779,11 @@ const BENCH_SPOTS = [
 ];
 // Where a seat is, and which way the sitter looks (null if that bench doesn't exist)
 function seatSpot(id) {
+  // a carousel horse: where it is right now, by the room's clock
+  if (isCarouselSeat(id)) return fairPlaced ? carouselSeat(id - CAROUSEL.firstSeat, roomNow(), carousel.root.position.y) : null;
+  // a Ferris wheel gondola: the same, up and down
+  if (isWheelSeat(id)) return fairPlaced ? wheelSeat(id - WHEEL.firstSeat, roomNow(), wheel.root.position.y) : null;
+  if (id >= benches.length * SEATS_PER_BENCH) return null;
   const b = benches[id >> 1];
   if (!b) return null;
   const [fx, fz] = FACING[b.face];
@@ -1141,6 +1198,47 @@ addEventListener("keydown", (e) => {
   if (!typing && !e.repeat && !e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === "n") toggleDayNight();
 });
 
+// ---- Frames per second ----
+// Beside the player count, for whoever wants to see how the game runs on their machine: P (or a tap on
+// the count, on phones) shows or hides it, and it is remembered. Counted over half a second; the title
+// adds the slowest frame of that half second and the draw calls of the last frame.
+const elFps = document.querySelector("#fps");
+const FPS_EVERY_MS = 500;
+const fpsCount = { frames: 0, since: performance.now(), last: performance.now(), worst: 0 };
+let fpsOn = false;
+try { fpsOn = localStorage.getItem("fps") === "1"; } catch {}
+elFps.hidden = !fpsOn;
+function setFps(on) {
+  fpsOn = on;
+  elFps.hidden = !on;
+  try { localStorage.setItem("fps", on ? "1" : "0"); } catch {}
+  Object.assign(fpsCount, { frames: 0, since: performance.now(), last: performance.now(), worst: 0 });
+  if (on) elFps.textContent = "… fps";
+}
+function countFrame() {
+  if (!fpsOn) return;
+  const now = performance.now();
+  const frame = now - fpsCount.last;
+  fpsCount.last = now;
+  // back from a hidden tab (no frames meanwhile): start the count again
+  if (frame > 1000) return void Object.assign(fpsCount, { frames: 0, since: now, worst: 0 });
+  fpsCount.frames++;
+  fpsCount.worst = Math.max(fpsCount.worst, frame);
+  const span = now - fpsCount.since;
+  if (span < FPS_EVERY_MS) return;
+  const fps = Math.round((fpsCount.frames * 1000) / span);
+  elFps.textContent = `${fps} fps`;
+  elFps.classList.toggle("slow", fps < 45 && fps >= 25);
+  elFps.classList.toggle("bad", fps < 25);
+  elFps.title = `${(span / fpsCount.frames).toFixed(1)} ms a frame, slowest ${fpsCount.worst.toFixed(1)} ms · ${renderer.info.render.calls} draw calls`;
+  Object.assign(fpsCount, { frames: 0, since: now, worst: 0 });
+}
+document.querySelector("#online").addEventListener("click", () => setFps(!fpsOn));
+addEventListener("keydown", (e) => {
+  const typing = ["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName) || document.activeElement?.isContentEditable;
+  if (!typing && !e.repeat && !e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === "p") setFps(!fpsOn);
+});
+
 
 // Rain: thin streaks in a box that follows the player, splashes where they land (rings on the
 // pond), shiny wet ground and a little fog.
@@ -1524,7 +1622,7 @@ function groundHeight(x, z) {
 // A point is "open" if the ground is flat within radius r (nothing tall nearby)
 function isOpen(x, z, r) {
   // a lamp post doesn't sit right next to a mailbox/sign/fence or in the pond
-  if (insideSolid(x, z, r + 1.5) || inPond(x, z)) return false;
+  if (insideSolid(x, z, r + 1.5) || inPond(x, z) || onCarousel(x, z, r + 1.5) || onWheel(x, z, r + 1.5)) return false;
   const y = groundHeight(x, z);
   for (let a = 0; a < 8; a++) {
     const ang = (a / 8) * Math.PI * 2;
@@ -1543,7 +1641,7 @@ const ROAD_CENTER_X = 0;
 const OFFSET = 4.6; // ideal distance from the road center to each post (on the grass, right by the dirt)
 const OFFSET_MIN = 3.8; // the closest it can get (edge of the dirt)
 function placeLampPairs() {
-  for (let i = 0; i < lampPosts.length; i += 2) {
+  for (let i = 0; i < LAMP_POSTS.length; i += 2) { // the road's pairs; the fair's posts stay put
     const a = lampPosts[i],
       b = lampPosts[i + 1];
     const z0 = a.position.z;
@@ -1607,6 +1705,19 @@ function placeLampPost(p) {
       }
     }
   }
+}
+
+// ---- Owl (on the message wall's roof; flies to the two nearest lamp posts and back) ----
+const owl = createOwl();
+scene.add(owl.mesh);
+// perches: the top of the wall's roof and the caps of the two lamp posts closest to the wall
+function placeOwl() {
+  const b = board.position;
+  const posts = [...lampPosts].sort((p, q) => p.position.distanceTo(b) - q.position.distanceTo(b)).slice(0, 2);
+  owl.setPerches(
+    [new THREE.Vector3(b.x, b.y + 6.85, b.z), ...posts.map((p) => p.position.clone().add(new THREE.Vector3(0, 9.55, 0)))],
+    performance.now(),
+  );
 }
 
 // ---- Capybara (middle of town; E feeds it) ----
@@ -1753,6 +1864,7 @@ function buildCatNavGrid() {
     )
       return false;
     if (insideSolid(x, z, BODY_RADIUS * 0.9, BODY_RADIUS * 1.7)) return false;
+    if (onCarousel(x, z, BODY_RADIUS) || onWheel(x, z, BODY_RADIUS)) return false; // cats walk around the rides, not through them
     if (
       inPond(x, z) ||
       inPond(x - BODY_RADIUS, z) ||
@@ -2215,6 +2327,8 @@ function isFree(x, z, currentY) {
   )
     return false;
   if (insideSolid(x, z, BODY_RADIUS * 0.8, BODY_RADIUS * 1.6)) return false;
+  if (onCarousel(x, z, BODY_RADIUS * 0.5)) return false; // round, so not a box: you can walk all around it
+  if (onWheel(x, z, BODY_RADIUS * 0.5)) return false;
   // pond: straight box (with the body width), not following the irregular stones
   if (
     inPond(x - BODY_RADIUS, z) ||
@@ -2575,6 +2689,7 @@ gl_Position.z = (feetClip.z / feetClip.w) * gl_Position.w;`,
 }
 const myFeet = useFeetDepth(sprite);
 const capyFeet = useFeetDepth(capy.mesh);
+const owlFeet = useFeetDepth(owl.mesh);
 const _toCam = new THREE.Vector3();
 const occlusionRay = new THREE.Ray();
 const _hit = new THREE.Vector3();
@@ -2605,6 +2720,7 @@ function setFeet(feet, x, y, z) {
 function updateOcclusion() {
   setFeet(myFeet, pos.x + slide.x, pos.y, pos.z + slide.z);
   setFeet(capyFeet, capy.mesh.position.x, capy.mesh.position.y, capy.mesh.position.z);
+  setFeet(owlFeet, owl.mesh.position.x, owl.mesh.position.y, owl.mesh.position.z);
   for (const o of others.values()) setFeet(o.feet, o.mesh.position.x, o.mesh.position.y, o.mesh.position.z);
   // After trainers: a perched cat shares its rider's depth nudged slightly forward so it sits
   // over the cap without Z-fighting while still hiding behind walls/benches in front of the rider.
@@ -2949,11 +3065,15 @@ const seatTaken = (id) => [...others.values()].some((o) => o.seat === id);
 function nearestFreeSeat() {
   let best = -1,
     bestD = SIT_RANGE;
-  for (let id = 0; id < benches.length * SEATS_PER_BENCH; id++) {
+  const consider = (id) => {
     const s = seatSpot(id);
+    if (!s || s.board === false) return; // a gondola is boarded only near the bottom
     const d = Math.hypot(s.x - pos.x, s.z - pos.z);
     if (d < bestD && !seatTaken(id)) (best = id), (bestD = d);
-  }
+  };
+  for (let id = 0; id < benches.length * SEATS_PER_BENCH; id++) consider(id);
+  for (let i = 0; i < CAROUSEL.seats; i++) consider(CAROUSEL.firstSeat + i);
+  for (let i = 0; i < WHEEL.seats; i++) consider(WHEEL.firstSeat + i);
   return best;
 }
 function sit(id) {
@@ -2970,6 +3090,8 @@ function sit(id) {
 // Stand up on the nearest free spot around the bench, starting from the way you walked off
 // (or its front), then tell the room
 function standUp(notify = true, way = null) {
+  if (isCarouselSeat(mySeat)) return getOffCarousel(notify);
+  if (isWheelSeat(mySeat)) return getOffWheel(notify);
   const s = seatSpot(mySeat);
   const side = mySeat & 1 ? 1 : -1;
   mySeat = -1;
@@ -2985,6 +3107,50 @@ function standUp(notify = true, way = null) {
         const a = front + (i % 2 ? 1 : -1) * Math.ceil(i / 2) * (Math.PI / 8);
         const x = s.x + Math.cos(a) * d,
           z = s.z + Math.sin(a) * d;
+        if (isFree(x, z, ground)) {
+          const [ox, oz] = [pos.x, pos.z];
+          pos.set(x, ground, z);
+          glideFrom(ox, oz);
+          break search;
+        }
+      }
+  }
+  if (notify) sendSeat();
+}
+// Off a horse: onto the grass just outside the base, beside where the horse is now, then further
+// around it (another rider may be getting off there too)
+function getOffCarousel(notify) {
+  const s = seatSpot(mySeat);
+  mySeat = -1;
+  if (s) {
+    const from = Math.atan2(s.x - CAROUSEL.x, s.z - CAROUSEL.z); // its angle, as carouselSeat measures it
+    search: for (let d = CAROUSEL.base + 1; d <= CAROUSEL.base + 4; d += 0.5)
+      for (let i = 0; i < 24; i++) {
+        const a = from + (i % 2 ? 1 : -1) * Math.ceil(i / 2) * (Math.PI / 12);
+        const x = CAROUSEL.x + Math.sin(a) * d,
+          z = CAROUSEL.z + Math.cos(a) * d;
+        const ground = groundHeight(x, z);
+        if (isFree(x, z, ground)) {
+          const [ox, oz] = [pos.x, pos.z];
+          pos.set(x, ground, z);
+          glideFrom(ox, oz);
+          break search;
+        }
+      }
+  }
+  if (notify) sendSeat();
+}
+// Off a gondola: onto the grass in front of the wheel, below where it is (from up high too: the
+// glide brings you down), then further along
+function getOffWheel(notify) {
+  const s = seatSpot(mySeat);
+  mySeat = -1;
+  if (s) {
+    const z = WHEEL.z + WHEEL.halfDepth + 1.4;
+    const x0 = Math.max(WHEEL.x - WHEEL.halfWidth, Math.min(WHEEL.x + WHEEL.halfWidth, s.x));
+    search: for (let d = 0; d <= 6; d += 0.5)
+      for (const x of [x0 + d, x0 - d]) {
+        const ground = groundHeight(x, z);
         if (isFree(x, z, ground)) {
           const [ox, oz] = [pos.x, pos.z];
           pos.set(x, ground, z);
@@ -3279,7 +3445,7 @@ function removeOther(id) {
   updateCount();
 }
 function updateCount() {
-  const el = document.querySelector("#place small");
+  const el = document.querySelector("#online");
   if (el)
     el.textContent = `${others.size + 1} online`;
 }
@@ -3526,6 +3692,7 @@ function updateOthers(dt) {
       m.position.set(seat.x, seat.y, seat.z);
       o.target.set(seat.x, 0, seat.z);
     } else m.position.y = topHeight(m.position.x, m.position.z);
+    m.castShadow = !isRideSeat(o.seat); // see the loop: riders cast no shadow
     m.rotation.copy(sprite.rotation);
     // running uses the run frames of the same sheet, like your own trainer (not on the code-drawn fallback)
     const running = o.run && !seat && o.cfg === CROP[o.gender];
@@ -4317,6 +4484,7 @@ if (import.meta.env.DEV) {
 function loop() {
   const now = performance.now();
   const dt = Math.min(clock.getDelta(), 0.05);
+  countFrame();
   checkSavedPosition();
   savePosition(performance.now());
   waterUniforms.uTime.value += dt;
@@ -4361,6 +4529,14 @@ function loop() {
   }
   const run = keys.shift || stick.mag > 0.9;
   if (mySeat >= 0 && (dx || dz)) standUp(true, [dx, dz]); // any move key gets you up, off that way
+  const riding = isRideSeat(mySeat);
+  if (riding) {
+    // the horse or gondola carries you: follow it, facing the way the ride says
+    const s = seatSpot(mySeat);
+    pos.x = s.x;
+    pos.z = s.z;
+    dir = s.dir;
+  }
   const walking = dx || dz;
   if (walking) {
     const n = Math.hypot(dx, dz);
@@ -4377,7 +4553,8 @@ function loop() {
   if (onGround && walking) setGround(false); // moving gets you up
   const grounded = onGround && setSitFrameTex(sheetTex, dir); // facing the way you stood
   if (!grounded) setFrame(dir, currentStep, running);
-  sendPosition(now, currentStep, running);
+  // a rider's spot comes from the seat and the clock in every browser: nothing to send while it turns
+  if (!riding) sendPosition(now, currentStep, running);
   const freeSeat = mySeat >= 0 ? -1 : nearestFreeSeat();
   eNow = eAction(freeSeat);
   updateHoldButton();
@@ -4399,6 +4576,8 @@ function loop() {
   camera.position.set(pos.x + slide.x, pos.y + 38, pos.z + 42 + slide.z);
   camera.lookAt(pos.x + slide.x, pos.y + 1, pos.z + slide.z);
   updateCapy();
+  owl.update(performance.now(), pos);
+  owl.mesh.rotation.set(camera.rotation.x * 0.5, 0, 0); // faces the camera like the trainers
   updateFishing();
   updateCats();
   updateOcclusion();
@@ -4406,7 +4585,13 @@ function loop() {
   sprite.rotation.set(camera.rotation.x * 0.5, 0, 0);
   showHeld(myHeld, sprite, CHARACTER.cfg, myHold, grounded ? null : heldDir(myHold, mySeat >= 0 ? seatSpot(mySeat) : null, !walking, dir));
 
-  updateLampShadows([sprite, capy.mesh, ...cats.map((c) => c.mesh), ...[...others.values()].map((o) => o.mesh)]);
+  carousel.update(roomNow(), dayAmount);
+  wheel.update(roomNow(), dayAmount);
+  // Riders cast no shadow and are no lamp's concern: the lamps by the pond reach the rides, and
+  // someone going round would make them redraw their 6 shadow passes every frame, all night
+  sprite.castShadow = !riding;
+  const movers = [...others.values()].filter((o) => !isRideSeat(o.seat)).map((o) => o.mesh);
+  updateLampShadows([...(riding ? [] : [sprite]), capy.mesh, owl.mesh, ...cats.map((c) => c.mesh), ...movers]);
   renderer.render(scene, camera);
   updateNameTags();
   updateBubbles();
