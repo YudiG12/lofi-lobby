@@ -13,6 +13,7 @@ export function createCatDebugModule({
   getPlayerCount,
   toggleDebugRide,
   getRideLabel,
+  isDebugRiding,
 }) {
   let rows = null;
   let countButtons = [];
@@ -166,7 +167,7 @@ export function createCatDebugModule({
     } else {
       rows.cat0.textContent = "none";
     }
-    headBtn?.classList.toggle("on", !!c0?.ride);
+    headBtn?.classList.toggle("on", !!(isDebugRiding ? isDebugRiding() : c0?.ride));
   }
 
   return {
