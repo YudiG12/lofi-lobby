@@ -104,8 +104,9 @@ const LIKES_MAX = 2000; // likers kept per note (one storage value)
 const NOTE_ID = /^note:\d{15}-[a-z0-9]{6}$/;
 const AFTER_EVERY_NOTE = "note:999999999999999-zzzzzz"; // a cursor above every note id
 const topKey = (likes, id) => `top:${String(likes).padStart(6, "0")}:${id}`;
-// rate buckets: capacity, refill per second
-const RATES = { pos: [30, 20], chat: [8, 1], sit: [20, 6], like: [30, 0.5], other: [10, 1] };
+// rate buckets: capacity, refill per second. pos, sit and fish are per connection; the rest per IP.
+// fish has its own: a dropped "line's in" would leave everyone else seeing a line that isn't there
+const RATES = { pos: [30, 20], chat: [8, 1], sit: [20, 6], fish: [10, 2], like: [30, 0.5], other: [10, 1] };
 const HEARTBEAT_CHECK_MS = 60_000;
 const HEARTBEAT_TIMEOUT_MS = 120_000; // > 60s background tab timer throttling
 const HELLO_TIMEOUT_MS = 15_000; // pre-hello sockets cannot hold room slots via edge pings
@@ -543,10 +544,11 @@ export class Room {
     for (const ws of dead) this.leave(ws, 1000, "send failed");
   }
 
-  // rate limit (token bucket): movement and seats per connection, chat and the rest shared by everyone on one IP
+  // rate limit (token bucket): movement, seats and the fishing line per connection, chat and the rest
+  // shared by everyone on one IP
   allowed(p, type) {
     const [cap, refill] = RATES[type] || RATES.other;
-    const key = (type === "pos" || type === "sit" ? p.id : p.ip) + "|" + type;
+    const key = (type === "pos" || type === "sit" || type === "fish" ? p.id : p.ip) + "|" + type;
     const now = Date.now() / 1000;
     let k = this.buckets.get(key);
     if (!k) this.buckets.set(key, (k = { tokens: cap, at: now }));
@@ -565,7 +567,7 @@ export class Room {
     const p = ws.deserializeAttachment();
     if (!p) return;
     if (!p.joinedAt && m.t !== "hello") return;
-    const type = m.t === "pos" ? "pos" : m.t === "chat" ? "chat" : m.t === "sit" ? "sit" : "other";
+    const type = ["pos", "chat", "sit", "fish"].includes(m.t) ? m.t : "other";
     // the seat the room really has for this player, tagged with the request it answers
     const seatReply = () => ws.send(JSON.stringify({ t: "seat", id: p.id, seat: p.seat ?? -1, n: Number.isSafeInteger(m.n) ? m.n : 0 }));
     if (!this.allowed(p, type)) {
