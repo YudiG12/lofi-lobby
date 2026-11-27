@@ -601,6 +601,25 @@ const glowTexture = (() => {
   ctx.fillRect(0, 0, 64, 64);
   return new THREE.CanvasTexture(cv);
 })();
+// Parts that never move apart (a lamp post's iron, a bench's slats), baked into one mesh per material:
+// one draw call per pass instead of one per part, in the camera's pass, the moon's (sun's) shadow and
+// the 6 faces of every lamp shadow they reach.
+function mergeParts(parts, castShadow, receiveShadow = false) {
+  const byMaterial = new Map();
+  for (const m of parts) {
+    m.updateMatrix();
+    if (!byMaterial.has(m.material)) byMaterial.set(m.material, []);
+    byMaterial.get(m.material).push(m.geometry.clone().applyMatrix4(m.matrix));
+    m.geometry.dispose();
+  }
+  return [...byMaterial].map(([material, geos]) => {
+    const mesh = new THREE.Mesh(mergeGeometries(geos), material);
+    geos.forEach((g) => g.dispose());
+    mesh.castShadow = castShadow;
+    mesh.receiveShadow = receiveShadow;
+    return mesh;
+  });
+}
 function createLampPost(x, z) {
   const g = new THREE.Group();
   const base = new THREE.Mesh(
@@ -628,7 +647,8 @@ function createLampPost(x, z) {
   cap.position.y = 9.3;
   cap.rotation.y = Math.PI / 4;
   // only base and pole cast shadows; the top wraps the bulb and would darken everything
-  [base, pole].forEach((m) => (m.castShadow = true));
+  // (the iron in two meshes, by that: 3 draw calls a pass instead of 5)
+  const iron = [...mergeParts([base, pole], true), ...mergeParts([arm, cap], false)];
   const light = new THREE.PointLight("#ffc95a", 150, 22, 1.6); // ~2700K, warm yellow
   light.position.set(0.9, 7.6, 0); // a bit out from the pole, under the arm
   light.castShadow = true;
@@ -651,7 +671,7 @@ function createLampPost(x, z) {
   glow.scale.set(6, 6, 1);
   glow.position.y = 8.2;
   g.add(glow);
-  g.add(base, pole, arm, lantern, cap, light);
+  g.add(...iron, lantern, light);
   g.position.set(x, 0, z);
   scene.add(g);
   return g;
@@ -707,12 +727,12 @@ const woodLight = new THREE.MeshLambertMaterial({ color: "#b07a45", flatShading:
 const woodDark = new THREE.MeshLambertMaterial({ color: "#8a5a34", flatShading: true });
 function createBench(x, y, z, face) {
   const g = new THREE.Group();
+  const parts = [];
   const part = (mat, w, h, d, px, py, pz, tilt = 0) => {
     const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
     m.position.set(px, py, pz);
     m.rotation.x = tilt;
-    m.castShadow = m.receiveShadow = true;
-    g.add(m);
+    parts.push(m);
   };
   // local front is +z. Iron ends: front leg, back leg rising into the backrest,
   // rail under the seat, armrest on top
@@ -729,6 +749,8 @@ function createBench(x, y, z, face) {
   // backrest: two slats leaning back a little
   part(woodDark, 4.5, 0.36, 0.14, 0, 2.0, -0.78, -0.08);
   part(woodLight, 4.5, 0.36, 0.14, 0, 2.55, -0.83, -0.08);
+  // the 13 parts in 3 meshes (iron, light wood, dark wood)
+  g.add(...mergeParts(parts, true, true));
   g.position.set(x, y, z);
   g.rotation.y = { down: 0, right: Math.PI / 2, up: Math.PI, left: -Math.PI / 2 }[face];
   scene.add(g);
