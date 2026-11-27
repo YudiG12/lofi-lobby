@@ -5,7 +5,7 @@ import { connectRadioToServer, receiveCommand } from "./radio.js";
 import { createBoard, setupWall } from "./board.js";
 import { createStones } from "./stones.js";
 import { addSitFrames, sitFramePos } from "./ground-sit.js";
-import { createCapybara, CAPY_NEAR, CAPY_RADIUS, PHRASES as CAPY_PHRASES } from "./capybara.js";
+import { createCapybara, CAPY_NEAR, CAPY_RADIUS, PHRASES as CAPY_PHRASES, CHRISTMAS_PHRASES, isChristmas } from "./capybara.js";
 import { createFishing, createFishingGear, FISH_NEAR, FISH_LEAVE } from "./fishing.js";
 
 // ---- Asset config (change here to use other files) ----
@@ -1673,6 +1673,13 @@ function placeCapyWalk() {
 // The last feeding: it sat from `at` to `until` (room clock, ms); `lost` is all the sitting before that.
 let capyFed = { at: 0, until: 0, lost: 0 };
 const roomNow = () => Date.now() + clockOffset;
+// Christmas by the room's clock (so it starts and ends for everyone at once); in development, ?xmas forces it
+const FORCE_XMAS = import.meta.env.DEV && new URLSearchParams(location.search).has("xmas");
+const christmasNow = () => FORCE_XMAS || isChristmas(roomNow());
+// the capybara dresses as a reindeer in the season; checked every minute, since the lobby stays open for days
+const dressCapy = () => capy.setReindeer(christmasNow());
+dressCapy();
+setInterval(dressCapy, 60_000);
 // where the room's clock puts it: there and back at one speed, standing still on the clock while it sits
 function walkCapy(t) {
   const eating = t >= capyFed.at && t < capyFed.until;
@@ -1690,7 +1697,8 @@ function walkCapy(t) {
 function capyWasFed(m) {
   if (![m.at, m.until, m.lost].every(Number.isFinite)) return;
   capyFed = { at: m.at, until: m.until, lost: m.lost };
-  if (Number.isInteger(m.phrase)) showBubble(capy.mesh, CAPY_PHRASES[Math.abs(m.phrase) % CAPY_PHRASES.length]);
+  const phrases = christmasNow() ? CHRISTMAS_PHRASES : CAPY_PHRASES;
+  if (Number.isInteger(m.phrase)) showBubble(capy.mesh, phrases[Math.abs(m.phrase) % phrases.length]);
 }
 
 // ---- Collision ----
@@ -2746,6 +2754,7 @@ function connect() {
     if (m.t === "you") {
       myId = m.id;
       if (Number.isFinite(m.now)) clockOffset = m.now - Date.now(); // the capybara walks by the room's clock
+      dressCapy(); // the room's date, not this device's
       myLeaveToken = m.token || "";
       // the room reconnected us to a newer deploy than the one this tab loaded with: reload to get
       // it, but not in the middle of something being written
