@@ -155,13 +155,15 @@ export const RIDE_PHRASES = [
 //   row 4: sit         (0-1 eyes open + tail sway, 2-3 blink + tail sway)
 //   row 5: eat         (0-3 chewing fish snack + wagging tail)
 //   row 6..9: perch    (down, up, left, right on a player's head; 0-1 open + tail, 2-3 blink + tail)
+//   row 10..13: held   (the perch rows with wide, startled eyes: lifted over someone's head with H)
 const W = 24;
 const H = 24;
 const P = 2;
 const COLS = 4;
-const ROWS = 10;
+const ROWS = 14;
 const DIR_ROW = { down: 0, up: 1, left: 2, right: 3 };
 const PERCH_ROW = { down: 6, up: 7, left: 8, right: 9 };
+const SCARED = 4; // the held rows are the perch rows this far down
 
 function drawFrontHead(put, C, hx, hy, opts = {}) {
   const { back = false, eyes = "open", happy = false } = opts;
@@ -185,7 +187,16 @@ function drawFrontHead(put, C, hx, hy, opts = {}) {
     }
   }
   if (back) return;
-  if (eyes === "closed") {
+  if (eyes === "scared") {
+    // wide open: tall white eyes with a pinpoint pupil each
+    // (a dark raised lid on top keeps them readable on a white face too)
+    for (const ex of [hx + 2, hx + 6]) {
+      put(ex, hy + 1, C.pupil);
+      put(ex + 1, hy + 1, C.pupil);
+      for (let y = 2; y <= 4; y++) (put(ex, hy + y, C.shine), put(ex + 1, hy + y, C.shine));
+      put(ex === hx + 2 ? ex + 1 : ex, hy + 3, C.pupil);
+    }
+  } else if (eyes === "closed") {
     for (const ex of [hx + 2, hx + 6]) {
       put(ex, hy + 3, happy ? C.eye : C.darker);
       put(ex + 1, hy + 3, happy ? C.eye : C.darker);
@@ -225,7 +236,12 @@ function drawSideHead(put, C, hx, hy, opts = {}) {
     }
   }
   // Golden eye + glint + tiny muzzle nose (or closed eyelid during blink)
-  if (eyes === "closed") {
+  if (eyes === "scared") {
+    put(hx + 2, hy, C.pupil);
+    put(hx + 3, hy, C.pupil);
+    for (let y = 1; y <= 3; y++) (put(hx + 2, hy + y, C.shine), put(hx + 3, hy + y, C.shine));
+    put(hx + 2, hy + 2, C.pupil);
+  } else if (eyes === "closed") {
     put(hx + 2, hy + 3, C.darker);
     put(hx + 3, hy + 3, C.darker);
   } else {
@@ -300,6 +316,10 @@ function applyCoatPattern(grid, row, C) {
 }
 
 function buildFrameGrid(row, col, C) {
+  // a held row is drawn as its perch row, with startled eyes
+  const scared = row >= PERCH_ROW.down + SCARED;
+  if (scared) row -= SCARED;
+  const perchEyes = scared ? "scared" : col >= 2 ? "closed" : "open";
   const grid = Array.from({ length: H }, () => Array(W).fill(null));
   const put = (x, y, c) => {
     if (x >= 0 && x < W && y >= 0 && y < H) grid[y][x] = c;
@@ -389,7 +409,7 @@ function buildFrameGrid(row, col, C) {
     }
     rect(7, 21, 2, 1, C.light);
     rect(11, 21, 2, 1, C.light);
-    drawFrontHead(put, C, 4, 9, { eyes: col >= 2 ? "closed" : "open" });
+    drawFrontHead(put, C, 4, 9, { eyes: perchEyes });
   } else if (row === 7) {
     // Perch up: cosy loaf facing away from the camera, wagging tail curling up the back.
     for (let y = 14; y < 22; y++) {
@@ -427,7 +447,7 @@ function buildFrameGrid(row, col, C) {
     }
     rect(7, 20, 3, 2, C.dark); // tucked front paw
     rect(7, 21, 2, 1, C.light);
-    drawSideHead(put, C, 4, 9, { eyes: col >= 2 ? "closed" : "open" });
+    drawSideHead(put, C, 4, 9, { eyes: perchEyes });
   } else {
     // Row 4: sit (blink + tail wag) | Row 5: eat (chew fish + happy eyes + lively tail wag)
     const eat = row === 5;
@@ -529,7 +549,7 @@ export function createCat(paletteName = "black") {
   mesh.castShadow = true;
   mesh.scale.set(3.5, 3.5, 1);
 
-  let pose = "sit"; // "walk" | "sit" | "eat" | "perch"
+  let pose = "sit"; // "walk" | "sit" | "eat" | "perch" | "held"
   let dir = "down"; // "down" | "up" | "left" | "right"
   const setCell = (col, row) => {
     tex.offset.set(col / COLS, (ROWS - 1 - row) / ROWS);
@@ -549,6 +569,9 @@ export function createCat(paletteName = "black") {
         setCell(Math.floor(t / 160) % 4, DIR_ROW[dir]);
       } else if (pose === "eat") {
         setCell(Math.floor(t / 170) % 4, 5);
+      } else if (pose === "held") {
+        // startled: wide eyes, no blinking, the tail flicking fast
+        setCell(Math.floor(t / 200) % 2, (PERCH_ROW[dir] ?? 6) + SCARED);
       } else if (pose === "perch") {
         const row = PERCH_ROW[dir] ?? 6;
         const tail = Math.floor(t / 520) % 2;

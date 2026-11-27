@@ -86,7 +86,8 @@ src/
                     collision, chat bubbles, name tags, multiplayer client
   cat.js            procedural pixel-art town cats (5 coats, walk, eat, 4-dir head perch)
   debug.js          dev-only modular debug hub (stripped from production builds)
-  cat-carry.js      picking up and throwing cats: rules, landing spot and arc (shared with the worker)
+  cat-carry.js      picking up and throwing cats: rules, landing spot, arc and the trainer's lines (shared with the worker)
+  lift-frames.js    the trainers' arms-raised frames (holding a cat), drawn in code from their own walk
   cat-debug.js      dev-only cat & NavGrid debug module (stripped from production builds)
   cycle-debug.js    dev-only cycle debug module (stripped from production builds)
   radio.js          YouTube player synced by the clock or by the room's radio command

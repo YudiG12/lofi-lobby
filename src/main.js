@@ -5,10 +5,11 @@ import { connectRadioToServer, receiveCommand } from "./radio.js";
 import { createBoard, setupWall } from "./board.js";
 import { createStones } from "./stones.js";
 import { addSitFrames, sitFramePos } from "./ground-sit.js";
+import { addLiftFrames, liftFramePos } from "./lift-frames.js";
 import { createCapybara, CAPY_NEAR, CAPY_RADIUS, PHRASES as CAPY_PHRASES } from "./capybara.js";
 import { createOwl } from "./owl.js";
 import { createFishing, createFishingGear, FISH_NEAR, FISH_LEAVE } from "./fishing.js";
-import { CAT_HOLD_MS, CAT_LIFT_REST_MS, CAT_THROW_MS, LIFT_PHRASES, THROW_PHRASES, throwArc, throwTarget } from "./cat-carry.js";
+import { CAT_HOLD_MS, CAT_LIFT_REST_MS, CAT_THROW_MS, SAY_EVERY_MS, sayAt, THROW_PHRASES, throwArc, throwTarget } from "./cat-carry.js";
 import { createCat, CATS, CAT_NEAR, CAT_SIT_MS, CAT_RIDE_MS, PHRASES as CAT_PHRASES, RIDE_PHRASES as CAT_RIDE_PHRASES } from "./cat.js";
 import { CAROUSEL, carouselSeat, createCarousel, inClearing, isCarouselSeat, onCarousel } from "./carousel.js";
 import { WHEEL, wheelSeat, createFerrisWheel, inWheelClearing, isWheelSeat, onWheel } from "./ferris-wheel.js";
@@ -2019,7 +2020,7 @@ const CAT_HEAD_OFFSET_Y = 3.85;
 const CAT_GROUND_SCALE = 3.5;
 const CAT_PERCH_SCALE = 2.8;
 const CAT_HOP_MS = 450;
-const CAT_HELD_LIFT = 0.9; // held up in both hands: a little above where a riding cat sits
+const CAT_HELD_LIFT = 0.35; // held up in both hands: resting on the raised hands, just above the head
 const CAT_APPROACH_MAX_MS = 2800;
 const CAT_APPROACH_SPEED = 8.5;
 
@@ -2159,9 +2160,9 @@ function walkCat(cat, t) {
         cat.ridingMesh = null;
         cat.ridingFeet = null;
         cat.dir = p.dir;
-        cat.pose = "perch";
+        cat.pose = "held"; // still startled in the air
         cat.sprite.setDir(p.dir);
-        cat.sprite.setPose("perch");
+        cat.sprite.setPose("held");
         return;
       }
       m.set(
@@ -2244,10 +2245,11 @@ function walkCat(cat, t) {
       cat.mesh.renderOrder = 12;
       cat.ridingMesh = target.mesh;
       cat.ridingFeet = target.feet;
-      cat.dir = target.dir;
-      cat.pose = "perch";
+      // held up with H it looks startled, and toward us even from behind (its eyes are the point)
+      cat.dir = cat.ride.held && target.dir === "up" ? "down" : target.dir;
+      cat.pose = cat.ride.held ? "held" : "perch";
       cat.sprite.setDir(cat.dir);
-      cat.sprite.setPose("perch");
+      cat.sprite.setPose(cat.pose);
       return;
     } else if (elapsed < anim.hopOffStart) {
       m.set(hx, hy, hz);
@@ -2255,10 +2257,11 @@ function walkCat(cat, t) {
       cat.mesh.renderOrder = 12;
       cat.ridingMesh = target.mesh;
       cat.ridingFeet = target.feet;
-      cat.dir = target.dir;
-      cat.pose = "perch";
+      // held up with H it looks startled, and toward us even from behind (its eyes are the point)
+      cat.dir = cat.ride.held && target.dir === "up" ? "down" : target.dir;
+      cat.pose = cat.ride.held ? "held" : "perch";
       cat.sprite.setDir(cat.dir);
-      cat.sprite.setPose("perch");
+      cat.sprite.setPose(cat.pose);
       return;
     } else {
       if (!anim.hopOffFrom) {
@@ -2342,11 +2345,10 @@ function catRideUpdate(m) {
     if (cat.ride) startHopOff(cat, now);
     return;
   }
-  cat.ride = { playerId: m.playerId, at: m.at, until: m.until, held: m.held === true };
-  if (cat.ride.held) {
-    if (Number.isInteger(m.phrase) && cat.lastRideAt !== m.at) showBubble(cat.mesh, LIFT_PHRASES[Math.abs(m.phrase) % LIFT_PHRASES.length]);
-    cat.lastRideAt = m.at;
-  }
+  // a cat picked up with H: the trainer holding it comments now and then (sayHeldLines); someone who
+  // joins mid-hold gets no phrase and stays quiet until the next beat
+  cat.ride = { playerId: m.playerId, at: m.at, until: m.until, held: m.held === true, phrase: Number.isInteger(m.phrase) ? m.phrase : null, said: -1 };
+  if (cat.ride.held) cat.lastRideAt = m.at;
   cat.hopOff = null;
   cat.rideAnim = null;
   if (Number.isInteger(m.phrase) && cat.lastRideAt !== m.at) {
@@ -2486,10 +2488,23 @@ addEventListener("keydown", (e) => {
 // female: coral beanie, long hair, teal coat, skirt, yellow bag.
 // a trainer's sheet with its sitting-on-the-ground frames drawn under it (src/ground-sit.js); the row's
 // place rides on the canvas
+// and its holding-something-up frames under those (src/lift-frames.js), for a cat picked up with H
 function withSitFrames(cv, cfg) {
   const { canvas, row } = addSitFrames(cv, cfg, framePos);
   canvas.sitRow = row;
-  return canvas;
+  const lifted = addLiftFrames(canvas, cfg, framePos, cfg.steps || 4);
+  lifted.canvas.liftRows = lifted.rows;
+  return lifted.canvas;
+}
+// the holding-up frame facing `d` on `step` (false if this texture has none yet)
+function setLiftFrameTex(tex, d, step) {
+  const img = tex.image,
+    rows = img?.liftRows;
+  if (!rows) return false;
+  const { x, y, w, h } = liftFramePos(rows, d, step);
+  tex.repeat.set(w / img.width, h / img.height);
+  tex.offset.set(x / img.width, 1 - (y + h) / img.height);
+  return true;
 }
 function generateOriginalTrainer(gender = "male", cap = null) {
   const fem = gender === "female";
@@ -3722,7 +3737,8 @@ function updateOthers(dt) {
     // on the ground, facing the way they stood (walking or a bench gets them up)
     if (o.ground && (seat || o.step)) o.ground = false;
     const grounded = o.ground && setSitFrameTex(o.tex, o.dir);
-    if (!grounded) setFrameTex(o.tex, running ? RUN_CROP[o.gender] : o.cfg, seat ? seat.dir : o.dir, seat ? 0 : o.step);
+    const lifting = !grounded && !seat && catHeldBy(oid) && setLiftFrameTex(o.tex, o.dir, o.step | 0); // a cat over their head
+    if (!grounded && !lifting) setFrameTex(o.tex, running ? RUN_CROP[o.gender] : o.cfg, seat ? seat.dir : o.dir, seat ? 0 : o.step);
     m.userData.lift = running && o.gender === "male" ? 0.8 : 0; // the male run frames sit higher in their cell
     m.position.y -= m.userData.lift;
     // standing still: on the standing frame, a moment after the last step arrived
@@ -4378,9 +4394,21 @@ function updateWallPrompt() {
   wallPrompt.style.top = `${(-_v.y * 0.5 + 0.5) * innerHeight}px`;
 }
 
+// what a trainer holding a cat says: a line on picking it up and another every SAY_EVERY_MS, the same
+// line for everyone (picked from the room's phrase number)
+function sayHeldLines(cat, t) {
+  const r = cat.ride;
+  if (!r?.held || r.phrase === null || t >= r.until) return;
+  const k = Math.floor((t - r.at) / SAY_EVERY_MS);
+  if (k === r.said) return;
+  r.said = k;
+  const who = resolveRideTarget(r.playerId);
+  if (who) showBubble(who.mesh, sayAt(r.phrase, k));
+}
 function updateCats() {
   const t = roomNow();
   for (const cat of cats) {
+    sayHeldLines(cat, t);
     walkCat(cat, t);
     cat.sprite.update(t);
     cat.mesh.rotation.set(camera.rotation.x * 0.5, 0, 0);
@@ -4651,7 +4679,7 @@ function loop() {
   const running = Boolean(walking && run);
   if (onGround && walking) setGround(false); // moving gets you up
   const grounded = onGround && setSitFrameTex(sheetTex, dir); // facing the way you stood
-  if (!grounded) setFrame(dir, currentStep, running);
+  if (!grounded && !(myCat() && setLiftFrameTex(sheetTex, dir, currentStep))) setFrame(dir, currentStep, running);
   // a rider's spot comes from the seat and the clock in every browser: nothing to send while it turns
   if (!riding) sendPosition(now, currentStep, running);
   const freeSeat = mySeat >= 0 ? -1 : nearestFreeSeat();

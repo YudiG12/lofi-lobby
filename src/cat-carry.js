@@ -59,12 +59,24 @@ export function throwArc(u, from, to, h = 4) {
   };
 }
 
+// what the trainer says, picked at random, on picking a cat up and every SAY_EVERY_MS while holding it
+export const SAY_EVERY_MS = 8_000;
 export const LIFT_PHRASES = [
-  "Ei! Me põe no chão… ou não, a vista daqui é boa.",
-  "Isso é um sequestro ou um passeio VIP?",
-  "Miau?! Eu não autorizei esse deploy.",
-  "Tá, pode segurar. Mas sem selfie.",
+  "Sim, eu sei que você não pediu colo. Ninguém pede.",
+  "Peguei um gato. Agora sou responsável por 4 kg de julgamento.",
+  "Pronto, carregando o estagiário mais caro da empresa.",
+  "Se ele arranhar, foi feature, não bug.",
+  "Olha só, um gato que não quer ser segurado. Que novidade.",
+  "Treinei a vida toda pra isso: segurar um gato sem perder um dedo.",
+  "Calma, gatinho. É só uma demo para os investidores.",
+  "Ele está me olhando como se eu tivesse quebrado a produção.",
+  "Carregar gato: a única tarefa que não cabe no sprint.",
+  "Prometo te soltar. Em algum momento. Talvez.",
+  "Isso conta como cardio? Diz que conta.",
+  "Esse olhar de pânico é o mesmo meu na segunda-feira.",
 ];
+// the line said `k` beats into a hold that started with `phrase` (everyone works out the same one)
+export const sayAt = (phrase, k) => LIFT_PHRASES[(Math.abs(phrase | 0) + k * 5) % LIFT_PHRASES.length];
 export const THROW_PHRASES = [
   "Caí de pé. Como sempre. Nota 10.",
   "Mrrrp! De novo! …mentira, nunca mais.",

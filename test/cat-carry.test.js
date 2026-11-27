@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { CAT_HOLD_MS, CAT_LIFT_REST_MS, CAT_THROW_DIST, CAT_THROW_MAX, clampThrow, heldBy, liftRefusal, throwArc, throwTarget } from "../src/cat-carry.js";
+import { LIFT_PHRASES, sayAt, CAT_HOLD_MS, CAT_LIFT_REST_MS, CAT_THROW_DIST, CAT_THROW_MAX, clampThrow, heldBy, liftRefusal, throwArc, throwTarget } from "../src/cat-carry.js";
 
 const now = 1_000_000;
 
@@ -49,4 +49,11 @@ test("the arc starts and ends on its points, peaks halfway and lands facing down
   assert.equal(mid.x, 3);
   assert.equal(mid.y, 2 + 4);
   assert.equal(throwArc(2, from, to).x, 6); // clamped
+});
+
+test("everyone picks the same line, and the next one is a different line", () => {
+  assert.equal(sayAt(7, 0), sayAt(7, 0));
+  assert.ok(LIFT_PHRASES.includes(sayAt(999, 3)));
+  assert.notEqual(sayAt(7, 0), sayAt(7, 1));
+  assert.ok(LIFT_PHRASES.includes(sayAt(undefined, 0)));
 });
