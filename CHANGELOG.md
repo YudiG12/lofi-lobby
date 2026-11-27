@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- **Snow**: **R** (or the weather button) now goes clear → rain → snow. Soft flakes drift down, and the town slowly whitens: the ground, roofs, benches, lamp posts, the message board's roof and patches on the pines. The pond freezes over with cracks in the ice, the fireflies stay in, and every trainer wears a knit beanie with a pom-pom (in their cap colour) until it stops. When the sky clears the snow melts unevenly and the caps come back. Only for you, and remembered.
 - A small GitHub link beside the chat: the game is open source, come and contribute.
 - **Cap colour**: pick one of five cap colours on the enter/pause screen, next to a preview of your trainer; everyone sees it.
 - **Trainer and cap in the top card**: a male/female switch and, beside it, the cap you wear (drawn as a little cap, so it is not taken for the name colour's dot). Click the cap to see the other colours; picking one folds them away.
