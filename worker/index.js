@@ -140,7 +140,7 @@ const topKey = (likes, id) => `top:${String(likes).padStart(6, "0")}:${id}`;
 // rate buckets: capacity, refill per second
 const RATES = { pos: [30, 20], chat: [8, 1], sit: [20, 6], like: [30, 0.5], github: [4, 1 / 30], social: [20, 2], other: [10, 1] };
 // accounts, profiles, friends and private chat (worker/social.js); a private message spends the chat budget
-const SOCIAL = ["profile", "friend", "friends", "dm-open", "dm-read", "chat-invite", "chat-accept"];
+const SOCIAL = ["profile", "friend", "friends", "bio", "dm-open", "dm-read", "chat-invite", "chat-accept"];
 // contributors: a player proves their GitHub login (OAuth device flow, GITHUB_CLIENT_ID) and the room counts
 // their merged pull requests in GITHUB_REPO. GitHub's token is used once and never kept: the browser gets a
 // random session of the room's own, stored here only as a hash.
@@ -170,6 +170,7 @@ function safeClose(ws, code = 1000, reason = "") {
 
 import { badName, cleanChat, hasLink, normalize } from "./moderation.js";
 import { installSocial } from "./social.js";
+import { Accounts, primaryEmail } from "./accounts.js";
 
 const DIRS = ["down", "up", "left", "right"];
 const cleanText = (s, max) =>
@@ -271,6 +272,8 @@ export class Room {
     this.leftSockets = new WeakSet();
     this.ghBusy = new Set(); // player ids with a GitHub call in flight
     this.ghTriedAt = 0; // last read of the pull requests, good or bad
+    // accounts and sessions, in D1; the repository's owner is account 0
+    this.accounts = new Accounts(env.DB, state.storage, String(env.GITHUB_REPO || "").split("/")[0].toLowerCase());
     this.state.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
   }
 
@@ -788,8 +791,10 @@ export class Room {
     } else if (m.t === "github") {
       await this.githubResume(ws, m.session);
     } else if (m.t === "github-out") {
-      if (typeof m.session === "string" && GH_SESSION.test(m.session)) await this.state.storage.delete(await sessionKey(m.session));
-      await this.setContributor(ws, "");
+      if (typeof m.session === "string" && GH_SESSION.test(m.session)) {
+        try { await this.accounts.closeSession(await sessionKey(m.session)); } catch {}
+      }
+      await this.setContributor(ws, null);
     } else if (m.t === "dm" || SOCIAL.includes(m.t)) {
       await this.socialMessage(ws, p, m);
     } else if (m.t === "auth") {
@@ -839,7 +844,7 @@ export class Room {
   async githubStart(ws) {
     const fail = (msg) => ws.send(JSON.stringify({ t: "github-fail", msg }));
     const id = ws.deserializeAttachment()?.id;
-    if (!this.env.GITHUB_CLIENT_ID) return fail("github login is not set up on this server");
+    if (!this.env.GITHUB_CLIENT_ID || !this.accounts.on) return fail("github login is not set up on this server");
     if (!id || this.ghBusy.has(id)) return;
     this.ghBusy.add(id);
     let r = null;
@@ -847,7 +852,8 @@ export class Room {
       const res = await fetch(GH_WEB + "/login/device/code", {
         method: "POST",
         headers: { ...GH_HEADERS, "Content-Type": "application/json" },
-        body: JSON.stringify({ client_id: this.env.GITHUB_CLIENT_ID }),
+        // user:email: the account keeps the player's verified e-mail (worker/accounts.js); nothing else is asked for
+        body: JSON.stringify({ client_id: this.env.GITHUB_CLIENT_ID, scope: "user:email" }),
       });
       r = await res.json();
     } catch {} finally { this.ghBusy.delete(id); }
@@ -889,11 +895,21 @@ export class Room {
       const user = await (await fetch(GH_API + "/user", { headers: auth })).json();
       const login = typeof user?.login === "string" ? user.login.toLowerCase() : "";
       if (!GH_LOGIN.test(login)) return end("github login failed, type /github again");
+      const githubId = Number.isSafeInteger(user.id) && user.id > 0 ? user.id : null;
+      let email = null;
+      try { email = primaryEmail(await (await fetch(GH_API + "/user/emails?per_page=100", { headers: auth })).json()); } catch {}
       await this.readContributors(auth);
+      // the account (made now, on a first login) and a session of the room's own for this browser
+      let account;
       const session = [...crypto.getRandomValues(new Uint8Array(24))].map((b) => b.toString(16).padStart(2, "0")).join("");
-      await this.state.storage.put(await sessionKey(session), { login, at: Date.now() });
+      try {
+        account = await this.accounts.signIn({ login, githubId, email });
+        await this.accounts.openSession(await sessionKey(session), account.n);
+      } catch {
+        return end("could not open your account, type /github again");
+      }
       end();
-      const prs = await this.setContributor(ws, login);
+      const prs = await this.setContributor(ws, account);
       ws.send(JSON.stringify({ t: "github-ok", session, login, prs }));
     } catch {
       // GitHub is slow or down: the player keeps asking until the code expires
@@ -903,16 +919,21 @@ export class Room {
   }
   // A browser that logged in before comes back with its session.
   async githubResume(ws, session) {
-    if (typeof session !== "string" || !GH_SESSION.test(session)) return;
-    const saved = await this.state.storage.get(await sessionKey(session));
-    if (!GH_LOGIN.test(saved?.login || "")) return void ws.send(JSON.stringify({ t: "github-out" }));
-    await this.setContributor(ws, saved.login);
+    if (typeof session !== "string" || !GH_SESSION.test(session) || !this.accounts.on) return;
+    let account;
+    try {
+      account = await this.accounts.session(await sessionKey(session));
+    } catch {
+      return; // the accounts database did not answer: a guest for now, the browser keeps its session
+    }
+    if (!account) return void ws.send(JSON.stringify({ t: "github-out" }));
+    await this.setContributor(ws, account);
   }
-  // Whose connection this is on GitHub ("" = nobody): its account (made on the first login, worker/social.js)
-  // and how many merged pull requests that is; everyone is told.
-  async setContributor(ws, login) {
+  // Whose connection this is: its account (worker/accounts.js; null = nobody) and how many merged pull
+  // requests its GitHub login has; everyone is told.
+  async setContributor(ws, account) {
+    const login = account?.login || "";
     const counts = login ? await this.contributors() : {};
-    const account = login ? await this.accountOf(login, true) : null;
     const p = ws.deserializeAttachment();
     if (!p || p.left) return 0;
     const before = p.prs | 0;

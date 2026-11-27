@@ -3601,8 +3601,9 @@ function connect() {
       addToHistory("system", m.msg);
     }
     else if (m.t === "github-out") {
-      // the server no longer knows this session
+      // the server no longer knows this session: this browser has to log in again
       try { localStorage.removeItem("github-session"); } catch {}
+      social.sessionEnded();
     }
     else if (m.t === "admin-ok") {
       // the server accepted the password typed after /admin: keep it and reload to show the controls

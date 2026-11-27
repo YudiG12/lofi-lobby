@@ -14,6 +14,12 @@ export const MEDALS = {
   },
 };
 
+// Until when a new account gets the Founding member medal: the room decides (FOUNDER_UNTIL in
+// worker/social.js); this copy only says when to stop telling guests about it.
+const FOUNDER_UNTIL = Date.UTC(2026, 11, 1, 3);
+
+const BIO_MAX = 200; // characters of "about me" (the room cuts it there too)
+
 const svg = (d, size = 16) =>
   `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 const POP_OUT = '<path d="M14 4h6v6M20 4l-8 8M10 6H5v13h13v-5"/>';
@@ -96,6 +102,10 @@ export function setupSocial(game) {
     enterLogin.innerHTML = account ? `${ICON.yes}<span>#${account.n}</span>` : `${ICON.github}<span>log in</span>`;
     enterLogin.classList.toggle("in", !!account);
     enterLogin.title = account ? `logged in: account #${account.n}` : "log in with github";
+    // a guest is told about the medal while it can still be had: on the start screen, and once in the room
+    const offer = !account && Date.now() < FOUNDER_UNTIL;
+    document.querySelector("#enter-founder").hidden = !offer;
+    if (!offer) founderCard?.remove();
   }
   accountBtn.addEventListener("click", () => (accountBtn.blur(), account ? openProfile(account.n, { ...game.me(), online: true }) : game.login()));
   friendsBtn.addEventListener("click", () => (friendsBtn.blur(), openFriends()));
@@ -193,9 +203,40 @@ export function setupSocial(game) {
       if (m.relation === "received") acts.push(icon("yes", "accept friend", () => (friendAction(m.n, "add"), again()), "main"), icon("no", "decline friend", () => (friendAction(m.n, "remove"), again()), "danger"));
       if (m.relation === "friends") acts.push(confirmIcon("remove", "remove friend", "remove friend?", () => (friendAction(m.n, "remove"), again())));
     }
+    // about me: everyone reads it as plain text. Its owner clicks the text to write (or sees the box
+    // with the hint while there is nothing yet); it is saved on leaving the box, or Enter, and the
+    // box is gone again.
+    let about = [];
+    const edit = (holder) => {
+      const box = $("textarea", { className: "bio", maxLength: BIO_MAX, rows: 3, value: m.bio || "", placeholder: "write about yourself, so people can strike up a conversation with you!" });
+      box.setAttribute("aria-label", "about you");
+      const save = () => {
+        const text = box.value.replace(/\s+/g, " ").trim();
+        if (text !== (m.bio || "")) return game.send({ t: "bio", text }); // the room's answer draws the profile again
+        if (m.bio) box.replaceWith(written()); // nothing changed: back to the text
+      };
+      box.addEventListener("blur", save);
+      box.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !e.shiftKey) (e.preventDefault(), box.blur());
+        if (e.key === "Escape") ((box.value = m.bio || ""), box.blur(), e.stopPropagation());
+      });
+      if (holder) (holder.replaceWith(box), box.focus());
+      return box;
+    };
+    const written = () => {
+      const text = $("p", { className: "bio" + (self ? " mine" : ""), textContent: m.bio }); // textContent: no HTML from a player
+      if (self) {
+        text.title = "edit";
+        text.addEventListener("click", () => edit(text));
+      }
+      return text;
+    };
+    if (m.bio) about = [written()];
+    else if (self) about = [edit()];
     profile.replaceChildren(
       head(m, `#${m.n}`, `since ${day(m.at)}${self ? ` · github @${m.login} (only you see this)` : ""}`),
       $("div", { className: "body" }, lookOf(m.gender, m.cap), side),
+      ...about,
       $("div", { className: "actions" }, ...acts),
     );
   }
@@ -461,6 +502,36 @@ export function setupSocial(game) {
     drawTab(c);
     drawAccount();
   }
+  // Founding member: a card at the top of the screen for a guest who just walked in, with the medal,
+  // a log in button and a ✕. Closed, it stays away for this visit only: it is back the next time the
+  // game is opened, for as long as the medal can be had.
+  let founderCard = null;
+  let founderClosed = false;
+  function offerFounder() {
+    if (account || founderClosed || endedCard?.isConnected || founderCard?.isConnected || Date.now() >= FOUNDER_UNTIL) return;
+    founderCard = $("div", { className: "glass invite founder" }, $("img", { src: MEDALS.founder.img, alt: "", width: 32, height: 32 }),
+      $("span", { innerHTML: "create your account until <b>nov 30</b><br>and get the <b>founding member</b> medal" }),
+      icon("github", "log in", () => game.login(), "github"),
+      icon("no", "close", () => {
+        founderCard.remove();
+        founderClosed = true;
+      }));
+    invites.prepend(founderCard);
+  }
+  // This browser was logged in and the room ended its session: a card to log in again, in place of the
+  // one above (this player has an account already, and gets back to it by logging in).
+  let endedCard = null;
+  function sessionEnded() {
+    founderCard?.remove();
+    if (account || endedCard?.isConnected) return;
+    endedCard = $("div", { className: "glass invite founder ended" }, $("span", { className: "glyph", innerHTML: ICON.profile }),
+      $("span", { innerHTML: "your login expired:<br><b>log in again</b> to get back to your account" }),
+      icon("github", "log in", () => game.login(), "github"), icon("no", "close", () => endedCard.remove()));
+    invites.prepend(endedCard);
+  }
+  // in the room (the start screen is gone), and after the room had a moment to say who this browser is
+  addEventListener("game:pause", (e) => !e.detail && setTimeout(offerFounder, 1500));
+
   // someone who is not a friend asks for a private chat: a small card to say yes or no
   function invited(m) {
     if ([...invites.children].some((el) => el.dataset.n === String(m.from))) return;
@@ -483,6 +554,7 @@ export function setupSocial(game) {
     onMessage(m) {
       if (m.t === "account") {
         account = m.n >= 0 ? { n: m.n, login: m.login, at: m.at, medals: m.medals || [] } : null;
+        if (account) endedCard?.remove();
         if (!account) {
           friends = { friends: [], in: [], out: [], chats: [] };
           for (const c of [...chats.values()]) (c.tab?.remove(), c.win?.remove(), chats.delete(c.n)); // the windows keep their place for the next login
@@ -541,6 +613,7 @@ export function setupSocial(game) {
       if (!game.send({ t: "dm", n: active, text })) game.say("you are offline: the message was not sent");
       return true;
     },
+    sessionEnded,
     /** @returns {number} my account number, or -1 */
     myAccount: () => (account ? account.n : -1),
     openProfile,

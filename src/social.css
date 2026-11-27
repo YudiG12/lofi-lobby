@@ -49,6 +49,15 @@ button.ico.close:hover { color: #ffc95a; background: none; border-color: transpa
 .social-card .prs { font-size: 11px; color: #D8D8E0; white-space: nowrap; }
 .social-card .prs i { display: inline-block; width: 12px; height: 12px; margin-right: 4px; vertical-align: -2px;
                       background: url("/assets/badges/contributor-balls.svg") 0 0 / 400% 100%; image-rendering: pixelated; }
+/* about me: read by everyone, written in place by its owner */
+.social-card .bio { margin: 0; font-family: Silkscreen, monospace; font-size: 10px; line-height: 16px; color: #D8D8E0; overflow-wrap: anywhere; }
+.social-card p.bio.mine { cursor: text; border-radius: 4px; }
+.social-card p.bio.mine:hover { background: rgba(255,255,255,.06); box-shadow: 0 0 0 4px rgba(255,255,255,.06); }
+.social-card textarea.bio { display: block; width: 100%; box-sizing: border-box; resize: none; padding: 8px 10px; border-radius: 6px; outline: none;
+                            background: rgba(0,0,0,.35); border: 1px dashed rgba(255,255,255,.22); }
+.social-card textarea.bio:hover { border-color: rgba(255,255,255,.4); }
+.social-card textarea.bio:focus { border: 1px solid #ffc95a; }
+.social-card textarea.bio::placeholder { color: #9a9db0; }
 .social-card .actions { display: flex; align-items: center; gap: 8px; }
 /* "remove friend?" and "log out?": asked in place, with a yes and a no */
 .confirm { display: inline-flex; align-items: center; gap: 6px; }
@@ -85,6 +94,16 @@ button.ico.close:hover { color: #ffc95a; background: none; border-color: transpa
 #invites .invite b { font-weight: 400; color: var(--name, #ffc95a); }
 #invites .invite small { color: #9a9db0; font-size: 10px; margin-right: 4px; }
 #invites .invite .glyph { display: grid; color: #ffc95a; }
+
+/* Founding member, for a guest: the medal, glowing, and how to get it */
+#enter-founder { display: flex; align-items: center; gap: 10px; max-width: 250px; font-size: 10px; line-height: 15px; text-align: left; }
+#enter-founder[hidden] { display: none; }
+#enter-founder b, #invites .founder b { font-weight: 400; color: #ffc95a; }
+#enter-founder img, #invites .founder img { flex-shrink: 0; image-rendering: pixelated; animation: medal-glow 1.6s ease-in-out infinite; }
+#invites .founder { gap: 10px; padding: 10px 12px; font-size: 10px; line-height: 15px; color: #D8D8E0; border-color: rgba(255,201,90,.55); }
+@keyframes medal-glow { 0%, 100% { filter: drop-shadow(0 0 2px rgba(255,201,90,.5)); transform: translateY(0); }
+                        50% { filter: drop-shadow(0 0 7px rgba(255,201,90,.95)); transform: translateY(-2px); } }
+@media (prefers-reduced-motion: reduce) { #enter-founder img, #invites .founder img { animation: none; filter: drop-shadow(0 0 4px rgba(255,201,90,.8)); } }
 
 /* the chat panel's tabs: the room, and one per private chat docked there */
 #chat .tabs { display: flex; align-items: center; gap: 6px; min-width: 0; overflow-x: auto; scrollbar-width: none; }

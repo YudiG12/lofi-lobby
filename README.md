@@ -49,7 +49,7 @@ Open the URL, pick a trainer and press **enter the room**: the click is what let
 
 - There is one room, `lobby`, for everyone (the server refuses any other name).
 - Accounts: press the GitHub button in the top card or **log in** on the start screen (or type `/github`) and type the code it shows at github.com/login/device. That is the only way to make an account. It gets a number in the order accounts were made, a profile with medals, a friends list and private chat (with friends, or with anyone who accepts your invitation): a tab in the chat panel that can be dragged out into a window. `/github out` logs out; the account stays.
-- Contributors: type `/github` in the chat and type the code it shows at github.com/login/device. The room learns your GitHub login and shows a badge with your merged pull requests (`/github out` forgets it). For a deploy of your own, create a GitHub OAuth App with "Enable Device Flow" on and put its Client ID in `GITHUB_CLIENT_ID` and your repository in `GITHUB_REPO` (`wrangler.toml`); no secret is needed.
+- Contributors: type `/github` in the chat and type the code it shows at github.com/login/device. The game learns your GitHub login and shows a badge with your merged pull requests (`/github out` forgets it). For a deploy of your own, create a GitHub OAuth App with "Enable Device Flow" on and put its Client ID in `GITHUB_CLIENT_ID` and your repository in `GITHUB_REPO` (`wrangler.toml`); no secret is needed.
 - Admin: type `/admin` in the chat and enter the password in the login box (`ADMIN_PASSWORD`); `/logout` leaves. Then you can restart or skip the song for everyone, and click a player's name (above them or in the chat) to kick or ban them, and delete notes on the message wall (the ✕ on a note); `/unban` in the chat lifts every ban.
 - Change the song list in [`src/radio.js`](src/radio.js) (`LISTA`, YouTube video ids).
 
@@ -71,8 +71,9 @@ Open the URL, pick a trainer and press **enter the room**: the click is what let
 | Carousel | Built in code where pines are taken out of the town as it loads; turned by the room's clock (`roomNow()`), so its horses are just seats 16..23 and riding sends no messages; nothing that turns casts a shadow | [ADR 011](docs/adr/011-christmas-carousel.md) |
 | Ferris wheel and fair lamps | The carousel's pattern right of the pond: gondolas are seats 24..31, boarded only near the bottom, placed upright each frame from the room's clock; four lamps around the rides whose light casts no shadow | [ADR 012](docs/adr/012-ferris-wheel-and-fair-lamps.md) |
 | Roller coaster | Over the pond, in 42 s cycles by the room's clock: 12 s at the station to board seats 32..36, one per car of a level 5-car train (the server checks the time), 30 s along a curve whose speed comes from a precomputed table; riders get off when the cycle ends | [ADR 013](docs/adr/013-roller-coaster-in-cycles.md) |
-| Accounts, friends, private chat | An account is a GitHub login (device flow), numbered in the order they were made and named by that number everywhere; medals are rules over the account; friends need both sides, and so does a private chat with a non-friend (an invitation); private chat goes through the room's WebSocket and its storage keeps the last 50 messages per pair (`worker/social.js`, `src/social.js`) | [ADR 014](docs/adr/014-accounts-friends-and-private-chat.md) |
-| House interiors | Four areas in the same room, two GLB layouts, door transitions and area-scoped seat reservations | [ADR 015](docs/adr/015-house-interiors.md) |
+| Accounts, friends, private chat | An account is made by a GitHub login (device flow), numbered in the order they were made and named by that number everywhere; medals are rules over the account; friends need both sides, and so does a private chat with a non-friend (an invitation); private chat goes through the room's WebSocket and its storage keeps the last 50 messages per pair (`worker/social.js`, `src/social.js`) | [ADR 014](docs/adr/014-accounts-friends-and-private-chat.md) |
+| Where accounts live | **D1** (`worker/accounts.js`): accounts and sessions in one database for the whole deploy, made by Wrangler on the first deploy and its tables by the Worker; an account is GitHub's numeric user id (the login can change) and keeps the verified e-mail, which never leaves the server. Friends and private messages stay in the room's storage | [ADR 015](docs/adr/015-accounts-in-d1.md) |
+| House interiors | Four areas in the same room, two GLB layouts, door transitions and area-scoped seat reservations | [ADR 016](docs/adr/016-house-interiors.md) |
 | Message wall | Notes go over HTTP (`/api/notes`), not the WebSocket, and live in the room object's storage: **one key per note**, so the wall has no size limit and is read a page at a time | [SECURITY.md](SECURITY.md) |
 | Admin | Secret `ADMIN_PASSWORD`, checked in the room object in constant time, few tries per connection | [SECURITY.md](SECURITY.md) |
 
@@ -95,7 +96,8 @@ src/
   social.js         account, profile and medals, friends list, private chat tabs
 public/assets/      Twinleaf FBX model, textures and male/female trainer sheets
 worker/index.js     Worker (static assets + /ws routing) and the Room Durable Object
-worker/social.js    accounts, medals, friends and private chat (methods of the Room)
+worker/social.js    medals, friends and private chat (methods of the Room)
+worker/accounts.js  accounts and sessions, in D1
 scripts/            deploy-your-own, README image rendering
 docs/               PRD, spec, ADRs, README images and real gameplay screenshot
 ```

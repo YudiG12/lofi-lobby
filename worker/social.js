@@ -3,11 +3,9 @@
 // An account is made by logging in with GitHub (the device flow in index.js), and only that way. It gets
 // a number in the order accounts were made: the repository's owner is 0, the next account 1, and so on.
 // Everything here names an account by that number: the GitHub login is shown to its owner only.
+// The accounts themselves (and their sessions) are in D1, see worker/accounts.js: `this.accounts`.
 //
 // Storage (this room's):
-//   "acct-of:<login>"  the account number of that GitHub login
-//   "acct:<n>"         { n, login, at, name, color, gender, cap }: when it was made and the trainer last seen with it
-//   "acct-next"        the number the next account gets (0 is kept for the owner)
 //   "friends:<n>"      { f: [n], in: [n], out: [n], c: [n], ci: { n: until }, unread: { n: count } }: friends,
 //                      requests received and sent, who else it has a private chat with (invited, not a
 //                      friend), chat invitations waiting for an answer, and private messages not read yet
@@ -15,6 +13,7 @@
 //
 // Protocol (JSON over the room's WebSocket; a guest's requests are refused):
 //   client -> server: { t: "profile", n }   (whose profile to show)
+//                     { t: "bio", text }   (what I say about myself on my profile, up to BIO_MAX characters; "" clears it)
 //                     { t: "friend", n, action: "add" | "remove" }   (add asks, or accepts a request from n;
 //                                                                     remove unfriends, declines or takes a request back)
 //                     { t: "friends" }   (send my list again)
@@ -23,7 +22,7 @@
 //                     { t: "dm", n, text } | { t: "dm-open", n } | { t: "dm-read", n }
 //   server -> client: { t: "account", n, login, at, medals, created }   (this connection's account; n -1: none)
 //                     { t: "acct", id, n }   (that player's account; players and chat also carry n)
-//                     { t: "profile", n, name, color, gender, cap, at, medals, prs, online, relation, chat, login? }
+//                     { t: "profile", n, name, color, gender, cap, bio, at, medals, prs, online, relation, chat, login? }
 //                       chat: you two have a private chat (friends, or an accepted invitation)
 //                       relation: "self" | "friends" | "sent" | "received" | "none" | "guest" (you have no account)
 //                     { t: "friends", friends: [{ n, name, color, online, unread }], in: [...], out: [...],
@@ -46,6 +45,7 @@ const MAX_PENDING = 50; // requests waiting, each way
 const DM_KEEP = 50; // messages kept per pair of friends
 const DM_MAX = 140; // characters, like the room's chat
 const UNREAD_MAX = 99;
+const BIO_MAX = 200; // characters of "about me" on a profile
 const MAX_CHATS = 50; // private chats with non-friends
 const INVITE_MS = 2 * 60_000; // a chat invitation waits this long for a yes
 const MAX_INVITES = 20; // waiting at once, per account
@@ -57,25 +57,6 @@ const without = (list, n) => list.filter((x) => x !== n);
 
 export function installSocial(Room, { cleanText }) {
   Object.assign(Room.prototype, {
-    // The account of a GitHub login. `create` makes it on the first login.
-    async accountOf(login, create = false) {
-      const s = this.state.storage;
-      let n = await s.get("acct-of:" + login);
-      if (n === undefined) {
-        if (!create) return null;
-        // the repository's owner is account 0, whenever they log in; everyone else counts from 1
-        const owner = String(this.env.GITHUB_REPO || "").split("/")[0].toLowerCase();
-        if (login === owner) n = 0;
-        else {
-          n = (await s.get("acct-next")) || 1;
-          await s.put("acct-next", n + 1);
-        }
-        const account = { n, login, at: Date.now() };
-        await s.put({ ["acct-of:" + login]: n, ["acct:" + n]: account });
-        return { ...account, created: true };
-      }
-      return (await s.get("acct:" + n)) || null;
-    },
     socketsOf(n) {
       return this.openSockets().filter((ws) => ws.deserializeAttachment()?.acct === n);
     },
@@ -94,18 +75,16 @@ export function installSocial(Room, { cleanText }) {
       if (!p || p.left) return;
       await this.saveLook(p, account);
       ws.send(JSON.stringify({ t: "account", n: account.n, login: account.login, at: account.at, medals: medalsOf(account), ...(account.created && { created: true }) }));
-      await this.sendFriends(account.n, null, [ws]);
+      try { await this.sendFriends(account.n, null, [ws]); } catch {} // asked again when the friends list is opened
       if (first) await this.presence(account.n, true);
     },
     // The trainer an account was last seen as: what its friends and its profile show while it is away.
     async saveLook(p, account) {
       if (p.acct == null) return;
-      const a = account || (await this.state.storage.get("acct:" + p.acct));
-      if (!a) return;
       const look = { name: p.name, color: p.color || "", gender: p.gender, cap: p.cap ?? -1 };
-      if (Object.keys(look).every((k) => a[k] === look[k])) return;
-      const { created, ...kept } = a;
-      await this.state.storage.put("acct:" + a.n, { ...kept, ...look });
+      if (account && Object.keys(look).every((k) => account[k] === look[k])) return;
+      // a failed write only leaves a profile a little out of date: the player's change itself went through
+      try { await this.accounts.saveLook(p.acct, look); } catch {}
     },
     // Tell an account's online friends that it came or went (only for its first or last connection).
     async presence(n, online) {
@@ -120,11 +99,7 @@ export function installSocial(Room, { cleanText }) {
       if (!sockets.length) return;
       const list = await this.friendsOf(n);
       const all = [...new Set([...list.f, ...list.in, ...list.out, ...list.c])];
-      const accounts = new Map();
-      for (let i = 0; i < all.length; i += 100) {
-        const got = await this.state.storage.get(all.slice(i, i + 100).map((x) => "acct:" + x));
-        for (const a of got.values()) accounts.set(a.n, a);
-      }
+      const accounts = await this.accounts.many(all);
       const online = new Set(this.openSockets().map((ws) => ws.deserializeAttachment()?.acct).filter((x) => x != null));
       const card = (x) => ({ n: x, name: accounts.get(x)?.name || "trainer", color: accounts.get(x)?.color || "" });
       const live = (x) => ({ ...card(x), online: online.has(x), unread: list.unread[x] | 0 });
@@ -141,9 +116,23 @@ export function installSocial(Room, { cleanText }) {
 
     async socialMessage(ws, p, m) {
       const fail = (msg) => ws.send(JSON.stringify({ t: "error", msg }));
+      try {
+        await this.social(ws, p, m, fail);
+      } catch {
+        fail("that did not work, try again"); // the accounts database did not answer
+      }
+    },
+    async social(ws, p, m, fail) {
       if (m.t === "profile") return this.sendProfile(ws, p, accountNumber(m.n));
       if (p.acct == null) return fail("connect github to create an account first");
       if (m.t === "friends") return this.sendFriends(p.acct, null, [ws]);
+      if (m.t === "bio") {
+        // the same cleaning and word filter as the chat: everyone who opens the profile reads it
+        const bio = cleanChat(cleanText(m.text, BIO_MAX), BIO_MAX);
+        if (bio === null) return fail("that description is not allowed");
+        await this.accounts.saveBio(p.acct, bio);
+        return this.sendProfile(ws, p, p.acct);
+      }
       const other = accountNumber(m.n);
       if (other < 0 || other === p.acct) return;
       if (m.t === "friend") return this.friend(p, other, m.action, fail);
@@ -155,7 +144,7 @@ export function installSocial(Room, { cleanText }) {
     },
 
     async sendProfile(ws, p, n) {
-      const a = n < 0 ? null : await this.state.storage.get("acct:" + n);
+      const a = n < 0 ? null : await this.accounts.get(n);
       if (!a) return ws.send(JSON.stringify({ t: "profile", n, missing: true }));
       const counts = await this.contributors();
       let relation = "guest";
@@ -167,7 +156,7 @@ export function installSocial(Room, { cleanText }) {
         chat = mine.f.includes(n) || mine.c.includes(n);
       }
       ws.send(JSON.stringify({
-        t: "profile", n, name: a.name || "trainer", color: a.color || "", gender: a.gender || "male", cap: a.cap ?? -1, at: a.at,
+        t: "profile", n, name: a.name || "trainer", color: a.color || "", gender: a.gender || "male", cap: a.cap ?? -1, bio: a.bio || "", at: a.at,
         medals: medalsOf(a), prs: counts[a.login] | 0, online: this.socketsOf(n).length > 0, relation, chat,
         ...(relation === "self" && { login: a.login }),
       }));
@@ -175,7 +164,9 @@ export function installSocial(Room, { cleanText }) {
 
     async friend(p, other, action, fail) {
       const me = p.acct;
-      const them = await this.state.storage.get("acct:" + other);
+      // the account is asked for first: between reading the two friends lists and writing them back
+      // nothing may wait on the network, or two requests could each overwrite the other's change
+      const them = await this.accounts.get(other);
       if (!them) return;
       const mine = await this.friendsOf(me);
       const theirs = await this.friendsOf(other);
@@ -222,7 +213,7 @@ export function installSocial(Room, { cleanText }) {
     // A private chat with someone who is not a friend starts with an invitation they accept.
     async chatInvite(ws, p, other, fail) {
       const me = p.acct;
-      const them = await this.state.storage.get("acct:" + other);
+      const them = await this.accounts.get(other);
       if (!them) return;
       const mine = await this.friendsOf(me);
       const open = () => ws.send(JSON.stringify({ t: "chat-open", with: other, name: them.name || "trainer", color: them.color || "" }));
@@ -251,7 +242,7 @@ export function installSocial(Room, { cleanText }) {
       await this.state.storage.put({ ["friends:" + me]: mine, ["friends:" + other]: theirs });
       await this.sendFriends(me);
       await this.sendFriends(other);
-      const them = await this.state.storage.get("acct:" + other);
+      const them = await this.accounts.get(other);
       this.sendTo(me, { t: "chat-open", with: other, name: them?.name || "trainer", color: them?.color || "" });
       this.sendTo(other, { t: "chat-open", with: me, name: p.name, color: p.color || "" });
     },
