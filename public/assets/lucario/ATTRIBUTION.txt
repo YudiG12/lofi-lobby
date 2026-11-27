@@ -1,0 +1,17 @@
+Lucario #448 sprite assets
+==========================
+
+Source: PMD Sprite Repository / PMDCollab SpriteCollab
+https://github.com/PMDCollab/SpriteCollab/tree/master/sprite/0448
+
+Files used:
+- Walk-Anim.png — CHUNSOFT
+- Idle-Anim.png — CHUNSOFT
+- Nod-Anim.png — PMDCollab_1 contributor (Discord user ID 356635814668664832)
+- Charge-Anim.png — PMDCollab_1 contributor (Discord user ID 356635814668664832)
+
+The attributions above follow sprite/0448/credits.txt in the upstream repository.
+SpriteCollab states that its sprites may be used for ROM hacks and fangames with
+artist credit, and must not be used for commercial projects. Check the upstream
+repository and its current terms before redistributing or using these assets
+commercially.

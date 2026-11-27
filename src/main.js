@@ -8,6 +8,7 @@ import { createStones } from "./stones.js";
 import { addSitFrames, sitFramePos } from "./ground-sit.js";
 import { createCapybara, CAPY_NEAR, CAPY_RADIUS, PHRASES as CAPY_PHRASES } from "./capybara.js";
 import { createOwl } from "./owl.js";
+import { createLucario, LUCARIO_NEAR, LUCARIO_RADIUS } from "./lucario.js";
 import { createFishing, createFishingGear, FISH_NEAR, FISH_LEAVE } from "./fishing.js";
 import { createCat, CATS, CAT_NEAR, CAT_SIT_MS, CAT_RIDE_MS, PHRASES as CAT_PHRASES, RIDE_PHRASES as CAT_RIDE_PHRASES } from "./cat.js";
 import { CAROUSEL, carouselSeat, createCarousel, inClearing, isCarouselSeat, onCarousel } from "./carousel.js";
@@ -358,6 +359,7 @@ function prepareTown(fbx) {
     mergeTown(fbx);
     markLampShadowsStale(); // the town, the lamps and everything around them just took their places
     buildCatNavGrid();
+    placeLucarioWalk();
 }
 
 // ---- The fair: carousel and Ferris wheel ----
@@ -1042,7 +1044,7 @@ for (const l of lampLights) (l.shadow.autoUpdate = false), (l.userData.shadowSta
 function markLampShadowsStale() {
   for (const l of lampLights) l.userData.shadowStale = true;
 }
-const SHADOW_REACH = 3; // a trainer's sprite is 5 units tall: past the light's range it can still reach in
+const SHADOW_REACH = 8; // tall sprites can project their shadow several units beyond the light's ground footprint
 const SHADOW_STEP = 0.25; // about one texel of a lamp's 512 shadow map, a few units from the lamp
 const drawnMovers = new Map(); // object -> { x, y, z, look, px, py, pz }: where its shadow was drawn, and last frame's spot
 const _lampAt = new THREE.Vector3();
@@ -1504,8 +1506,9 @@ rainBtn.addEventListener("click", (e) => {
   e.currentTarget.blur(); // give the keyboard back to the game
 });
 addEventListener("keydown", (e) => {
-  const typing = ["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName);
-  if (!typing && !e.repeat && !e.ctrlKey && !e.metaKey && e.key.toLowerCase() === "r") toggleRain();
+  const typing = ["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName) || document.activeElement?.isContentEditable;
+  if (typing || e.repeat || e.ctrlKey || e.metaKey || e.altKey || e.key.toLowerCase() !== "r") return;
+  if (nearLucario()) interactLucario("aura"); else toggleRain();
 });
 
 // ---- Fireflies ----
@@ -1894,6 +1897,7 @@ function buildCatNavGrid() {
     )
       return false;
     if (insideSolid(x, z, BODY_RADIUS * 0.9, BODY_RADIUS * 1.7)) return false;
+    if (onCarousel(x, z, BODY_RADIUS) || onWheel(x, z, BODY_RADIUS)) return false; // cats walk around the rides, not through them
     if (onRide(x, z, BODY_RADIUS)) return false; // cats walk around the rides, not through them
     if (
       inPond(x, z) ||
@@ -2119,6 +2123,8 @@ function samplePathPoint(path, cumDist, totalDist, dist) {
     x: a.x + dx * frac,
     y: a.y + (b.y - a.y) * frac,
     z: a.z + dz * frac,
+    dirX: dx,
+    dirZ: dz,
     dir: Math.abs(dx) >= Math.abs(dz) ? (dx >= 0 ? "right" : "left") : dz >= 0 ? "down" : "up",
   };
 }
@@ -2357,6 +2363,8 @@ function isFree(x, z, currentY) {
   )
     return false;
   if (insideSolid(x, z, BODY_RADIUS * 0.8, BODY_RADIUS * 1.6)) return false;
+  if (onCarousel(x, z, BODY_RADIUS * 0.5)) return false; // round, so not a box: you can walk all around it
+  if (onWheel(x, z, BODY_RADIUS * 0.5)) return false;
   if (onRide(x, z, BODY_RADIUS * 0.5)) return false; // the carousel is round, so not a box: you can walk all around it
   // pond: straight box (with the body width), not following the irregular stones
   if (
@@ -2369,6 +2377,8 @@ function isFree(x, z, currentY) {
   // the capybara is solid, but it moves: a step that takes you away from it is always allowed
   const toCapy = Math.hypot(x - capy.mesh.position.x, z - capy.mesh.position.z);
   if (toCapy < CAPY_RADIUS + BODY_RADIUS * 0.5 && toCapy < Math.hypot(pos.x - capy.mesh.position.x, pos.z - capy.mesh.position.z)) return false;
+  const toLucario = Math.hypot(x - lucario.mesh.position.x, z - lucario.mesh.position.z);
+  if (lucario.mesh.visible && toLucario < LUCARIO_RADIUS + BODY_RADIUS * 0.5 && toLucario < Math.hypot(pos.x - lucario.mesh.position.x, pos.z - lucario.mesh.position.z)) return false;
   if (Math.abs(x - board.position.x) < 3.8 + BODY_RADIUS * 0.5 && Math.abs(z - board.position.z) < 0.5 + BODY_RADIUS * 0.5) return false;
   for (const p of lampPosts)
     if (
@@ -2694,6 +2704,26 @@ gl_Position.z = (feetClip.z / feetClip.w) * gl_Position.w;`,
 const myFeet = useFeetDepth(sprite);
 const capyFeet = useFeetDepth(capy.mesh);
 const owlFeet = useFeetDepth(owl.mesh);
+const lucario = createLucario();
+scene.add(lucario.mesh, lucario.aura);
+lucario.mesh.visible = false;
+const lucarioFeet = useFeetDepth(lucario.mesh);
+// Use the same contact-shadow setup as the player: a flat circle with the
+// shared radial glow texture, placed directly on the sampled ground.
+const lucarioGroundShadow = new THREE.Mesh(
+  new THREE.CircleGeometry(0.55, 20),
+  new THREE.MeshBasicMaterial({
+    map: glowTexture,
+    color: 0x000000,
+    transparent: true,
+    opacity: 0.35,
+    depthWrite: false,
+  }),
+);
+lucarioGroundShadow.rotation.x = -Math.PI / 2;
+lucarioGroundShadow.visible = false;
+scene.add(lucarioGroundShadow);
+
 const _toCam = new THREE.Vector3();
 const occlusionRay = new THREE.Ray();
 const _hit = new THREE.Vector3();
@@ -2725,6 +2755,7 @@ function updateOcclusion() {
   setFeet(myFeet, pos.x + slide.x, pos.y, pos.z + slide.z);
   setFeet(capyFeet, capy.mesh.position.x, capy.mesh.position.y, capy.mesh.position.z);
   setFeet(owlFeet, owl.mesh.position.x, owl.mesh.position.y, owl.mesh.position.z);
+  if (lucario.mesh.visible) setFeet(lucarioFeet, lucario.mesh.position.x, lucario.mesh.position.y, lucario.mesh.position.z);
   for (const o of others.values()) setFeet(o.feet, o.mesh.position.x, o.mesh.position.y, o.mesh.position.z);
   // After trainers: a perched cat shares its rider's depth nudged slightly forward so it sits
   // over the cap without Z-fighting while still hiding behind walls/benches in front of the rider.
@@ -3827,7 +3858,7 @@ function addToHistory(name, text, id, admin, color, prs = 0, n = -1) {
   if (atBottom || name === NAME) elMsgs.scrollTop = elMsgs.scrollHeight;
 }
 
-function showBubble(owner, text, mention = false) {
+function showBubble(owner, text, mention = false, durationMs = null) {
   let b = bubbles.get(owner);
   if (!b) {
     b = {
@@ -3842,7 +3873,7 @@ function showBubble(owner, text, mention = false) {
     Object.assign(document.createElement("span"), { textContent: text }),
   );
   b.el.style.opacity = 1;
-  b.until = performance.now() + 4000 + text.length * 60; // stays longer if long
+  b.until = performance.now() + (durationMs ?? 4000 + text.length * 60); // optional short-lived NPC reactions
 }
 
 // ---- Admin: click a name (above a trainer or in the chat) to kick or ban ----
@@ -4011,6 +4042,12 @@ document.querySelector("#chat form").addEventListener("submit", (e) => {
   if (/^\/admin$/i.test(text)) return openAdminLogin();
   // contributors: /github proves your GitHub login, and the room shows your merged pull requests
   if (/^\/github$/i.test(text)) return startGithubLogin();
+  if (/^\/github (out|logout)$/i.test(text)) {
+    const session = githubSession();
+    try { localStorage.removeItem("github-session"); } catch {}
+    if (ws?.readyState === 1) ws.send(JSON.stringify({ t: "github-out", session }));
+    return addToHistory("system", "github: logged out");
+  }
   if (/^\/github (out|logout)$/i.test(text)) return githubLogout();
   if (/^\/logout$/i.test(text)) {
     try { localStorage.removeItem("admin-password"); } catch {}
@@ -4237,6 +4274,249 @@ catPrompt.addEventListener("click", (e) => {
   e.currentTarget.blur(); // give the keyboard back to the game
 });
 document.body.append(catPrompt);
+// ---- Lucario: permanent NPC using the town's shared cat navigation grid ----
+// ---- Lucario: random, obstacle-aware patrol around the pond and fairground ----
+const LUCARIO_LEG_MS=26000;
+const LUCARIO_SPEED=1.85;
+const LUCARIO_REPLAN_MS=850;
+const LUCARIO_ACTOR_CLEARANCE=3.25;
+let lucarioPatrolNodes=[];
+let lucarioPatrolSet=new Set();
+let lucarioPausedMs=0;
+let lucarioInteraction=null;
+let lucarioRoute={slot:-1,path:[],cumDist:[],totalDist:0,distance:0,targetIdx:-1,lastPlan:0,lastTick:0};
+
+function lucarioClearOfFixedObjects(node){
+  return !insideSolid(node.x,node.z,1.7,2.4)&&
+    Math.hypot(node.x-board.position.x,node.z-board.position.z)>5.5&&
+    lampPosts.every(p=>Math.hypot(p.position.x-node.x,p.position.z-node.z)>2.8)&&
+    benches.every(b=>Math.hypot(b.x-node.x,b.z-node.z)>3.2)&&
+    !onRide(node.x,node.z,1.8);
+}
+function placeLucarioWalk(){
+  const nodes=catNav.nodes;
+  if(!nodes.length||!pondBox){lucario.mesh.visible=false;return;}
+  // Keep patrol points on the public side of the village. The houses behind the
+  // back road are intentionally outside this corridor.
+  const frontLimit=Math.max(townBox.min.z+12,pondBox.min.z-10);
+  const suitable=(node)=>{
+    if(node.z<frontLimit||!lucarioClearOfFixedObjects(node))return false;
+    if(Math.hypot(node.x-capy.mesh.position.x,node.z-capy.mesh.position.z)<7)return false;
+    const fromPond=pondDistance(node.x,node.z);
+    const nearPond=fromPond>=2.2&&fromPond<=12;
+    const wheelDistance=Math.hypot(node.x-WHEEL.x,node.z-WHEEL.z);
+    const carouselDistance=Math.hypot(node.x-CAROUSEL.x,node.z-CAROUSEL.z);
+    const nearFair=(wheelDistance>=WHEEL.halfWidth+2&&wheelDistance<=19)||
+      (carouselDistance>=CAROUSEL.base+2&&carouselDistance<=16);
+    return nearPond||nearFair;
+  };
+  const routeNodes=nodes.map((node,index)=>({node,index}))
+    .filter(({node})=>node.z>frontLimit&&lucarioClearOfFixedObjects(node)&&
+      Math.hypot(node.x-capy.mesh.position.x,node.z-capy.mesh.position.z)>5.5)
+    .map(({index})=>index);
+  // The corridor is broader than the waypoint ring: it connects the pond and
+  // fairground while still excluding the rear-house side of the village.
+  lucarioPatrolSet=new Set(routeNodes);
+  lucarioPatrolNodes=routeNodes.filter(index=>suitable(nodes[index]));
+  if(lucarioPatrolNodes.length<8){
+    const center=townBox.getCenter(new THREE.Vector3());
+    lucarioPatrolNodes=routeNodes.filter(index=>{
+      const n=nodes[index];
+      return Math.hypot(n.x-center.x,n.z-center.z)<34;
+    });
+  }
+  if(lucarioPatrolNodes.length<2){lucario.mesh.visible=false;return;}
+  const initial=lucarioPatrolNodes[Math.floor(lucarioPatrolNodes.length*.5)];
+  const first=nodes[initial];
+  lucario.mesh.position.set(first.x,groundHeight(first.x,first.z),first.z);
+  lucario.mesh.visible=true;
+  lucarioRoute={slot:-1,path:[],cumDist:[],totalDist:0,distance:0,targetIdx:-1,lastPlan:0,lastTick:performance.now()};
+}
+
+function lucarioActorPositions(){
+  const actors=[{x:pos.x,z:pos.z,r:LUCARIO_ACTOR_CLEARANCE}];
+  for(const o of others.values()){
+    if(o.seat>=0)continue;
+    actors.push({x:o.mesh.position.x,z:o.mesh.position.z,r:LUCARIO_ACTOR_CLEARANCE});
+  }
+  actors.push({x:capy.mesh.position.x,z:capy.mesh.position.z,r:CAPY_RADIUS+1.6});
+  for(const cat of cats){
+    if(cat.ride||cat.hopOff)continue;
+    actors.push({x:cat.mesh.position.x,z:cat.mesh.position.z,r:2.15});
+  }
+  return actors;
+}
+function lucarioNodeBlocked(node,actors,allowIdx=-1,index=-1){
+  if(index===allowIdx)return false;
+  if(!lucarioClearOfFixedObjects(node))return true;
+  return actors.some(actor=>Math.hypot(node.x-actor.x,node.z-actor.z)<actor.r);
+}
+function findLucarioPath(startIdx,endIdx,actors=[]){
+  const nodes=catNav.nodes;
+  if(startIdx===endIdx)return [nodes[startIdx]];
+  if(!lucarioPatrolSet.has(startIdx)||!lucarioPatrolSet.has(endIdx))return [];
+  const parent=new Int32Array(nodes.length).fill(-1);
+  const queue=new Int32Array(nodes.length);
+  let head=0,tail=0;
+  parent[startIdx]=startIdx;queue[tail++]=startIdx;
+  while(head<tail){
+    const u=queue[head++];
+    if(u===endIdx)break;
+    for(const [v] of nodes[u].adj){
+      if(!lucarioPatrolSet.has(v)||parent[v]!==-1)continue;
+      if(lucarioNodeBlocked(nodes[v],actors,startIdx,v))continue;
+      parent[v]=u;queue[tail++]=v;
+      if(v===endIdx){head=tail;break;}
+    }
+  }
+  if(parent[endIdx]===-1)return [];
+  const path=[];
+  for(let cur=endIdx;;cur=parent[cur]){path.push(nodes[cur]);if(cur===startIdx)break;}
+  return path.reverse();
+}
+function lucarioTarget(slot,previous=-1,actors=[]){
+  // Seeded pseudo-random selection: every browser picks the same waypoint for a
+  // given room-clock slot, while the route still feels different each time.
+  let seed=(Math.imul(slot+1,0x45d9f3b)^0x6d2b79f5)>>>0;
+  seed^=seed>>>16;seed=Math.imul(seed,0x45d9f3b);seed^=seed>>>16;
+  const current=lucario.mesh.position;
+  const candidates=lucarioPatrolNodes.filter(i=>i!==previous&&
+    actors.every(actor=>{
+      const n=catNav.nodes[i];
+      return Math.hypot(n.x-actor.x,n.z-actor.z)>actor.r+1.2;
+    })&&Math.hypot(catNav.nodes[i].x-current.x,catNav.nodes[i].z-current.z)>6);
+  return candidates.length?candidates[(seed>>>0)%candidates.length]:lucarioPatrolNodes[0];
+}
+function lucarioNearestPatrolNode(x,z){
+  let best=-1,bestDistance=Infinity;
+  for(const index of lucarioPatrolNodes){
+    const n=catNav.nodes[index],d=Math.hypot(n.x-x,n.z-z);
+    if(d<bestDistance){best=index;bestDistance=d;}
+  }
+  return best;
+}
+function planLucarioRoute(slot,now){
+  const nodes=catNav.nodes;
+  const current=lucario.mesh.position;
+  const startIdx=lucarioNearestPatrolNode(current.x,current.z);
+  if(startIdx<0)return false;
+  const actors=lucarioActorPositions();
+  const targetIdx=lucarioTarget(slot,lucarioRoute.targetIdx,actors);
+  // The current node may be inside the player's personal-space radius; allow
+  // Lucario to leave it, but all later nodes must give people room.
+  const pathNodes=findLucarioPath(startIdx,targetIdx,actors);
+  if(pathNodes.length<2)return false;
+  const path=[{x:current.x,y:groundHeight(current.x,current.z),z:current.z},...pathNodes];
+  const measured=measurePath(path);
+  lucarioRoute={slot,path,cumDist:measured.cumDist,totalDist:measured.totalDist,
+    distance:0,targetIdx,lastPlan:now,lastTick:now};
+  return true;
+}
+function replanLucarioAroundActors(now){
+  const route=lucarioRoute;
+  if(now-route.lastPlan<LUCARIO_REPLAN_MS||(!route.waiting&&route.path.length<2))return;
+  const actors=lucarioActorPositions();
+  const current=lucario.mesh.position;
+  const next=route.path.length>1?samplePathPoint(route.path,route.cumDist,route.totalDist,
+    Math.min(route.totalDist,route.distance+2.2)):current;
+  const blocked=route.waiting||actors.some(a=>distanceToSegment(a.x,a.z,current.x,current.z,next.x,next.z)<a.r+0.35);
+  if(!blocked){route.lastPlan=now;return;}
+  const startIdx=lucarioNearestPatrolNode(current.x,current.z);
+  if(startIdx<0){route.lastPlan=now;return;}
+  const detour=findLucarioPath(startIdx,route.targetIdx,actors);
+  route.lastPlan=now;
+  if(detour.length<2){route.waiting=true;return;} // wait rather than push through a player
+  const path=[{x:current.x,y:groundHeight(current.x,current.z),z:current.z},...detour];
+  const measured=measurePath(path);
+  route.path=path;route.cumDist=measured.cumDist;route.totalDist=measured.totalDist;route.distance=0;route.waiting=false;
+}
+function distanceToSegment(px,pz,ax,az,bx,bz){
+  const dx=bx-ax,dz=bz-az,len2=dx*dx+dz*dz;
+  const u=len2?THREE.MathUtils.clamp(((px-ax)*dx+(pz-az)*dz)/len2,0,1):0;
+  return Math.hypot(px-(ax+u*dx),pz-(az+u*dz));
+}
+function walkLucario(t){
+  const nodes=catNav.nodes;
+  if(!lucario.mesh.visible||lucarioPatrolNodes.length<2||!nodes.length){lucario.setPose("idle");return;}
+  const now=performance.now();
+  if(lucarioInteraction){
+    if(now<lucarioInteraction.until){lucario.setPose(lucarioInteraction.action==="aura"?"aura":"pet");lucarioRoute.lastTick=now;return;}
+    lucarioPausedMs+=Math.max(0,t-lucarioInteraction.startedAt);
+    lucarioInteraction=null;
+    lucarioRoute.lastTick=now;
+  }
+  const patrolTime=Math.max(0,t-lucarioPausedMs);
+  const slot=Math.floor(patrolTime/LUCARIO_LEG_MS);
+  if(slot!==lucarioRoute.slot){
+    if(!planLucarioRoute(slot,now)){
+      lucario.setPose("idle");
+      lucarioRoute.lastTick=now;
+      return;
+    }
+  }
+  replanLucarioAroundActors(now);
+  if(lucarioRoute.waiting||lucarioRoute.path.length<2){lucario.setPose("idle");return;}
+  const dt=Math.min(.08,Math.max(0,(now-lucarioRoute.lastTick)/1000));
+  lucarioRoute.lastTick=now;
+  if(lucarioRoute.distance>=lucarioRoute.totalDist){
+    lucario.setPose("idle");
+    return;
+  }
+  lucarioRoute.distance=Math.min(lucarioRoute.totalDist,lucarioRoute.distance+dt*LUCARIO_SPEED);
+  const point=samplePathPoint(lucarioRoute.path,lucarioRoute.cumDist,lucarioRoute.totalDist,lucarioRoute.distance);
+  lucario.mesh.position.set(point.x,groundHeight(point.x,point.z),point.z);
+  lucario.setDirection(point.dirX,point.dirZ);
+  lucario.setPose("walk");
+}
+function nearLucario(){
+  return lucario.mesh.visible&&!gamePaused&&mySeat<0&&!wall.isOpen()&&!nearBoard()&&
+    Math.hypot(pos.x-lucario.mesh.position.x,pos.z-lucario.mesh.position.z)<LUCARIO_NEAR;
+}
+function interactLucario(action){
+  if(!nearLucario()||(lucarioInteraction&&performance.now()<lucarioInteraction.until))return;
+  lucario.setDirection(
+    pos.x-lucario.mesh.position.x,
+    pos.z-lucario.mesh.position.z,
+  );
+  lucarioInteraction={action,startedAt:roomNow(),until:performance.now()+(action==="aura"?2400:1900)};
+  lucario.setPose(action==="aura"?"aura":"pet");
+  const phrases=action==="aura"
+    ?["Lucario fecha os olhos. Uma aura azul envolve vocês por um instante.","Ele parece perceber algo tranquilo na sua aura.","Por um momento, vocês conseguem se entender sem palavras."]
+    :["Lucario abaixa a cabeça, aceitando o carinho.","Lucario parece gostar da sua companhia.","Ele fecha os olhos e solta um pequeno suspiro satisfeito."];
+  showBubble(lucario.mesh,phrases[Math.floor(Math.random()*phrases.length)],false,1800);
+}
+// Two native prompt buttons, matching the capybara and cat interactions.
+const lucarioPrompt=Object.assign(document.createElement("div"),{id:"lucario-prompt"});
+Object.assign(lucarioPrompt.style,{
+  position:"fixed",transform:"translate(-50%,-100%)",zIndex:"4",display:"none",gap:"6px",whiteSpace:"nowrap",
+});
+const makeLucarioAction=(key,label,action)=>{
+  const button=Object.assign(capyPrompt.cloneNode(false),{id:"",type:"button"});
+  button.innerHTML=MOBILE?label:`<kbd>${key}</kbd> ${label}`;
+  button.addEventListener("click",e=>{interactLucario(action);e.currentTarget.blur();});
+  return button;
+};
+lucarioPrompt.append(makeLucarioAction("E","fazer carinho","pet"),makeLucarioAction("R","sentir aura","aura"));
+document.body.append(lucarioPrompt);
+function updateLucario(){
+  const t=roomNow();walkLucario(t);
+  lucario.update(performance.now());
+  lucario.mesh.rotation.set(camera.rotation.x*.5,0,0);
+  const lx=lucario.mesh.position.x,lz=lucario.mesh.position.z;
+  lucarioGroundShadow.visible = lucario.mesh.visible;
+  // Match the player's contact shadow offset; the sprite and shadow share the same ground sample.
+  lucarioGroundShadow.position.set(lx, lucario.mesh.position.y + 0.002, lz);
+  lucarioGroundShadow.material.opacity = lucarioInteraction?.action === "aura" ? 0.22 : 0.35;
+  lucario.mesh.castShadow = true;
+  lucario.aura.position.set(lx,lucario.mesh.position.y+.08,lz);
+  const show=nearLucario()&&!typing()&&!bubbles.has(lucario.mesh);
+  lucarioPrompt.style.display=show?"flex":"none";
+  if(show){
+    _v.set(lucario.mesh.position.x,lucario.mesh.position.y+4.2,lucario.mesh.position.z).project(camera);
+    lucarioPrompt.style.left=`${(_v.x*.5+.5)*innerWidth}px`;
+    lucarioPrompt.style.top=`${(-_v.y*.5+.5)*innerHeight}px`;
+  }
+}
 // Pick at most one closest animal in interaction range so prompts and E never collide.
 function closestAnimal() {
   if (mySeat >= 0 || nearBoard()) return null;
@@ -4446,14 +4726,15 @@ let eNow = null;
  * animal (capybara or cat), and last the pond's edge or the free seat, whichever is closer.
  * Only that action's prompt shows.
  * @param {number} [seat] nearest free seat, if already known this frame
- * @returns {"fish" | "stand" | "wall" | "capy" | "cat" | "cast" | "sit" | null}
+ * @returns {"fish" | "stand" | "wall" | "capy" | "cat" | "lucario" | "cast" | "sit" | null}
  */
 function eAction(seat = nearestFreeSeat()) {
   if (gamePaused || wall.isOpen()) return null;
-  const p = fishing.phase();
-  if (p === "focus" || p === "bite") return "fish";
   if (mySeat >= 0) return "stand";
   if (nearBoard()) return "wall";
+  if (nearLucario()) return "lucario";
+  const p = fishing.phase();
+  if (p === "focus" || p === "bite") return "fish";
   const animal = closestAnimal();
   if (animal) return animal.kind;
   const spot = fishSpot();
@@ -4467,6 +4748,7 @@ function doE(action = eAction()) {
   else if (action === "wall") wall.show();
   else if (action === "capy") feedCapy();
   else if (action === "cat") feedCat(nearCat());
+  else if (action === "lucario") interactLucario("pet");
   else if (action === "stand" || action === "sit") toggleSit();
 }
 addEventListener("keydown", (e) => {
@@ -4652,6 +4934,7 @@ function loop() {
   owl.mesh.rotation.set(camera.rotation.x * 0.5, 0, 0); // faces the camera like the trainers
   updateFishing();
   updateCats();
+  updateLucario();
   updateOcclusion();
   // facing the camera, tilted only halfway (the shadow looks like a standing body)
   sprite.rotation.set(camera.rotation.x * 0.5, 0, 0);
@@ -4664,7 +4947,7 @@ function loop() {
   // someone going round would make them redraw their 6 shadow passes every frame, all night
   sprite.castShadow = !riding;
   const movers = [...others.values()].filter((o) => !isRideSeat(o.seat)).map((o) => o.mesh);
-  updateLampShadows([...(riding ? [] : [sprite]), capy.mesh, owl.mesh, ...cats.map((c) => c.mesh), ...movers]);
+  updateLampShadows([...(riding ? [] : [sprite]), capy.mesh, owl.mesh, lucario.mesh, ...cats.map((c) => c.mesh), ...movers]);
   renderer.render(scene, camera);
   updateNameTags();
   updateBubbles();
