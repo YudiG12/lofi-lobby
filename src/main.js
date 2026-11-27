@@ -4522,6 +4522,32 @@ function updateFishing() {
   fishPrompt.style.top = `${(-_v.y * 0.5 + 0.5) * innerHeight}px`;
 }
 
+// Each prompt is placed over its own thing, so by the pond several can land on each other or on your
+// name (T for stones, E for the cat, the seat, the line). The lowest one stays; the others move up
+// until they clear it.
+const PROMPT_GAP = 4;
+function stackPrompts() {
+  const shown = [sitPrompt, wallPrompt, capyPrompt, catPrompt, stonePrompt, fishPrompt].filter((el) =>
+    el === sitPrompt ? !el.hidden : el.classList.contains("on"),
+  );
+  if (!shown.length) return;
+  const myTag = nameTags.get(sprite);
+  const placed = myTag && myTag.style.display !== "none" ? [myTag.getBoundingClientRect()] : [];
+  const boxes = shown.map((el) => ({ el, r: el.getBoundingClientRect() })).sort((a, b) => b.r.bottom - a.r.bottom);
+  for (const { el, r } of boxes) {
+    let { top, bottom } = r;
+    for (;;) {
+      const hit = placed.find((p) => r.left < p.right && r.right > p.left && top < p.bottom + PROMPT_GAP && bottom > p.top - PROMPT_GAP);
+      if (!hit) break;
+      const up = bottom - (hit.top - PROMPT_GAP);
+      top -= up;
+      bottom -= up;
+    }
+    if (bottom !== r.bottom) el.style.top = `${parseFloat(el.style.top) - (r.bottom - bottom)}px`;
+    placed.push({ left: r.left, right: r.right, top, bottom });
+  }
+}
+
 if (import.meta.env.DEV) {
   import("./debug.js").then(({ setupDebug }) => {
     setupDebug({
@@ -4673,6 +4699,7 @@ function loop() {
   updateCoasterSign();
   updateWallPrompt();
   updateStonePrompt();
+  stackPrompts();
   requestAnimationFrame(loop);
 }
 loop();
