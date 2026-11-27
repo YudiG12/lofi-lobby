@@ -114,29 +114,14 @@ function sync() {
 
 const TOUCH = matchMedia("(pointer: coarse)").matches;
 
-export async function startRadio({ elPlayer, elTitle }) {
+// The player is out of sight (index.html keeps it off the screen): it is only the room's sound
+export async function startRadio({ elPlayer }) {
   await loadApi();
   const { idx, sec } = nowOnRadio();
   playingIdx = idx;
-  // cover with the video's thumbnail whenever it isn't playing, so YouTube's big
-  // pause/play overlay and logo never show in the little TV
-  const cover = Object.assign(document.createElement("img"), { className: "tv-cover", alt: "" });
-  document.getElementById(elPlayer).parentElement.append(cover);
-  // YouTube shows its pause button and channel badge for a few seconds after playback
-  // starts, so the cover only lifts once that has faded
-  let coverTimer = 0;
-  const setCover = (playing) => {
-    clearTimeout(coverTimer);
-    if (playing) coverTimer = setTimeout(() => (cover.hidden = true), 4500);
-    else {
-      cover.src = `https://i.ytimg.com/vi/${PLAYLIST[Math.max(0, playingIdx)]}/hqdefault.jpg`;
-      cover.hidden = false;
-    }
-  };
-  setCover(false);
   player = new YT.Player(elPlayer, {
-    width: 176,
-    height: 99,
+    width: 200,
+    height: 113,
     videoId: PLAYLIST[idx],
     playerVars: { autoplay: 1, controls: 0, disablekb: 1, modestbranding: 1, rel: 0, playsinline: 1, start: Math.floor(sec) },
     events: {
@@ -160,7 +145,6 @@ export async function startRadio({ elPlayer, elTitle }) {
       },
       onStateChange: (e) => {
         const p = e.target;
-        setCover(e.data === YT.PlayerState.PLAYING);
         if (paused && e.data === YT.PlayerState.PLAYING) {
           p.pauseVideo();
           return;
@@ -172,7 +156,6 @@ export async function startRadio({ elPlayer, elTitle }) {
             durations[id] = d;
             sync(); // now with the real duration, recompute the point
           }
-          elTitle.textContent = p.getVideoData()?.title || "—";
         }
         if (e.data === YT.PlayerState.ENDED) sync();
       },

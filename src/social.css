@@ -1,0 +1,127 @@
+/* Accounts, profiles, friends and private chat (src/social.js). Same glass and type as the rest of the HUD.
+   Icons instead of words: a button's label shows on hover. */
+
+/* the top card's first row of buttons: my profile (or log in), my friends, then the radio's sound */
+#place #account { align-items: center; margin-top: 8px; }
+#account-btn.new { border-color: #b794ff; color: #b794ff; }
+#account #volume { margin-left: 2px; }
+#account #admin { margin-left: 4px; }
+#place #account #admin button { width: 26px; height: 26px; font-size: 11px; }
+/* how many things wait: friend requests and unread private messages */
+#friends-btn i { display: none; position: absolute; right: -5px; top: -5px; min-width: 8px; padding: 0 4px; border-radius: 8px; font-style: normal;
+                 font-size: 9px; line-height: 14px; color: #1b1406; background: #ffc95a; }
+#friends-btn i.on { display: block; }
+#chat .tabs button i.n { display: none; min-width: 8px; margin-left: 5px; padding: 0 4px; border-radius: 8px; font-style: normal;
+                         font-size: 9px; line-height: 14px; color: #1b1406; background: #ffc95a; }
+#chat .tabs button i.n.on { display: inline-block; }
+
+/* log in, on the start screen too */
+#enter #enter-login { display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 8px 14px; border-color: #b794ff; color: #b794ff; }
+#enter #enter-login:hover { background: rgba(183,148,255,.16); border-color: #b794ff; color: #b794ff; }
+#enter #enter-login.in { border-color: rgba(255,255,255,.2); color: #7ee08a; cursor: default; background: rgba(10,10,14,.75); }
+
+/* icon buttons */
+button.ico { display: grid; place-items: center; width: 30px; height: 30px; padding: 0; flex-shrink: 0; color: #F2F2F5; background: rgba(0,0,0,.4); cursor: pointer;
+             border: 1px solid rgba(255,255,255,.16); border-radius: 6px; }
+button.ico:hover { background: rgba(255,255,255,.1); border-color: rgba(255,255,255,.4); }
+button.ico.main { border-color: #ffc95a; color: #ffc95a; }
+button.ico.github { border-color: #b794ff; color: #b794ff; }
+button.ico.danger:hover { border-color: #ff6b6b; color: #ff6b6b; }
+button.ico.done { border-color: #7ee08a; color: #7ee08a; pointer-events: none; }
+button.ico.close { width: 22px; height: 22px; margin-left: auto; border-color: transparent; background: none; color: #C4C6D4; }
+button.ico.close:hover { color: #ffc95a; background: none; border-color: transparent; }
+.dot { display: inline-block; flex-shrink: 0; width: 8px; height: 8px; border-radius: 50%; background: #5a5d6e; }
+.dot.on { background: #7ee08a; box-shadow: 0 0 5px rgba(126,224,138,.7); }
+
+/* profile and friends: a card in the middle of the screen */
+.social-card { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 20; display: flex; flex-direction: column;
+               gap: 14px; padding: 16px; width: min(280px, calc(100vw - 32px)); max-height: calc(100vh - 48px); box-sizing: border-box; }
+.social-card[hidden] { display: none; }
+.social-card header { display: flex; align-items: center; gap: 8px; cursor: move; user-select: none; touch-action: none; }
+.social-card header b { font-weight: 400; font-size: 15px; color: var(--name, #ffc95a); overflow-wrap: anywhere; }
+.social-card header .num { font-size: 11px; color: #9a9db0; white-space: nowrap; cursor: default; }
+.social-card header .glyph { display: grid; color: #ffc95a; }
+.social-card .body { display: flex; align-items: center; gap: 14px; }
+/* the trainer, as in town */
+.social-card .look { width: 96px; height: 96px; flex-shrink: 0; image-rendering: pixelated; background: rgba(255,255,255,.05);
+                     border: 1px solid rgba(255,255,255,.14); border-radius: 8px; }
+.social-card .side { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.social-card .prs { font-size: 11px; color: #D8D8E0; white-space: nowrap; }
+.social-card .prs i { display: inline-block; width: 12px; height: 12px; margin-right: 4px; vertical-align: -2px;
+                      background: url("/assets/badges/contributor-balls.svg") 0 0 / 400% 100%; image-rendering: pixelated; }
+.social-card .actions { display: flex; align-items: center; gap: 8px; }
+/* "remove friend?" and "log out?": asked in place, with a yes and a no */
+.confirm { display: inline-flex; align-items: center; gap: 6px; }
+.confirm small { font-size: 10px; color: #ff8a7a; white-space: nowrap; }
+.confirm small + button.ico { border-color: #ff6b6b; color: #ff6b6b; }
+.social-card .actions:empty { display: none; }
+
+/* medals: only the pixel-art picture; what it is shows on hover */
+.medals { display: flex; flex-wrap: wrap; gap: 6px; }
+.medal { position: relative; width: 24px; height: 24px; padding: 0; border: 0; background: none; cursor: help; }
+.medal img { display: block; width: 24px; height: 24px; image-rendering: pixelated; }
+.medal .tip { display: none; position: absolute; left: 50%; bottom: calc(100% + 8px); transform: translateX(-50%); z-index: 2; width: 170px; padding: 8px 10px;
+              font-family: Silkscreen, monospace; font-size: 9px; line-height: 14px; text-align: left; color: #C4C6D4; border-radius: 6px; background: rgba(0,0,0,.94);
+              border: 1px solid rgba(255,255,255,.2); pointer-events: none; }
+.medal .tip b { display: block; font-weight: 400; font-size: 11px; color: #ffc95a; margin-bottom: 3px; }
+.medal:hover .tip, .medal:focus .tip { display: block; }
+
+/* friends list */
+#friends .list { display: flex; flex-direction: column; gap: 4px; overflow-y: auto; min-height: 0; }
+#friends .row { display: flex; align-items: center; gap: 8px; padding: 5px 6px 5px 10px; border-radius: 6px; background: rgba(0,0,0,.3); font-size: 11px; }
+#friends .row.ask { box-shadow: inset 0 0 0 1px rgba(255,201,90,.6); }
+#friends .row.wait .who { opacity: .6; }
+#friends .row .who { flex: 1; min-width: 0; font: inherit; text-align: left; color: var(--name, #F2F2F5); background: none; border: 0; padding: 0; cursor: pointer;
+                     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#friends .row .who:hover { text-decoration: underline; }
+#friends .row .who small { color: #9a9db0; font-size: 9px; margin-left: 5px; }
+#friends .row .count { padding: 0 5px; border-radius: 8px; font-size: 9px; line-height: 14px; color: #1b1406; background: #ffc95a; }
+#friends .row button.ico { width: 26px; height: 26px; }
+#friends .none { display: grid; place-items: center; padding: 14px 0; color: #5a5d6e; }
+
+/* an invitation to a private chat: a small card at the top of the screen */
+#invites { position: fixed; left: 50%; top: 20px; transform: translateX(-50%); z-index: 21; display: flex; flex-direction: column; gap: 8px; }
+#invites .invite { position: static; display: flex; align-items: center; gap: 8px; padding: 8px 10px; font-size: 12px; }
+#invites .invite b { font-weight: 400; color: var(--name, #ffc95a); }
+#invites .invite small { color: #9a9db0; font-size: 10px; margin-right: 4px; }
+#invites .invite .glyph { display: grid; color: #ffc95a; }
+
+/* the chat panel's tabs: the room, and one per private chat docked there */
+#chat .tabs { display: flex; align-items: center; gap: 6px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+#chat .tabs::-webkit-scrollbar { display: none; }
+#chat .tabs button { display: flex; align-items: center; flex-shrink: 0; max-width: 170px; font: inherit; font-size: 12px; color: #9a9db0; background: none; cursor: pointer;
+                     border: 1px solid transparent; border-radius: 6px; padding: 4px 8px; touch-action: none; }
+#chat .tabs button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#chat .tabs button:hover { color: #F2F2F5; }
+#chat .tabs button.on { color: var(--name, #F2F2F5); border-color: rgba(255,255,255,.2); background: rgba(255,255,255,.06); }
+#chat .tabs button[data-tab=room] { font-size: 18px; padding: 0 8px 0 0; border: 0; background: none; color: #9a9db0; }
+#chat .tabs button[data-tab=room].on { color: #F2F2F5; }
+#chat .tabs button .x { display: grid; margin-left: 6px; font-weight: 400; color: #9a9db0; }
+#chat .tabs button .x:hover { color: #ffc95a; }
+#chat .tabs button .x.shut:hover { color: #ff8a7a; }
+/* a private chat's window is being dragged over the panel: let go and it becomes a tab */
+#chat.drop { border-color: #ffc95a; box-shadow: 0 0 0 2px rgba(255,201,90,.35), 0 6px 24px rgba(0,0,0,.35); }
+#dm-msgs, .dm-win .msgs { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
+           padding: 14px 20px; display: flex; flex-direction: column; gap: 12px; }
+#dm-msgs > :first-child, .dm-win .msgs > :first-child { margin-top: auto; }
+#dm-msgs[hidden], #msgs[hidden] { display: none; }
+#dm-msgs .m small, .dm-win .m small { display: block; font-size: 11px; color: var(--name, #ffc95a); margin-bottom: 2px; }
+#dm-msgs .m span, .dm-win .m span { font-size: 13px; line-height: 20px; color: #F2F2F5; overflow-wrap: anywhere; }
+
+/* a private chat out of the panel: a window to drag by its bar and resize by its corner */
+.dm-win { z-index: 4; display: flex; flex-direction: column; min-width: 220px; min-height: 170px; max-width: calc(100vw - 16px); max-height: calc(100vh - 16px);
+          resize: both; overflow: hidden; box-sizing: border-box; }
+.dm-win header { display: flex; align-items: center; gap: 8px; padding: 8px 8px 8px 12px; border-bottom: 1px solid rgba(255,255,255,.12); cursor: move; user-select: none; touch-action: none; }
+.dm-win header b { font-weight: 400; font-size: 13px; color: var(--name, #ffc95a); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dm-win header small { font-size: 10px; color: #9a9db0; margin-right: auto; }
+.dm-win header button.ico { width: 22px; height: 22px; margin: 0; border-color: transparent; background: none; color: #C4C6D4; }
+.dm-win header button.ico:hover { color: #ffc95a; }
+.dm-win .msgs { padding: 10px 12px; gap: 9px; }
+.dm-win form { display: flex; gap: 6px; padding: 8px 18px 10px 10px; } /* room on the right for the resize corner */
+.dm-win input { flex: 1; min-width: 0; font: inherit; font-size: 12px; color: #F2F2F5; background: rgba(0,0,0,.35);
+                border: 1px solid rgba(255,255,255,.14); border-radius: 6px; padding: 7px 9px; outline: none; }
+.dm-win input:focus { border-color: #ffc95a; }
+.dm-win form button { display: grid; place-items: center; width: 32px; flex-shrink: 0; color: #1b1406; background: #ffc95a; border: 0; border-radius: 6px; padding: 0; cursor: pointer; }
+
+/* the radio's YouTube player plays out of sight */
+#yt-holder { position: fixed; left: -400px; top: 0; width: 200px; height: 113px; opacity: 0; pointer-events: none; }
