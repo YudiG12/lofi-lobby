@@ -1,4 +1,4 @@
-# ADR 009: Trainer look drawn in code on the trainer's own sheet
+# ADR 011: Trainer look drawn in code on the trainer's own sheet
 
 | | |
 |---|---|
