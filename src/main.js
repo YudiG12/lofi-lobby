@@ -2823,7 +2823,12 @@ function checkSavedPosition() {
   // judged at the ground height of each spot (unknown when restoring). The saved spot can be a
   // hair inside a lamp post or the pond edge (movement is checked one axis at a time), so look
   // for the nearest free spot around it before giving up
-  const free = (x, z) => isFree(x, z, topHeight(x, z));
+  // on top of something tall (a roof, a spot saved from inside a house) is not a place to stand: from up
+  // there no step down is small enough and you'd be stuck
+  const free = (x, z) => {
+    const top = topHeight(x, z);
+    return top - groundHeight(x, z) <= MAX_STEP && isFree(x, z, top);
+  };
   if (free(pos.x, pos.z)) return;
   for (let r = 0.25; r <= 2; r += 0.25)
     for (let a = 0; a < Math.PI * 2; a += Math.PI / 8) {
