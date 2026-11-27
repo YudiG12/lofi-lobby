@@ -1045,7 +1045,7 @@ const lampGlows = lampPosts.flatMap((p) => p.children.filter((c) => c.isSprite))
 
 // ---- Lamp shadows on demand ----
 // A lamp's shadow is 6 renders (one per cube face) of everything within its reach, which three.js
-// would redo every frame: 24 extra passes for the 4 lamps, more than half of all draw calls.
+// would redo every frame: 12 extra passes for the 2 lamps that cast one (updateShadowLamps).
 // Houses, trees, benches and the wall never move, so a lamp redraws its shadow only when it can
 // change: once the town is in place, when it comes on at dusk, and when something that moves (a
 // trainer, the capybara) changed within its reach. By day the lamps are off and nothing is redrawn.
@@ -1062,6 +1062,45 @@ const NO_LAMP_SHADOW = new THREE.MeshDistanceMaterial({ alphaTest: 2 });
 function outOfLampShadows(mesh) {
   if (mesh.customDistanceMaterial !== NO_LAMP_SHADOW) mesh.customDistanceMaterial?.dispose();
   mesh.customDistanceMaterial = NO_LAMP_SHADOW;
+}
+// Only the SHADOW_LAMPS lamps nearest to you cast a shadow; the others still light the town, without
+// one. Reading the lamps' shadows is most of the GPU's work at night (each lamp's six maps, tested for
+// every pixel in its reach), and the far pair is at the edge of the screen if on it at all. How many
+// lamps cast a shadow is part of every shader, so it never changes: a swap fades one lamp's shadow out,
+// hands its slot to the other in the same frame, and fades that one in.
+const SHADOW_LAMPS = 2;
+const SHADOW_SWAP_MARGIN = 4; // a lamp takes a slot only when this much nearer than the one it replaces
+const SHADOW_FADE = 3; // per second: a third of a second out, as much in
+const shadowLamps = lampLights.filter((l) => l.castShadow); // the road and pond lamps (the fair ones cast none)
+let shadowSwap = null; // { out, in } while one slot changes lamp
+function updateShadowLamps(at, dt) {
+  const away = (l) => Math.hypot(l.parent.position.x - at.x, l.parent.position.z - at.z);
+  const on = shadowLamps.filter((l) => l.castShadow);
+  if (on.length !== SHADOW_LAMPS) {
+    // the first frame: the nearest ones, at once
+    const nearest = [...shadowLamps].sort((p, q) => away(p) - away(q)).slice(0, SHADOW_LAMPS);
+    for (const l of shadowLamps) l.castShadow = nearest.includes(l);
+    return;
+  }
+  if (!shadowSwap) {
+    const far = on.reduce((p, q) => (away(p) > away(q) ? p : q));
+    const near = shadowLamps.filter((l) => !l.castShadow).reduce((p, q) => (p && away(p) < away(q) ? p : q), null);
+    if (near && away(near) + SHADOW_SWAP_MARGIN < away(far)) shadowSwap = { out: far, in: near };
+    else return;
+  }
+  const { out, in: next } = shadowSwap;
+  if (out.castShadow) {
+    out.shadow.intensity = Math.max(0, out.shadow.intensity - SHADOW_FADE * dt);
+    if (out.shadow.intensity > 0) return;
+    out.castShadow = false;
+    out.shadow.intensity = 1;
+    next.castShadow = true;
+    next.shadow.intensity = 0;
+    next.userData.shadowStale = true; // drawn before it shows
+    return;
+  }
+  next.shadow.intensity = Math.min(1, next.shadow.intensity + SHADOW_FADE * dt);
+  if (next.shadow.intensity === 1) shadowSwap = null;
 }
 function markLampShadowsStale() {
   for (const l of lampLights) l.userData.shadowStale = true;
@@ -4691,6 +4730,7 @@ function loop() {
   // someone going round would make them redraw their 6 shadow passes every frame, all night
   sprite.castShadow = !riding;
   const movers = [...others.values()].filter((o) => !isRideSeat(o.seat)).map((o) => o.mesh);
+  updateShadowLamps(sprite.position, dt); // which lamps cast a shadow: the nearest ones
   updateLampShadows([...(riding ? [] : [sprite]), capy.mesh, ...movers]); // not the cats or the owl (outOfLampShadows)
   renderer.render(scene, camera);
   updateNameTags();

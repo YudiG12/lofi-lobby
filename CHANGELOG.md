@@ -46,6 +46,7 @@
 - Progressive mute for chat spam (rate exceeded, or the same text 4+ times in a row): warning, then 15 s, 1 min, 5 min, 30 min.
 
 ### Changed
+- **Only the two nearest lamps cast a shadow**: the lamps farther away still light the town, just without a shadow, and the shadow moves from one lamp to another with a short fade as you walk between the road and the pond. With the hard edges, a still night on an integrated card runs at about 28 fps instead of 18.
 - **Hard shadow edges**: shadows have crisp edges instead of soft ones, which suits the pixel art. Reading the lamps' soft shadows was most of the GPU's work at night: on an integrated card a still night runs at about 25 fps instead of 18.
 - **Fewer draw calls**: each bench and lamp post is drawn as a few meshes (one per material) instead of one per part: a bench 3 instead of 13, a lamp post 3 instead of 5. A still night goes from ~180 draw calls to ~100, and when the four lamps redraw their shadows from ~550 to ~360 (about 67 ms of GPU down to 46 ms on an integrated card).
 - **Lighter walking**: the rays that find the ground, roofs and water only test the town meshes under them (a grid over the town) instead of all ~1,250, about 13 times faster each, with the same results. Walking cast about 20 of them a frame (about 5 ms of CPU).
