@@ -1,6 +1,7 @@
 // Room server: one Durable Object per room, everyone connected over WebSocket.
 // Protocol (JSON):
 //   client -> server: { t: "hello", name, gender, color, cap, x, z, dir } | { t: "pos", x, z, dir, step, run }
+//                     { t: "activity", status: null|"studying"|"working"|"relaxing"|"away" }
 //                     { t: "chat", text } | { t: "name", name } | { t: "gender", gender, cap }
 //                     { t: "color", color }   (name colour: one of NAME_COLORS)
 //                     { t: "sit", seat, n }   (bench seat 0..15, carousel horse 16..23, Ferris wheel gondola 24..31, roller coaster 32..36 while it waits at the station, or -1 to stand; n numbers the request)
@@ -83,6 +84,8 @@
 // (CF_ACCOUNT_ID and CF_API_TOKEN secrets) for public/stats.html.
 
 const MAX_PLAYERS = 100;
+const ACTIVITY_STATUSES = new Set(["studying", "working", "relaxing", "away"]);
+const activityStatus = (value) => (ACTIVITY_STATUSES.has(value) ? value : null);
 // v1 has a single room; any other name is refused so nobody can spin up extra rooms (and extra cost)
 const ROOMS = ["lobby"];
 const MAX_BYTES = 1024;
@@ -559,7 +562,7 @@ export class Room {
     // hibernation: the DO can sleep with connections open; each player's
     // state lives on its own socket (serializeAttachment)
     this.state.acceptWebSocket(server);
-    server.serializeAttachment({ id, leaveToken, connectedAt, name: "trainer", gender: "male", color: "", x: 0, z: 0, dir: "down", step: 0, seat: -1, ip,
+    server.serializeAttachment({ id, leaveToken, connectedAt, name: "trainer", gender: "male", color: "", activity: null, x: 0, z: 0, dir: "down", step: 0, seat: -1, ip,
       country: String(req.cf?.country || "").slice(0, 2), visitor: await visitorOf(ip) });
     await this.ensureHeartbeatAlarm();
     // v: the deploy that is running. A tab that reconnects and sees another one reloads itself.
@@ -592,7 +595,7 @@ export class Room {
 
   // only each player's public fields (never the IP)
   public(p) {
-    return { id: p.id, name: p.name, gender: p.gender, color: p.color || "", cap: p.cap ?? -1, x: p.x, z: p.z, dir: p.dir, step: p.step, seat: p.seat ?? -1, hold: p.hold | 0, ground: !!p.ground, fish: p.fish || null, admin: !!p.admin, prs: p.prs | 0, n: p.acct ?? -1 };
+    return { id: p.id, name: p.name, gender: p.gender, color: p.color || "", activity: activityStatus(p.activity), cap: p.cap ?? -1, x: p.x, z: p.z, dir: p.dir, step: p.step, seat: p.seat ?? -1, hold: p.hold | 0, ground: !!p.ground, fish: p.fish || null, admin: !!p.admin, prs: p.prs | 0 };
   }
   players() {
     return this.openSockets()
@@ -673,6 +676,11 @@ export class Room {
       ws.serializeAttachment(p);
       this.broadcast({ t: "color", id: p.id, color: p.color }, ws);
       await this.saveLook(p);
+    } else if (m.t === "activity") {
+      if (m.status !== null && !ACTIVITY_STATUSES.has(m.status)) return;
+      p.activity = m.status;
+      ws.serializeAttachment(p);
+      this.broadcast({ t: "activity", id: p.id, status: p.activity }, ws);
     } else if (m.t === "name") {
       p.name = this.nameFor(ws, m.name);
       ws.serializeAttachment(p);

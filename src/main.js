@@ -3250,6 +3250,41 @@ const clock = new THREE.Clock();
 // Other players use their configured sheets, with independent textures and crops.
 // Position comes over the WebSocket and is smoothed.
 const ROOM = "lobby"; // v1: one room only (the server refuses any other)
+const ACTIVITIES = {
+  studying: { label: "📚 Estudando" },
+  working: { label: "💻 Trabalhando" },
+  relaxing: { label: "☕ Relaxando" },
+  away: { label: "🌙 Ausente" },
+};
+const activityValue = (value) =>
+  typeof value === "string" && Object.prototype.hasOwnProperty.call(ACTIVITIES, value) ? value : null;
+const ACTIVITY_STORAGE_KEY = "activity";
+let myActivity = null;
+try { myActivity = activityValue(localStorage.getItem(ACTIVITY_STORAGE_KEY)); } catch {}
+const elActivity = document.querySelector("#activity-status");
+elActivity.value = myActivity || "";
+elActivity.dataset.activity = myActivity || "none";
+function sendActivity(socket) {
+  const target = socket || ws;
+  if (target?.readyState === 1) target.send(JSON.stringify({ t: "activity", status: myActivity }));
+}
+function setActivity(value) {
+  const status = value === "" ? null : activityValue(value);
+  if (value !== "" && status === null) return;
+  if (status === myActivity) return;
+  myActivity = status;
+  elActivity.value = status || "";
+  elActivity.dataset.activity = status || "none";
+  try {
+    if (status) localStorage.setItem(ACTIVITY_STORAGE_KEY, status);
+    else localStorage.removeItem(ACTIVITY_STORAGE_KEY);
+  } catch {}
+  if (MULTIPLAYER) sendActivity();
+}
+elActivity.addEventListener("change", () => setActivity(elActivity.value));
+elActivity.addEventListener("keydown", (event) => {
+  if (event.key.toLowerCase() === "s") event.preventDefault();
+});
 let NAME = "trainer";
 try {
   NAME =
@@ -3429,6 +3464,7 @@ function createOther(p) {
     ground: !!p.ground, // on joining: someone already sitting on the ground
     fish: fishTarget(p.fish), // on joining: someone whose line is already out
     name: p.name,
+    activity: activityValue(p.activity),
     gender: g,
     cap, // for the profile
     color: p.color,
@@ -3486,6 +3522,7 @@ function connect() {
       if (sock.readyState === 1) sock.send("ping");
     }, PING_EVERY_MS);
     sock.send(JSON.stringify({ t: "hello", v: 1, name: NAME, gender: GENDER, color: COLOR, cap: myCap(), x: pos.x, z: pos.z, dir }));
+    sendActivity(sock);
     if (mySeat >= 0) sendSeat(); // reconnected while sitting
     if (myHold) sendHold();
     if (onGround) sendGround(); // reconnected while sitting on the ground
@@ -3586,6 +3623,9 @@ function connect() {
     } else if (m.t === "color") {
       const o = others.get(m.id);
       if (o) o.color = m.color;
+    } else if (m.t === "activity") {
+      const o = others.get(m.id);
+      if (o) o.activity = activityValue(m.status);
     } else if (m.t === "gender") {
       // recreate the character with the other gender's look, keeping the position
       const o = others.get(m.id);
@@ -3599,6 +3639,7 @@ function connect() {
           seat: o.seat,
           name: o.name,
           color: o.color,
+          activity: o.activity,
           gender: m.gender,
           cap: m.cap,
           admin: o.admin,
@@ -3904,13 +3945,14 @@ function showWho(m) {
 
 // ---- Name above each trainer ----
 const nameTags = new Map(); // mesh -> div
-function nameTag(mesh, name, id, admin, color, prs = 0) {
+function nameTag(mesh, name, id, admin, color, prs = 0, activity = null) {
   let el = nameTags.get(mesh);
   if (!el) {
     el = Object.assign(document.createElement("div"), { className: "tag" });
     el.append(
       Object.assign(document.createElement("b"), { className: "badge", textContent: "admin" }),
       Object.assign(document.createElement("b"), { className: "contrib" }),
+      Object.assign(document.createElement("span"), { className: "activity" }),
       Object.assign(document.createElement("span"), { className: "who" }),
     );
     // a name opens that player's profile (yours too); the admin gets the kick and ban menu first
@@ -3924,10 +3966,16 @@ function nameTag(mesh, name, id, admin, color, prs = 0) {
   el.classList.toggle("admin", !!admin);
   // contributor: a ball and the merged pull requests
   showPrs(el.children[1], prs | 0);
+  const status = activityValue(activity);
+  const activityEl = el.children[2];
+  if (activityEl.dataset.activity !== (status || "none")) {
+    activityEl.dataset.activity = status || "none";
+    activityEl.textContent = status ? ACTIVITIES[status].label : "";
+  }
 }
 function updateNameTags() {
-  nameTag(sprite, NAME, null, meAdmin, COLOR, myPrs);
-  for (const [id, o] of others) nameTag(o.mesh, o.name || "trainer", id, o.admin, o.color, o.prs);
+  nameTag(sprite, NAME, null, meAdmin, COLOR, myPrs, myActivity);
+  for (const [id, o] of others) nameTag(o.mesh, o.name || "trainer", id, o.admin, o.color, o.prs, o.activity);
   for (const [mesh, el] of nameTags) {
     if (!mesh.parent) { el.remove(); nameTags.delete(mesh); continue; }
     const baseY = mesh === sprite ? pos.y : mesh.position.y + (mesh.userData.lift || 0);
