@@ -7,6 +7,7 @@ import { createStones } from "./stones.js";
 import { addSitFrames, sitFramePos } from "./ground-sit.js";
 import { createCapybara, CAPY_NEAR, CAPY_RADIUS, PHRASES as CAPY_PHRASES, CHRISTMAS_PHRASES, isChristmas } from "./capybara.js";
 import { createFishing, createFishingGear, FISH_NEAR, FISH_LEAVE } from "./fishing.js";
+import { createSnow } from "./christmas.js";
 
 // ---- Asset config (change here to use other files) ----
 const TOWN = {
@@ -319,6 +320,7 @@ function prepareTown(fbx) {
     placeCapybara();
     placeCapyWalk();
     mergeTown(fbx);
+    for (const o of townDrawn) if (o.material !== waterMaterial) snow.coverMaterial(o.material); // white where it faces up, at Christmas
     markLampShadowsStale(); // the town, the lamps and everything around them just took their places
 }
 
@@ -1264,6 +1266,9 @@ function splash(x, y, z, water) {
   splashSize[i] = water ? 2.2 + Math.random() * 1.0 : 0.7 + Math.random() * 0.4;
 }
 
+// Christmas snow (src/christmas.js): flakes that settle where the rain would land, a few lookups a frame
+const snow = createSnow({ scene, count: MOBILE ? 250 : 700, floorAt: (x, z) => surfaceAt(x, z)?.y });
+
 const wetMaterials = [];
 let wetReady = false;
 // Wet look: the town's materials become shiny (Phong) and a bit darker while it rains,
@@ -1290,6 +1295,7 @@ function prepareWet() {
             .replace("#include <common>", "#include <common>\nvarying float vUp;")
             .replace("#include <lights_fragment_end>", "#include <lights_fragment_end>\nreflectedLight.directSpecular *= smoothstep(0.9, 0.98, abs(vUp));");
         };
+        snow.coverMaterial(p); // the wet town can be snowy too
         wetMaterials.push({ m: p, base: m.color.clone() });
         swapped.set(m, p);
       }
@@ -1724,8 +1730,9 @@ addEventListener("keydown", (e) => {
 });
 drawChristmasButton();
 setInterval(applyChristmas, 60_000); // the lobby stays open for days: the season starts and ends by itself
-// the capybara dresses as a reindeer
+// the capybara dresses as a reindeer, and it snows
 whenChristmas((on) => capy.setReindeer(on));
+whenChristmas((on) => snow.setOn(on));
 // where the room's clock puts it: there and back at one speed, standing still on the clock while it sits
 function walkCapy(t) {
   const eating = t >= capyFed.at && t < capyFed.until;
@@ -3633,6 +3640,8 @@ function loop() {
   updateTimeOfDay(dt);
   updateCycleDebug();
   updateRain(dt);
+  surfaceBudget = Math.max(surfaceBudget, 20);
+  snow.update(dt, pos, dayAmount, rainAmount);
   stones.update(dt);
   updateFireflies();
   let dx = 0,
@@ -3720,4 +3729,5 @@ function loop() {
   requestAnimationFrame(loop);
 }
 loop();
+
 
