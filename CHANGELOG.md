@@ -53,6 +53,7 @@
 - Progressive mute for chat spam (rate exceeded, or the same text 4+ times in a row): warning, then 15 s, 1 min, 5 min, 30 min.
 
 ### Changed
+- **Fewer frames when nobody moves**: the game drew as many frames as the screen shows (60, 120 or 144 a second) for as long as it was open. Now it draws up to 60 a second while you play, 30 after 5 seconds without a key, click or touch, and 15 while its window is out of focus (beside your editor, say). The water, the cats and the rain keep their speed. On a 60 Hz screen that is half the work while you only watch, and much less on faster screens.
 - **Accounts are kept in a database** (Cloudflare D1) instead of the room, ready for more rooms. Every account keeps its number, date, friends and medals. Whoever was logged in before logs in once more the next time they open the game (a card says so) and is back in the same account. An account is now tied to your GitHub user, not to your login's name: rename yourself at GitHub and the account is still yours.
 - **The GitHub login asks to read your e-mail** (GitHub shows it on its authorization screen). The account keeps your verified primary e-mail; it is not shown to anyone and nothing is sent to it.
 - **The YouTube player is off the screen**: the card in the bottom left corner is gone. The radio plays as before, and its mute button and volume are in the top card (the admin's song buttons too).
