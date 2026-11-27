@@ -15,8 +15,8 @@
 //             n           whose it is
 //
 // Before D1 the room kept accounts ("acct:<n>", "acct-of:<login>") and sessions ("gh:<hex>") in its own
-// storage. Accounts are copied over once, with their numbers; a session moves the first time its browser
-// comes back.
+// storage. Accounts are copied over once, with their numbers. Their sessions are not: an account from
+// then has no GitHub id, so its browsers log in again once (see session), and that login adopts it.
 
 const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS accounts (
@@ -126,12 +126,6 @@ export class Accounts {
     await db.prepare("UPDATE accounts SET login = ?, github_id = COALESCE(?, github_id), email = COALESCE(?, email) WHERE n = ?").bind(login, githubId, email, row.n).run();
     return { ...account(row), login };
   }
-  /** The account of a login the room knew before D1 (a session from then), made if it had none. */
-  async legacy(login) {
-    await this.ready();
-    const row = await this.db.prepare(`SELECT ${COLUMNS} FROM accounts WHERE login = ?`).bind(login).first();
-    return row ? account(row) : this.create(login, null, null);
-  }
   /** The trainer an account is seen as now (written only when it changed). */
   async saveLook(n, { name, color, gender, cap }) {
     await this.ready();
@@ -151,17 +145,20 @@ export class Accounts {
     await this.ready();
     await this.db.prepare("INSERT OR REPLACE INTO sessions (hash, n, created_at) VALUES (?, ?, ?)").bind(hash, n, Date.now()).run();
   }
-  /** @returns {Promise<object|null>} whose session that is. One the room kept before D1 moves here. */
+  /**
+   * Whose session that is, or null: the browser then has to log in again.
+   * A session only holds for an account that already logged in since accounts are tied to the GitHub
+   * user (it has a github_id). One from before that, in D1 or still in the room's storage, is ended
+   * here: the next login brings the account its GitHub id and e-mail, and it is the same account.
+   * @returns {Promise<object|null>}
+   */
   async session(hash) {
     await this.ready();
     const row = await this.db.prepare(`SELECT ${COLUMNS.split(", ").map((c) => "a." + c).join(", ")} FROM sessions s JOIN accounts a ON a.n = s.n WHERE s.hash = ?`).bind(hash).first();
-    if (row) return account(row);
-    const old = await this.storage.get(hash);
-    if (typeof old?.login !== "string" || !/^[a-z0-9-]{1,39}$/.test(old.login)) return null;
-    const moved = await this.legacy(old.login);
-    await this.openSession(hash, moved.n);
+    if (row?.github_id != null) return account(row);
+    if (row) await this.db.prepare("DELETE FROM sessions WHERE hash = ?").bind(hash).run();
     await this.storage.delete(hash);
-    return moved;
+    return null;
   }
   async closeSession(hash) {
     await this.ready();

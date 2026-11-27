@@ -53,7 +53,7 @@
 - Progressive mute for chat spam (rate exceeded, or the same text 4+ times in a row): warning, then 15 s, 1 min, 5 min, 30 min.
 
 ### Changed
-- **Accounts are kept in a database** (Cloudflare D1) instead of the room, ready for more rooms. Every account keeps its number, date and medals, and nobody has to log in again. An account is now tied to your GitHub user, not to your login's name: rename yourself at GitHub and the account is still yours.
+- **Accounts are kept in a database** (Cloudflare D1) instead of the room, ready for more rooms. Every account keeps its number, date, friends and medals. Whoever was logged in before logs in once more the next time they open the game (a card says so) and is back in the same account. An account is now tied to your GitHub user, not to your login's name: rename yourself at GitHub and the account is still yours.
 - **The GitHub login asks to read your e-mail** (GitHub shows it on its authorization screen). The account keeps your verified primary e-mail; it is not shown to anyone and nothing is sent to it.
 - **The YouTube player is off the screen**: the card in the bottom left corner is gone. The radio plays as before, and its mute button and volume are in the top card (the admin's song buttons too).
 - A bad word in the chat or on the wall now reads `lobba` instead of `***` (and the result still stays within the 140 / 2,000-character limit).
