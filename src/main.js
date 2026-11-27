@@ -213,7 +213,9 @@ const MOBILE = matchMedia("(pointer: coarse)").matches;
 const renderer = new THREE.WebGLRenderer({ antialias: false });
 renderer.setPixelRatio(1);
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+// Hard shadow edges: one depth test a pixel instead of PCF's filtered taps. They suit the pixel art, and
+// reading the lamps' shadows was most of a night frame: ~25 fps instead of ~18 on an integrated card.
+renderer.shadowMap.type = THREE.BasicShadowMap;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 document.body.appendChild(renderer.domElement);
 
@@ -245,10 +247,38 @@ sun.shadow.bias = -0.0005;
 sun.shadow.normalBias = 0.05;
 scene.add(sun);
 
+// ---- Camera framing ----
+// The camera sits over and behind you (CAM_OFFSET) and the lens is fixed, so the window's shape alone
+// used to decide how much town you saw: a phone held upright saw a strip 10 units wide, and a big
+// monitor saw no more than a laptop. Now it backs away so that at least CAM_MIN_WIDTH of town fits
+// across your row, a little more on a tall window (up to CAM_SCREEN_MAX), and you can zoom in or
+// out (mouse wheel, + and -, a pinch), which is remembered.
+const CAM_OFFSET = new THREE.Vector3(0, 38, 42);
+const CAM_DIST = CAM_OFFSET.length();
+const CAM_MIN_WIDTH = 30;
+const CAM_SCREEN_MAX = 1.3; // a 1440p window sees about 30% more than a laptop
+const ZOOM_MIN = 0.6;
+const ZOOM_MAX = 1.8;
+let camZoom = 1;
+try { camZoom = THREE.MathUtils.clamp(Number(localStorage.getItem("zoom")) || 1, ZOOM_MIN, ZOOM_MAX); } catch {}
+let camFit = 1; // how far back the window's size and shape put the camera
+let camAway = null; // what the camera shows now: glides to camFit * camZoom
+function fitCamera() {
+  const halfWidth = CAM_DIST * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) * camera.aspect;
+  const narrow = Math.max(1, CAM_MIN_WIDTH / 2 / halfWidth);
+  const tall = THREE.MathUtils.clamp(innerHeight / 820, 1, CAM_SCREEN_MAX);
+  camFit = narrow * tall;
+}
+function zoomBy(factor) {
+  camZoom = THREE.MathUtils.clamp(camZoom * factor, ZOOM_MIN, ZOOM_MAX);
+  try { localStorage.setItem("zoom", camZoom.toFixed(3)); } catch {}
+}
 function resize() {
   renderer.setSize(innerWidth, innerHeight);
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
+  fitCamera();
+  camAway ??= camFit * camZoom; // the first time: no glide from elsewhere
 }
 addEventListener("resize", resize);
 resize();
@@ -338,6 +368,7 @@ function prepareTown(fbx) {
     scene.add(fbx);
     townMeshes = [];
     fbx.traverse((o) => o.isMesh && townMeshes.push(o));
+    indexTownForRays();
     computePondBox();
     placeFair(); // before the lamps, benches and capybara look for open ground around it
     fbx.traverse((o) => {
@@ -636,6 +667,25 @@ const glowTexture = (() => {
   ctx.fillRect(0, 0, 64, 64);
   return new THREE.CanvasTexture(cv);
 })();
+// Parts that never move apart (a lamp post's iron, a bench's slats), baked into one mesh per material:
+// one draw call per pass instead of one per part, in the camera's pass, the moon's (sun's) shadow and
+// the 6 faces of every lamp shadow they reach.
+function mergeParts(parts, castShadow, receiveShadow = false) {
+  const byMaterial = new Map();
+  for (const m of parts) {
+    m.updateMatrix();
+    if (!byMaterial.has(m.material)) byMaterial.set(m.material, []);
+    byMaterial.get(m.material).push(m.geometry.clone().applyMatrix4(m.matrix));
+    m.geometry.dispose();
+  }
+  return [...byMaterial].map(([material, geos]) => {
+    const mesh = new THREE.Mesh(mergeGeometries(geos), material);
+    geos.forEach((g) => g.dispose());
+    mesh.castShadow = castShadow;
+    mesh.receiveShadow = receiveShadow;
+    return mesh;
+  });
+}
 function createLampPost(x, z) {
   const g = new THREE.Group();
   const base = new THREE.Mesh(
@@ -663,16 +713,16 @@ function createLampPost(x, z) {
   cap.position.y = 9.3;
   cap.rotation.y = Math.PI / 4;
   // only base and pole cast shadows; the top wraps the bulb and would darken everything
-  [base, pole].forEach((m) => (m.castShadow = true));
+  // (the iron in two meshes, by that: 3 draw calls a pass instead of 5)
+  const iron = [...mergeParts([base, pole], true), ...mergeParts([arm, cap], false)];
   const light = new THREE.PointLight("#ffc95a", 150, 22, 1.6); // ~2700K, warm yellow
   light.position.set(0.9, 7.6, 0); // a bit out from the pole, under the arm
   light.castShadow = true;
   // a point light's shadow is 6 maps (one per cube face), colour and depth: ~13 MB of GPU memory
-  // each at 512, ~50 MB at 1024 for no visible gain once the soft edge (radius) blurs it
+  // each at 512, ~50 MB at 1024 for no visible gain
   light.shadow.mapSize.set(512, 512);
   light.shadow.bias = -0.0005;
   light.shadow.normalBias = 0.05;
-  light.shadow.radius = 4;
   const glow = new THREE.Sprite(
     new THREE.SpriteMaterial({
       map: glowTexture,
@@ -686,7 +736,7 @@ function createLampPost(x, z) {
   glow.scale.set(6, 6, 1);
   glow.position.y = 8.2;
   g.add(glow);
-  g.add(base, pole, arm, lantern, cap, light);
+  g.add(...iron, lantern, light);
   g.position.set(x, 0, z);
   scene.add(g);
   return g;
@@ -742,12 +792,12 @@ const woodLight = new THREE.MeshLambertMaterial({ color: "#b07a45", flatShading:
 const woodDark = new THREE.MeshLambertMaterial({ color: "#8a5a34", flatShading: true });
 function createBench(x, y, z, face) {
   const g = new THREE.Group();
+  const parts = [];
   const part = (mat, w, h, d, px, py, pz, tilt = 0) => {
     const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
     m.position.set(px, py, pz);
     m.rotation.x = tilt;
-    m.castShadow = m.receiveShadow = true;
-    g.add(m);
+    parts.push(m);
   };
   // local front is +z. Iron ends: front leg, back leg rising into the backrest,
   // rail under the seat, armrest on top
@@ -764,6 +814,8 @@ function createBench(x, y, z, face) {
   // backrest: two slats leaning back a little
   part(woodDark, 4.5, 0.36, 0.14, 0, 2.0, -0.78, -0.08);
   part(woodLight, 4.5, 0.36, 0.14, 0, 2.55, -0.83, -0.08);
+  // the 13 parts in 3 meshes (iron, light wood, dark wood)
+  g.add(...mergeParts(parts, true, true));
   g.position.set(x, y, z);
   g.rotation.y = { down: 0, right: Math.PI / 2, up: Math.PI, left: -Math.PI / 2 }[face];
   scene.add(g);
@@ -1031,7 +1083,7 @@ const lampGlows = lampPosts.flatMap((p) => p.children.filter((c) => c.isSprite))
 
 // ---- Lamp shadows on demand ----
 // A lamp's shadow is 6 renders (one per cube face) of everything within its reach, which three.js
-// would redo every frame: 24 extra passes for the 4 lamps, more than half of all draw calls.
+// would redo every frame: 12 extra passes for the 2 lamps that cast one (updateShadowLamps).
 // Houses, trees, benches and the wall never move, so a lamp redraws its shadow only when it can
 // change: once the town is in place, when it comes on at dusk, and when something that moves (a
 // trainer, the capybara) changed within its reach. By day the lamps are off and nothing is redrawn.
@@ -1039,6 +1091,55 @@ const lampGlows = lampPosts.flatMap((p) => p.children.filter((c) => c.isSprite))
 // animation frame, or stopped (so the shadow settles exactly under it): every frame or so for a
 // walking trainer, about 10 times a second for the capybara, which strolls by the pond all night.
 for (const l of lampLights) (l.shadow.autoUpdate = false), (l.userData.shadowStale = true);
+// The cats and the owl stay out of the lamps' shadows: five cats roam the whole town all night and the
+// owl flies from lamp cap to lamp cap, so with them about 3 lamps redrew their 6 passes every frame
+// (+25-30 ms of GPU a frame on an integrated card). They keep the moon's (sun's) shadow; in a lamp's
+// shadow pass they draw nothing (a distance material that discards every pixel), so no shadow of
+// theirs is left behind where they were.
+const NO_LAMP_SHADOW = new THREE.MeshDistanceMaterial({ alphaTest: 2 });
+function outOfLampShadows(mesh) {
+  if (mesh.customDistanceMaterial !== NO_LAMP_SHADOW) mesh.customDistanceMaterial?.dispose();
+  mesh.customDistanceMaterial = NO_LAMP_SHADOW;
+}
+// Only the SHADOW_LAMPS lamps nearest to you cast a shadow; the others still light the town, without
+// one. Reading the lamps' shadows is most of the GPU's work at night (each lamp's six maps, tested for
+// every pixel in its reach), and the far pair is at the edge of the screen if on it at all. How many
+// lamps cast a shadow is part of every shader, so it never changes: a swap fades one lamp's shadow out,
+// hands its slot to the other in the same frame, and fades that one in.
+const SHADOW_LAMPS = 2;
+const SHADOW_SWAP_MARGIN = 4; // a lamp takes a slot only when this much nearer than the one it replaces
+const SHADOW_FADE = 3; // per second: a third of a second out, as much in
+const shadowLamps = lampLights.filter((l) => l.castShadow); // the road and pond lamps (the fair ones cast none)
+let shadowSwap = null; // { out, in } while one slot changes lamp
+function updateShadowLamps(at, dt) {
+  const away = (l) => Math.hypot(l.parent.position.x - at.x, l.parent.position.z - at.z);
+  const on = shadowLamps.filter((l) => l.castShadow);
+  if (on.length !== SHADOW_LAMPS) {
+    // the first frame: the nearest ones, at once
+    const nearest = [...shadowLamps].sort((p, q) => away(p) - away(q)).slice(0, SHADOW_LAMPS);
+    for (const l of shadowLamps) l.castShadow = nearest.includes(l);
+    return;
+  }
+  if (!shadowSwap) {
+    const far = on.reduce((p, q) => (away(p) > away(q) ? p : q));
+    const near = shadowLamps.filter((l) => !l.castShadow).reduce((p, q) => (p && away(p) < away(q) ? p : q), null);
+    if (near && away(near) + SHADOW_SWAP_MARGIN < away(far)) shadowSwap = { out: far, in: near };
+    else return;
+  }
+  const { out, in: next } = shadowSwap;
+  if (out.castShadow) {
+    out.shadow.intensity = Math.max(0, out.shadow.intensity - SHADOW_FADE * dt);
+    if (out.shadow.intensity > 0) return;
+    out.castShadow = false;
+    out.shadow.intensity = 1;
+    next.castShadow = true;
+    next.shadow.intensity = 0;
+    next.userData.shadowStale = true; // drawn before it shows
+    return;
+  }
+  next.shadow.intensity = Math.min(1, next.shadow.intensity + SHADOW_FADE * dt);
+  if (next.shadow.intensity === 1) shadowSwap = null;
+}
 function markLampShadowsStale() {
   for (const l of lampLights) l.userData.shadowStale = true;
 }
@@ -1111,6 +1212,9 @@ const OVERCAST_SKY = new THREE.Color("#7d8794");
 const OVERCAST_LIGHT = new THREE.Color("#a3adbb");
 let rainAmount = 0; // 0 = dry, 1 = full rain (eased in the loop)
 let dayAmount = 0;
+// The fog starts where it did with the camera at its usual distance: zoomed out, it moves back with it
+let fogNear = 50;
+let fogFar = 140;
 function applyLook(look) {
   const t = look.daylight;
   dayAmount = t;
@@ -1123,8 +1227,8 @@ function applyLook(look) {
   // rain closes the fog in; at night it is always closed in, rain or not, so the town stays
   // dark around the lamps' pools of light
   const closed = Math.max(rainAmount, 1 - t);
-  scene.fog.near = 50 - 12 * closed;
-  scene.fog.far = 140 - 22 * closed;
+  fogNear = 50 - 12 * closed;
+  fogFar = 140 - 22 * closed;
   skyLight.color.copy(look.skyTop).lerp(OVERCAST_LIGHT, 0.5 * overcast);
   skyLight.groundColor.copy(look.skyGround);
   const gloom = 1 - (0.2 + 0.2 * t) * closed;
@@ -1326,8 +1430,7 @@ function surfaceAt(x, z) {
   if (s) return s;
   if (!townMeshes.length || surfaceBudget <= 0) return null;
   surfaceBudget--;
-  ray.set(new THREE.Vector3(Math.round(x), 200, Math.round(z)), DOWN);
-  const hits = ray.intersectObjects(townMeshes, false);
+  const hits = rayDown(Math.round(x), Math.round(z));
   const wet = hits.find((h) => waterMeshes.has(h.object));
   s = wet ? { y: wet.point.y, water: true } : hits[0] ? { y: hits[0].point.y, water: false } : { y: 0, water: false };
   surfaceCache.set(key, s);
@@ -1622,8 +1725,7 @@ function inPond(x, z) {
 }
 function isWater(x, z) {
   if (!waterMeshes.size) return false;
-  ray.set(new THREE.Vector3(x, 200, z), DOWN);
-  const hits = ray.intersectObjects(townMeshes, false);
+  const hits = rayDown(x, z);
   return (
     hits.length > 0 &&
     (waterMeshes.has(hits[0].object) || edgeMeshes.has(hits[0].object))
@@ -1631,21 +1733,45 @@ function isWater(x, z) {
 }
 const ray = new THREE.Raycaster();
 const DOWN = new THREE.Vector3(0, -1, 0);
+// Rays going straight down (ground height, roofs, water, where rain and snow land) only test the town
+// meshes under them: a grid of RAY_CELL-wide cells over the town, each listing the meshes whose box
+// covers it. A ray down at (x, z) can only hit a mesh whose box covers (x, z), so the hits are the
+// same; walking used to cast about 20 rays a frame against all ~1,250 meshes (about 5 ms of CPU).
+const RAY_CELL = 4;
+let rayGrid = new Map();
+const rayCellKey = (cx, cz) => (cx + 10000) * 20000 + (cz + 10000);
+const NO_MESHES = [];
+function indexTownForRays() {
+  rayGrid = new Map();
+  const box = new THREE.Box3();
+  for (const o of townMeshes) {
+    box.setFromObject(o);
+    for (let cx = Math.floor(box.min.x / RAY_CELL); cx <= Math.floor(box.max.x / RAY_CELL); cx++)
+      for (let cz = Math.floor(box.min.z / RAY_CELL); cz <= Math.floor(box.max.z / RAY_CELL); cz++) {
+        const key = rayCellKey(cx, cz);
+        if (!rayGrid.has(key)) rayGrid.set(key, []);
+        rayGrid.get(key).push(o);
+      }
+  }
+}
+const meshesUnder = (x, z) => rayGrid.get(rayCellKey(Math.floor(x / RAY_CELL), Math.floor(z / RAY_CELL))) || NO_MESHES;
+const _rayFrom = new THREE.Vector3();
+// the town under (x, z), from the top down
+function rayDown(x, z) {
+  ray.set(_rayFrom.set(x, 200, z), DOWN);
+  return ray.intersectObjects(meshesUnder(x, z), false);
+}
 // Height of the highest surface at that point (ground, or top of house/tree/fence)
 function topHeight(x, z) {
   if (!townMeshes.length) return 0;
-  ray.set(new THREE.Vector3(x, 200, z), DOWN);
   // ignore the pond edge stones: they are walls, not floor
-  const hits = ray
-    .intersectObjects(townMeshes, false)
-    .filter((h) => !edgeMeshes.has(h.object));
+  const hits = rayDown(x, z).filter((h) => !edgeMeshes.has(h.object));
   return hits.length ? hits[0].point.y : 0;
 }
 // Ground height: lowest surface (ignores roofs above)
 function groundHeight(x, z) {
   if (!townMeshes.length) return 0;
-  ray.set(new THREE.Vector3(x, 200, z), DOWN);
-  const hits = ray.intersectObjects(townMeshes, false);
+  const hits = rayDown(x, z);
   return hits.length ? hits[hits.length - 1].point.y : 0;
 }
 
@@ -1739,6 +1865,7 @@ function placeLampPost(p) {
 
 // ---- Owl (on the message wall's roof; flies to the two nearest lamp posts and back) ----
 const owl = createOwl();
+outOfLampShadows(owl.mesh);
 scene.add(owl.mesh);
 // perches: the top of the wall's roof and the caps of the two lamp posts closest to the wall
 function placeOwl() {
@@ -1854,6 +1981,7 @@ function makeCatEntry(cfg) {
   };
 }
 const cats = CATS.map(makeCatEntry);
+cats.forEach((c) => outOfLampShadows(c.mesh));
 const CAT_NAV_STEP = 2;
 const CAT_LEG_MS = 26000;
 const CAT_MIN_SIT_MS = 4500;
@@ -1872,8 +2000,7 @@ function buildCatNavGrid() {
     const key = `${Math.round(x * 2)},${Math.round(z * 2)}`;
     let hit = groundCache.get(key);
     if (hit) return hit;
-    ray.set(new THREE.Vector3(x, 200, z), DOWN);
-    const hits = ray.intersectObjects(townMeshes, false);
+    const hits = rayDown(x, z);
     const water = hits.length > 0 && (waterMeshes.has(hits[0].object) || edgeMeshes.has(hits[0].object));
     const floorHits = hits.filter((h) => !edgeMeshes.has(h.object));
     hit = {
@@ -2586,17 +2713,47 @@ function generateOriginalTrainer(gender = "male", cap = null) {
   });
   return withSitFrames(cv, GRID);
 }
+// A trainer is a flat billboard facing the camera, so a lamp beside or a little behind it (the
+// pond lamps, for whoever sits on the benches between them) reaches its face edge-on and so lit it
+// hardly at all. For the lamps only (point lights), the sprite takes their light "wrapped": light
+// from the front counts in full, from the side about a third, and only from right behind nothing.
+// The moon (sun) and the sky light it as before.
+const LAMP_WRAP = 0.5;
+function litAround(material) {
+  material.onBeforeCompile = (shader) => {
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        "#include <lights_lambert_pars_fragment>",
+        `#include <lights_lambert_pars_fragment>
+void RE_Direct_Around( const in IncidentLight directLight, const in vec3 geometryPosition, const in vec3 geometryNormal, const in vec3 geometryViewDir, const in vec3 geometryClearcoatNormal, const in LambertMaterial material, inout ReflectedLight reflectedLight ) {
+  float dotNL = saturate( ( dot( geometryNormal, directLight.direction ) + ${LAMP_WRAP.toFixed(2)} ) / ${(1 + LAMP_WRAP).toFixed(2)} );
+  reflectedLight.directDiffuse += dotNL * directLight.color * BRDF_Lambert( material.diffuseColor );
+}`,
+      )
+      .replace(
+        "#include <lights_fragment_begin>",
+        THREE.ShaderChunk.lights_fragment_begin.replace(
+          /(NUM_POINT_LIGHTS > 0[\s\S]*?)RE_Direct\( directLight/,
+          "$1RE_Direct_Around( directLight",
+        ),
+      );
+  };
+  material.customProgramCacheKey = () => "lit-around";
+  return material;
+}
 // Lit "billboard" plane: receives lamp light and casts a shadow
 // with the sprite's cutout (alphaTest on the depth materials too).
 const characterGeo = new THREE.PlaneGeometry(1, 1);
 characterGeo.translate(0, 0.45, 0); // feet near the origin
 const sprite = new THREE.Mesh(
   characterGeo,
-  new THREE.MeshLambertMaterial({
-    map: sheetTex,
-    alphaTest: 0.5,
-    side: THREE.DoubleSide,
-  }),
+  litAround(
+    new THREE.MeshLambertMaterial({
+      map: sheetTex,
+      alphaTest: 0.5,
+      side: THREE.DoubleSide,
+    }),
+  ),
 );
 sprite.customDepthMaterial = new THREE.MeshDepthMaterial({
   map: sheetTex,
@@ -2678,7 +2835,9 @@ function useFeetDepth(mesh, feet = new THREE.Vector3(), order = 10) {
   mesh.renderOrder = order;
   mesh.material.depthTest = true;
   mesh.material.depthWrite = true;
-  mesh.material.onBeforeCompile = (shader) => {
+  const before = mesh.material.onBeforeCompile; // a trainer's lamp light (litAround)
+  mesh.material.onBeforeCompile = (shader, renderer) => {
+    before.call(mesh.material, shader, renderer);
     shader.uniforms.uFeet = uFeet;
     shader.vertexShader = shader.vertexShader
       .replace("#include <common>", "#include <common>\nuniform vec3 uFeet;")
@@ -2796,6 +2955,43 @@ const releaseStick = (e) => {
 };
 canvasEl.addEventListener("pointerup", releaseStick);
 canvasEl.addEventListener("pointercancel", releaseStick);
+
+// Zoom: the mouse wheel over the scene, + and - (= and _ too, same keys), or two fingers pinching
+// (a second finger ends the walking stick)
+canvasEl.addEventListener("wheel", (e) => zoomBy(Math.exp(THREE.MathUtils.clamp(e.deltaY, -200, 200) * 0.0015)), { passive: true });
+addEventListener("keydown", (e) => {
+  const typing = ["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName) || document.activeElement?.isContentEditable;
+  if (typing || e.ctrlKey || e.metaKey || e.altKey) return; // Ctrl and + is the browser's own zoom
+  if (e.key === "+" || e.key === "=") zoomBy(1 / 1.15);
+  if (e.key === "-" || e.key === "_") zoomBy(1.15);
+});
+const pinchTouches = new Map(); // pointerId -> { x, y }
+let pinchFrom = null; // { dist, zoom } while two fingers are down
+const pinchDist = () => {
+  const [a, b] = [...pinchTouches.values()];
+  return Math.hypot(a.x - b.x, a.y - b.y) || 1;
+};
+canvasEl.addEventListener("pointerdown", (e) => {
+  if (e.pointerType !== "touch") return;
+  pinchTouches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (pinchTouches.size !== 2) return;
+  if (stick.id !== null) releaseStick({ pointerId: stick.id });
+  pinchFrom = { dist: pinchDist(), zoom: camZoom };
+  try { canvasEl.setPointerCapture(e.pointerId); } catch {} // keeps the pinch if the finger slides over the HUD
+});
+canvasEl.addEventListener("pointermove", (e) => {
+  if (!pinchTouches.has(e.pointerId)) return;
+  pinchTouches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (!pinchFrom || pinchTouches.size !== 2) return;
+  camZoom = pinchFrom.zoom; // fingers apart bring the town closer
+  zoomBy(pinchFrom.dist / pinchDist());
+});
+const endPinch = (e) => {
+  pinchTouches.delete(e.pointerId);
+  if (pinchTouches.size < 2) pinchFrom = null;
+};
+canvasEl.addEventListener("pointerup", endPinch);
+canvasEl.addEventListener("pointercancel", endPinch);
 const pos = new THREE.Vector3(0, 0, 0);
 // sitting or standing moves you at once; the sprite and camera glide over from where you were
 const slide = { x: 0, z: 0 };
@@ -3398,11 +3594,13 @@ function createOther(p) {
   tex.colorSpace = THREE.SRGBColorSpace;
   const mesh = new THREE.Mesh(
     characterGeo,
-    new THREE.MeshLambertMaterial({
-      map: tex,
-      alphaTest: 0.5,
-      side: THREE.DoubleSide,
-    }),
+    litAround(
+      new THREE.MeshLambertMaterial({
+        map: tex,
+        alphaTest: 0.5,
+        side: THREE.DoubleSide,
+      }),
+    ),
   );
   mesh.customDepthMaterial = new THREE.MeshDepthMaterial({
     map: tex,
@@ -4646,7 +4844,10 @@ function loop() {
   if (running && GENDER === "male") sprite.position.y -= 0.8;
   shadow.position.set(pos.x + slide.x, pos.y + 0.05, pos.z + slide.z);
   shadow.visible = mySeat < 0; // would float under the hanging feet
-  camera.position.set(pos.x + slide.x, pos.y + 38, pos.z + 42 + slide.z);
+  camAway += (camFit * camZoom - camAway) * (1 - Math.exp(-dt * 10));
+  camera.position.set(pos.x + slide.x, pos.y, pos.z + slide.z).addScaledVector(CAM_OFFSET, camAway);
+  scene.fog.near = fogNear + CAM_DIST * (camAway - 1);
+  scene.fog.far = fogFar + CAM_DIST * (camAway - 1);
   camera.lookAt(pos.x + slide.x, pos.y + 1, pos.z + slide.z);
   updateCapy();
   owl.update(performance.now(), pos);
@@ -4665,7 +4866,8 @@ function loop() {
   // someone going round would make them redraw their 6 shadow passes every frame, all night
   sprite.castShadow = !riding;
   const movers = [...others.values()].filter((o) => !isRideSeat(o.seat)).map((o) => o.mesh);
-  updateLampShadows([...(riding ? [] : [sprite]), capy.mesh, owl.mesh, ...cats.map((c) => c.mesh), ...movers]);
+  updateShadowLamps(sprite.position, dt); // which lamps cast a shadow: the nearest ones
+  updateLampShadows([...(riding ? [] : [sprite]), capy.mesh, ...movers]); // not the cats or the owl (outOfLampShadows)
   renderer.render(scene, camera);
   updateNameTags();
   updateBubbles();

@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- **Zoom, and a view that fits the screen**: the mouse wheel, **+** and **-**, or a pinch on phones bring the camera closer or take it back (remembered). The view also fits the window: a phone held upright now sees the whole width of the road instead of a strip, and a tall window (a big monitor) sees up to 30% more town than a laptop. On a usual 16:9 or 4:3 window nothing changes until you zoom.
 - **Accounts**: press the GitHub button in the top card, or **log in** on the start screen, and connect GitHub (the only way to make one). Your account gets a number in the order accounts were made: the game's owner is #0, the next one #1, and so on. Nobody else sees your GitHub login, only the number. `/github` still works, and whoever had logged in for the contributor badge gets an account the next time they open the game.
 - **Profile**: click a name, over a trainer or in the chat (yours too), to open that player's profile: their trainer, a green dot when they are online, their account number, their merged pull requests and their medals.
 - A guest is told about the Founding member medal while it can still be had (until the end of November 2026): on the start screen, and in the room on a card that can be closed (it is back the next time the game is opened).
@@ -53,6 +54,11 @@
 - Progressive mute for chat spam (rate exceeded, or the same text 4+ times in a row): warning, then 15 s, 1 min, 5 min, 30 min.
 
 ### Changed
+- **Only the two nearest lamps cast a shadow**: the lamps farther away still light the town, just without a shadow, and the shadow moves from one lamp to another with a short fade as you walk between the road and the pond. With the hard edges, a still night on an integrated card runs at about 28 fps instead of 18.
+- **Hard shadow edges**: shadows have crisp edges instead of soft ones, which suits the pixel art. Reading the lamps' soft shadows was most of the GPU's work at night: on an integrated card a still night runs at about 25 fps instead of 18.
+- **Fewer draw calls**: each bench and lamp post is drawn as a few meshes (one per material) instead of one per part: a bench 3 instead of 13, a lamp post 3 instead of 5. A still night goes from ~180 draw calls to ~100, and when the four lamps redraw their shadows from ~550 to ~360 (about 67 ms of GPU down to 46 ms on an integrated card).
+- **Lighter walking**: the rays that find the ground, roofs and water only test the town meshes under them (a grid over the town) instead of all ~1,250, about 13 times faster each, with the same results. Walking cast about 20 of them a frame (about 5 ms of CPU).
+- **Lighter nights**: the cats and the owl no longer make the lamps redraw their shadows. With five cats roaming all night, about 3 lamps redrew their 6 shadow passes every frame (+25–30 ms of GPU a frame on an integrated card, ~580 draw calls instead of ~210). They keep the moon's (sun's) shadow and just cast none in the lamps' light.
 - **Accounts are kept in a database** (Cloudflare D1) instead of the room, ready for more rooms. Every account keeps its number, date, friends and medals. Whoever was logged in before logs in once more the next time they open the game (a card says so) and is back in the same account. An account is now tied to your GitHub user, not to your login's name: rename yourself at GitHub and the account is still yours.
 - **The GitHub login asks to read your e-mail** (GitHub shows it on its authorization screen). The account keeps your verified primary e-mail; it is not shown to anyone and nothing is sent to it.
 - **The YouTube player is off the screen**: the card in the bottom left corner is gone. The radio plays as before, and its mute button and volume are in the top card (the admin's song buttons too).
@@ -68,6 +74,7 @@
 - A single room, `lobby`: `?room=` is gone and the server refuses other room names, so nobody can open extra rooms to run up the bill.
 
 ### Fixed
+- **Lamps light the trainers beside them**: a trainer is a flat sprite facing the camera, so a lamp beside or a little behind it hardly lit it, and whoever sat on the pond benches (the lamps a bit behind them) or walked just past a lamp went dark. The lamps now light trainers from the side too (about a third of their light) and only not from right behind; from the front nothing changes. The moon and the sun light them as before.
 - **Room to walk between the pond and the Ferris wheel**: the wheel stood so close to the pond's corner that nobody could pass. It moved a little to the right and blocks less of the grass, so you can walk by on both sides of it.
 - The game no longer fails to start when you come back to a fishing line whose fish got away while the tab was closed.
 - **Stones thrown while your tab was hidden** no longer all fly at once when you come back: a stone someone throws while you are on another tab is skipped.

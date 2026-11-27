@@ -44,6 +44,7 @@ Open the URL, pick a trainer and press **enter the room**: the click is what let
 | F or the full screen button | enter or leave full screen (hidden where the browser can't, e.g. iPhone) |
 | B, or E (or a tap on the note) by the board | open the message wall: read the notes, like them and pin your own (most liked first, or newest) |
 | E (or a tap on the note) at the pond's edge, facing the water | fish: choose how many minutes to focus; when the time is up a fish bites and you have a minute to press E again and pull it in (everyone sees your line out; the timer is yours) |
+| Mouse wheel, + / -, or a pinch on phones | zoom the camera in or out (remembered); the view also fits the window, so a phone held upright or a tall window shows more town |
 | Space | pause the music for you only |
 | Click a name (over a trainer or in the chat) | open that player's profile: their trainer, account number and medals; add them as a friend or invite them to a private chat |
 
