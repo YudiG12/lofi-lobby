@@ -7,7 +7,7 @@ import { createStones } from "./stones.js";
 import { addSitFrames, sitFramePos } from "./ground-sit.js";
 import { createCapybara, CAPY_NEAR, CAPY_RADIUS, PHRASES as CAPY_PHRASES, CHRISTMAS_PHRASES, isChristmas } from "./capybara.js";
 import { createFishing, createFishingGear, FISH_NEAR, FISH_LEAVE } from "./fishing.js";
-import { createSnow } from "./christmas.js";
+import { createSnow, createHouseLights } from "./christmas.js";
 
 // ---- Asset config (change here to use other files) ----
 const TOWN = {
@@ -321,6 +321,7 @@ function prepareTown(fbx) {
     placeCapyWalk();
     mergeTown(fbx);
     for (const o of townDrawn) if (o.material !== waterMaterial) snow.coverMaterial(o.material); // white where it faces up, at Christmas
+    dressTownForChristmas(fbx);
     markLampShadowsStale(); // the town, the lamps and everything around them just took their places
 }
 
@@ -400,6 +401,26 @@ function bakeGeometry(o, indexed) {
     }
   }
   return g;
+}
+
+// The town's own Christmas decorations, made once it is in place (src/christmas.js); shown by the switch
+let houseLights = null;
+function dressTownForChristmas(root) {
+  // one box per house: its own mesh (the FBX town), or the unnamed group of parts it is built from (the village)
+  const houses = new Map();
+  for (const o of townMeshes) {
+    if (!/house/i.test(o.name)) continue;
+    const owner = o.parent && o.parent !== root && !o.parent.name ? o.parent : o;
+    if (!houses.has(owner)) houses.set(owner, new THREE.Box3());
+    houses.get(owner).expandByObject(o);
+  }
+  // where a house's front wall is at that height: the first thing a ray going in from the front meets
+  const wallAt = (x, y, z) => {
+    ray.set(new THREE.Vector3(x, y, z), new THREE.Vector3(0, 0, -1));
+    return ray.intersectObjects(townMeshes, false)[0]?.point.z;
+  };
+  houseLights = createHouseLights({ scene, houses: [...houses.values()], roofAt: topHeight, wallAt });
+  whenChristmas((on) => houseLights.setOn(on));
 }
 
 // ---- Original village (default on the published site) ----
@@ -3642,6 +3663,7 @@ function loop() {
   updateRain(dt);
   surfaceBudget = Math.max(surfaceBudget, 20);
   snow.update(dt, pos, dayAmount, rainAmount);
+  houseLights?.update(performance.now() / 1000, dayAmount);
   stones.update(dt);
   updateFireflies();
   let dx = 0,
@@ -3729,5 +3751,6 @@ function loop() {
   requestAnimationFrame(loop);
 }
 loop();
+
 
 

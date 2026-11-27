@@ -111,3 +111,80 @@ export function createSnow({ scene, count, floorAt }) {
     },
   };
 }
+
+// ---- Lights on the houses ----
+// A string of coloured bulbs across the front of each house (the side that faces the camera), hung
+// just under the lowest point of the roof's front edge and against the wall, which a ray finds. They
+// twinkle, each at its own pace, glow on their own (no real light, so the lamps' shadows cost nothing
+// more) and are brighter at night.
+const BULBS = [new THREE.Color("#ff4d4d"), new THREE.Color("#ffd24a"), new THREE.Color("#4dd27a"), new THREE.Color("#5aa8ff")];
+export function createHouseLights({ scene, houses, roofAt, wallAt }) {
+  const pts = [],
+    colors = [],
+    phases = [];
+  let n = 0;
+  for (const box of houses) {
+    // the eave: the lowest the roof comes down along the front
+    let eave = Infinity;
+    for (let x = box.min.x + 0.4; x <= box.max.x - 0.4; x += 0.5) {
+      const y = roofAt(x, box.max.z - 0.35);
+      if (y > box.min.y + 1) eave = Math.min(eave, y);
+    }
+    if (!Number.isFinite(eave)) continue;
+    const y0 = eave - 0.5;
+    for (let x = box.min.x + 1; x <= box.max.x - 1; x += 0.8) {
+      const wall = wallAt(x, y0, box.max.z + 2);
+      if (!(wall > box.min.z)) continue; // nothing to hang on there
+      // a gentle sag between every other bulb, like a hanging string
+      pts.push(x, y0 - (n % 2) * 0.15, wall + 0.12);
+      const c = BULBS[n % BULBS.length];
+      colors.push(c.r, c.g, c.b);
+      phases.push(Math.random() * Math.PI * 2);
+      n++;
+    }
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(pts, 3));
+  geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
+  geometry.setAttribute("phase", new THREE.Float32BufferAttribute(phases, 1));
+  const uniforms = { uTime: { value: 0 }, uGlow: { value: 1 } };
+  const material = new THREE.ShaderMaterial({
+    uniforms,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    vertexShader: `attribute vec3 color; attribute float phase; uniform float uTime; uniform float uGlow;
+      varying vec3 vColor; varying float vOn;
+      void main() {
+        vColor = color;
+        vOn = uGlow * (0.55 + 0.45 * sin(uTime * (1.3 + fract(phase) * 1.4) + phase));
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        gl_PointSize = 34.0 * (60.0 / -mv.z);
+        gl_Position = projectionMatrix * mv;
+      }`,
+    // a bright square bulb in the middle of a soft halo
+    fragmentShader: `varying vec3 vColor; varying float vOn;
+      void main() {
+        vec2 p = abs(gl_PointCoord - 0.5);
+        float bulb = step(max(p.x, p.y), 0.09);
+        float halo = smoothstep(0.5, 0.0, length(gl_PointCoord - 0.5)) * 0.45;
+        float a = (bulb + halo) * vOn;
+        if (a < 0.01) discard;
+        gl_FragColor = vec4(mix(vColor, vec3(1.0), bulb * 0.35) * a, a);
+      }`,
+  });
+  const points = new THREE.Points(geometry, material);
+  points.visible = false;
+  scene.add(points);
+  return {
+    count: n,
+    setOn(on) {
+      points.visible = on && n > 0;
+    },
+    // t: seconds; day: 0 night .. 1 day (dimmer by day)
+    update(t, day) {
+      uniforms.uTime.value = t;
+      uniforms.uGlow.value = 1 - 0.55 * day;
+    },
+  };
+}
