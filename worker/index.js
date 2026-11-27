@@ -9,6 +9,10 @@
 //                     { t: "ground", on }   (sit on the ground, or get up)
 //                     { t: "fish", on, x, z }   (your fishing line is out, the bobber at x, z; or back in)
 //                     { t: "cat", id }   (feed one of the town cats)
+//                     { t: "github-start" }   (log in with GitHub: ask for a code to type at github.com/login/device)
+//                     { t: "github-poll" }   (has the player typed the code yet?)
+//                     { t: "github", session }   (on reconnect: the session a login gave this browser)
+//                     { t: "github-out" }   (forget that session)
 //                     { t: "radio", idx, password }   (admin)
 //                     { t: "auth", password, quiet }   (admin login: admin-ok or an error; quiet = on reconnect, no admin-ok)
 //                     { t: "who", id, password }   (admin: who is this player)
@@ -31,6 +35,10 @@
 //                     { t: "cat-ride", id, playerId, at, until, phrase }   (the room picked a player for that cat to
 //                                                               sit on their head from at to until; playerId null ends it early.
 //                                                               Only the server starts rides. Also sent on join, without phrase)
+//                     { t: "github-code", code, url, every, until }   (type code at url; ask again every `every` seconds)
+//                     { t: "github-ok", session, login, prs } | { t: "github-fail", msg } | { t: "github-out" }
+//                     { t: "contrib", id, prs }   (that player is a contributor with prs merged pull requests;
+//                                                  players and chat also carry prs)
 //                     { t: "history", messages: [{ id, name, text, at }] } (on join)
 //                     { t: "notice", msg } | { t: "rename", name } (your name was refused)
 //                     { t: "who", id, tag, names, sameTag } (admin only)
@@ -118,7 +126,23 @@ const NOTE_ID = /^note:\d{15}-[a-z0-9]{6}$/;
 const AFTER_EVERY_NOTE = "note:999999999999999-zzzzzz"; // a cursor above every note id
 const topKey = (likes, id) => `top:${String(likes).padStart(6, "0")}:${id}`;
 // rate buckets: capacity, refill per second
-const RATES = { pos: [30, 20], chat: [8, 1], sit: [20, 6], like: [30, 0.5], other: [10, 1] };
+const RATES = { pos: [30, 20], chat: [8, 1], sit: [20, 6], like: [30, 0.5], github: [4, 1 / 30], other: [10, 1] };
+// contributors: a player proves their GitHub login (OAuth device flow, GITHUB_CLIENT_ID) and the room counts
+// their merged pull requests in GITHUB_REPO. GitHub's token is used once and never kept: the browser gets a
+// random session of the room's own, stored here only as a hash.
+const GH_WEB = "https://github.com";
+const GH_API = "https://api.github.com";
+const GH_HEADERS = { Accept: "application/json", "User-Agent": "lofi-lobby" };
+const GH_SESSION = /^[a-f0-9]{48}$/;
+const GH_LOGIN = /^[a-z0-9-]{1,39}$/;
+const GH_REPO = /^[\w.-]{1,100}\/[\w.-]{1,100}$/;
+const GH_COUNTS_FRESH_MS = 6 * 3600_000; // the counts are read again after this long
+const GH_RETRY_MS = 10 * 60_000; // and after a failed read, not before this
+const GH_PAGES = 10; // closed pull requests read, 100 a page
+const sessionKey = async (session) => {
+  const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode("github|" + session));
+  return "gh:" + [...new Uint8Array(hash)].map((b) => b.toString(16).padStart(2, "0")).join("");
+};
 const HEARTBEAT_CHECK_MS = 60_000;
 const HEARTBEAT_TIMEOUT_MS = 120_000; // > 60s background tab timer throttling
 const HELLO_TIMEOUT_MS = 15_000; // pre-hello sockets cannot hold room slots via edge pings
@@ -230,6 +254,8 @@ export class Room {
     this.noteEdits = new Map(); // ip -> time of the last note edit (in memory)
     this.spam = new Map(); // ip -> { strikes, mutedUntil, lastStrike, lastText, lastAt }
     this.leftSockets = new WeakSet();
+    this.ghBusy = new Set(); // player ids with a GitHub call in flight
+    this.ghTriedAt = 0; // last read of the pull requests, good or bad
     this.state.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
   }
 
@@ -553,7 +579,7 @@ export class Room {
 
   // only each player's public fields (never the IP)
   public(p) {
-    return { id: p.id, name: p.name, gender: p.gender, color: p.color || "", cap: p.cap ?? -1, x: p.x, z: p.z, dir: p.dir, step: p.step, seat: p.seat ?? -1, hold: p.hold | 0, ground: !!p.ground, fish: p.fish || null, admin: !!p.admin };
+    return { id: p.id, name: p.name, gender: p.gender, color: p.color || "", cap: p.cap ?? -1, x: p.x, z: p.z, dir: p.dir, step: p.step, seat: p.seat ?? -1, hold: p.hold | 0, ground: !!p.ground, fish: p.fish || null, admin: !!p.admin, prs: p.prs | 0 };
   }
   players() {
     return this.openSockets()
@@ -594,7 +620,7 @@ export class Room {
     const p = ws.deserializeAttachment();
     if (!p) return;
     if (!p.joinedAt && m.t !== "hello") return;
-    const type = m.t === "pos" ? "pos" : m.t === "chat" ? "chat" : m.t === "sit" ? "sit" : "other";
+    const type = m.t === "pos" ? "pos" : m.t === "chat" ? "chat" : m.t === "sit" ? "sit" : m.t === "github-start" ? "github" : "other";
     // the seat the room really has for this player, tagged with the request it answers
     const seatReply = () => ws.send(JSON.stringify({ t: "seat", id: p.id, seat: p.seat ?? -1, n: Number.isSafeInteger(m.n) ? m.n : 0 }));
     if (!this.allowed(p, type)) {
@@ -702,6 +728,15 @@ export class Room {
       p.hold = [1, 2, 3, 4].includes(m.item) ? m.item : 0;
       ws.serializeAttachment(p);
       this.broadcast({ t: "hold", id: p.id, item: p.hold }, ws);
+    } else if (m.t === "github-start") {
+      await this.githubStart(ws);
+    } else if (m.t === "github-poll") {
+      await this.githubPoll(ws);
+    } else if (m.t === "github") {
+      await this.githubResume(ws, m.session);
+    } else if (m.t === "github-out") {
+      if (typeof m.session === "string" && GH_SESSION.test(m.session)) await this.state.storage.delete(await sessionKey(m.session));
+      this.setContributor(ws, "");
     } else if (m.t === "auth") {
       if (!(await this.isAdmin(ws, p, m.password))) return;
       // everyone sees who the admin is (badge over the name, colour in the chat)
@@ -737,10 +772,131 @@ export class Room {
       if (s.repeats > REPEAT_LIMIT) return this.strike(ws, p.ip);
       s.lastText = text;
       s.lastAt = now;
-      const msg = { id: p.id, name: p.name, text, at: now, ...(p.color && { color: p.color }), ...(p.admin && { admin: true }) };
+      const msg = { id: p.id, name: p.name, text, at: now, ...(p.color && { color: p.color }), ...(p.admin && { admin: true }), ...(p.prs > 0 && { prs: p.prs }) };
       this.broadcast({ t: "chat", ...msg });
       this.stat("chat", p);
       await this.saveHistory([...(await this.history()), msg]);
+    }
+  }
+
+  // ---- contributors (GitHub login) ----
+  // Step 1 of the device flow: GitHub gives a short code the player types at github.com/login/device.
+  async githubStart(ws) {
+    const fail = (msg) => ws.send(JSON.stringify({ t: "github-fail", msg }));
+    const id = ws.deserializeAttachment()?.id;
+    if (!this.env.GITHUB_CLIENT_ID) return fail("github login is not set up on this server");
+    if (!id || this.ghBusy.has(id)) return;
+    this.ghBusy.add(id);
+    let r = null;
+    try {
+      const res = await fetch(GH_WEB + "/login/device/code", {
+        method: "POST",
+        headers: { ...GH_HEADERS, "Content-Type": "application/json" },
+        body: JSON.stringify({ client_id: this.env.GITHUB_CLIENT_ID }),
+      });
+      r = await res.json();
+    } catch {} finally { this.ghBusy.delete(id); }
+    if (typeof r?.device_code !== "string" || r.device_code.length > 100 || typeof r.user_code !== "string") return fail("github did not answer, try again");
+    // the calls above took a while: read the player again, not a copy from before
+    const p = ws.deserializeAttachment();
+    if (!p || p.left) return;
+    const every = Math.min(30, Math.max(5, r.interval | 0));
+    p.ghDevice = r.device_code;
+    p.ghUntil = Date.now() + Math.min(900, Math.max(60, r.expires_in | 0)) * 1000;
+    ws.serializeAttachment(p);
+    ws.send(JSON.stringify({ t: "github-code", code: cleanText(r.user_code, 12), url: GH_WEB + "/login/device", every, until: p.ghUntil }));
+  }
+  // Step 2: ask GitHub if the code was typed. Then the token says who the player is, reads the pull
+  // requests once and is thrown away; the browser keeps a session of the room's own.
+  async githubPoll(ws) {
+    const first = ws.deserializeAttachment();
+    if (!first?.ghDevice || this.ghBusy.has(first.id)) return;
+    const end = (msg) => {
+      const p = ws.deserializeAttachment();
+      if (p) {
+        delete p.ghDevice;
+        delete p.ghUntil;
+        ws.serializeAttachment(p);
+      }
+      if (msg) ws.send(JSON.stringify({ t: "github-fail", msg }));
+    };
+    if (Date.now() > first.ghUntil) return end("the code expired, type /github again");
+    this.ghBusy.add(first.id);
+    try {
+      const r = await (await fetch(GH_WEB + "/login/oauth/access_token", {
+        method: "POST",
+        headers: { ...GH_HEADERS, "Content-Type": "application/json" },
+        body: JSON.stringify({ client_id: this.env.GITHUB_CLIENT_ID, device_code: first.ghDevice, grant_type: "urn:ietf:params:oauth:grant-type:device_code" }),
+      })).json();
+      if (r?.error === "authorization_pending" || r?.error === "slow_down") return;
+      if (typeof r?.access_token !== "string") return end(r?.error === "access_denied" ? "github login cancelled" : "github login failed, type /github again");
+      const auth = { ...GH_HEADERS, Authorization: "Bearer " + r.access_token };
+      const user = await (await fetch(GH_API + "/user", { headers: auth })).json();
+      const login = typeof user?.login === "string" ? user.login.toLowerCase() : "";
+      if (!GH_LOGIN.test(login)) return end("github login failed, type /github again");
+      await this.readContributors(auth);
+      const session = [...crypto.getRandomValues(new Uint8Array(24))].map((b) => b.toString(16).padStart(2, "0")).join("");
+      await this.state.storage.put(await sessionKey(session), { login, at: Date.now() });
+      end();
+      const prs = await this.setContributor(ws, login);
+      ws.send(JSON.stringify({ t: "github-ok", session, login, prs }));
+    } catch {
+      // GitHub is slow or down: the player keeps asking until the code expires
+    } finally {
+      this.ghBusy.delete(first.id);
+    }
+  }
+  // A browser that logged in before comes back with its session.
+  async githubResume(ws, session) {
+    if (typeof session !== "string" || !GH_SESSION.test(session)) return;
+    const saved = await this.state.storage.get(await sessionKey(session));
+    if (!GH_LOGIN.test(saved?.login || "")) return void ws.send(JSON.stringify({ t: "github-out" }));
+    await this.setContributor(ws, saved.login);
+  }
+  // Whose connection this is on GitHub ("" = nobody) and how many merged pull requests that is; everyone is told.
+  async setContributor(ws, login) {
+    const counts = login ? await this.contributors() : {};
+    const p = ws.deserializeAttachment();
+    if (!p || p.left) return 0;
+    const before = p.prs | 0;
+    p.gh = login;
+    p.prs = Math.min(9999, counts[login] | 0);
+    ws.serializeAttachment(p);
+    if (p.prs !== before) this.broadcast({ t: "contrib", id: p.id, prs: p.prs });
+    return p.prs;
+  }
+  // { login: merged pull requests }, from storage; read again from GitHub in the background when it gets old
+  async contributors() {
+    const saved = (await this.state.storage.get("contributors")) || { counts: {}, at: 0 };
+    if (Date.now() - saved.at > GH_COUNTS_FRESH_MS && Date.now() - this.ghTriedAt > GH_RETRY_MS) this.state.waitUntil(this.readContributors().catch(() => {}));
+    return saved.counts;
+  }
+  // Counts the merged pull requests of GITHUB_REPO per author. With a player's token on a login, without one
+  // otherwise (public data; GitHub allows few such calls an hour, hence the cache). A failed read keeps the old counts.
+  async readContributors(headers = GH_HEADERS) {
+    const repo = this.env.GITHUB_REPO || "";
+    if (!GH_REPO.test(repo)) return;
+    this.ghTriedAt = Date.now();
+    const counts = {};
+    for (let page = 1; page <= GH_PAGES; page++) {
+      const res = await fetch(`${GH_API}/repos/${repo}/pulls?state=closed&per_page=100&page=${page}`, { headers });
+      if (!res.ok) return;
+      const list = await res.json();
+      if (!Array.isArray(list)) return;
+      for (const pr of list) {
+        const login = typeof pr?.user?.login === "string" ? pr.user.login.toLowerCase() : "";
+        if (pr?.merged_at && GH_LOGIN.test(login)) counts[login] = (counts[login] || 0) + 1;
+      }
+      if (list.length < 100) break;
+    }
+    await this.state.storage.put("contributors", { counts, at: Date.now() });
+    // players already in the room get their new count
+    for (const ws of this.openSockets()) {
+      const p = ws.deserializeAttachment();
+      if (!p?.gh || p.left || (p.prs | 0) === (counts[p.gh] | 0)) continue;
+      p.prs = Math.min(9999, counts[p.gh] | 0);
+      ws.serializeAttachment(p);
+      this.broadcast({ t: "contrib", id: p.id, prs: p.prs });
     }
   }
 

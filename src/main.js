@@ -3317,6 +3317,7 @@ function createOther(p) {
     gender: g,
     color: p.color,
     admin: !!p.admin,
+    prs: p.prs | 0, // merged pull requests: the contributor badge
   };
   mesh.position.copy(o.target);
   others.set(p.id, o);
@@ -3352,6 +3353,7 @@ function updateCount() {
 }
 
 let meAdmin = false; // the server confirmed this connection is the admin
+let myPrs = 0; // my merged pull requests, once the server knows my GitHub login (/github)
 let deployed = ""; // the deploy this tab first connected to
 let pendingPassword = ""; // typed after /admin, saved only if the server accepts it
 let kicked = false; // kicked or banned: stay out instead of reconnecting
@@ -3376,6 +3378,9 @@ function connect() {
     let password = "";
     try { password = localStorage.getItem("admin-password") || ""; } catch {}
     if (password) sock.send(JSON.stringify({ t: "auth", password, quiet: true }));
+    // and so does a contributor who logged in with GitHub before
+    const session = githubSession();
+    if (session) sock.send(JSON.stringify({ t: "github", session }));
   };
   sock.onmessage = (ev) => {
     if (ws !== sock || ev.data === "pong") return;
@@ -3397,11 +3402,11 @@ function connect() {
     else if (m.t === "state") m.players.forEach(createOther);
     else if (m.t === "joined") createOther(m.player);
     else if (m.t === "left") removeOther(m.id);
-    else if (m.t === "chat") receiveChat(m.id, m.name, m.text, m.admin, m.color);
+    else if (m.t === "chat") receiveChat(m.id, m.name, m.text, m.admin, m.color, m.prs);
     else if (m.t === "history") {
       // what was said before we arrived (also on reconnect, so start clean)
       elMsgs.replaceChildren();
-      m.messages.forEach((c) => addToHistory(c.name, c.text, c.id, c.admin, c.color));
+      m.messages.forEach((c) => addToHistory(c.name, c.text, c.id, c.admin, c.color, c.prs));
       elMsgs.scrollTop = elMsgs.scrollHeight;
     }
     else if (m.t === "radio") receiveCommand(m.command);
@@ -3426,6 +3431,25 @@ function connect() {
       if (m.id === myId) meAdmin = true;
       const o = others.get(m.id);
       if (o) o.admin = true;
+    }
+    else if (m.t === "contrib") {
+      if (m.id === myId) myPrs = m.prs | 0;
+      const o = others.get(m.id);
+      if (o) o.prs = m.prs | 0;
+    }
+    else if (m.t === "github-code") showGithubCode(m);
+    else if (m.t === "github-ok") {
+      try { localStorage.setItem("github-session", m.session); } catch {}
+      closeGithubLogin();
+      addToHistory("system", m.prs > 0 ? `github ok: ${m.login}, ${prsText(m.prs)} merged` : `github ok: ${m.login}, no merged PR yet (the badge comes with the first one)`);
+    }
+    else if (m.t === "github-fail") {
+      closeGithubLogin();
+      addToHistory("system", m.msg);
+    }
+    else if (m.t === "github-out") {
+      // the server no longer knows this session
+      try { localStorage.removeItem("github-session"); } catch {}
     }
     else if (m.t === "admin-ok") {
       // the server accepted the password typed after /admin: keep it and reload to show the controls
@@ -3458,6 +3482,7 @@ function connect() {
           gender: m.gender,
           cap: m.cap,
           admin: o.admin,
+          prs: o.prs,
         };
         removeOther(m.id);
         createOther(p);
@@ -3636,11 +3661,28 @@ function mentionText(el, parts) {
   );
 }
 
-function addToHistory(name, text, id, admin, color) {
+const prsText = (n) => `${n} PR${n === 1 ? "" : "s"}`;
+// Red 1–10, blue 11–20, black 21–50, then the purple Master Ball at 51+.
+// Highest threshold first; its index runs backwards through the four balls in the sprite sheet.
+const PR_TIERS = [{ from: 51 }, { from: 21 }, { from: 11 }, { from: 1 }];
+/** Fills el with the ball for prs merged pull requests and the count (nothing for 0). */
+function showPrs(el, prs) {
+  if (el.dataset.prs === String(prs)) return;
+  el.dataset.prs = prs;
+  el.replaceChildren();
+  el.title = prs > 0 ? `${prsText(prs)} merged` : "";
+  if (!(prs > 0)) return;
+  const tier = PR_TIERS.findIndex((t) => prs >= t.from);
+  const ball = Object.assign(document.createElement("i"), { ariaHidden: "true" });
+  ball.style.backgroundPosition = `${(PR_TIERS.length - 1 - tier) * (100 / (PR_TIERS.length - 1))}% 0`;
+  el.append(ball, prsText(prs));
+}
+function addToHistory(name, text, id, admin, color, prs = 0) {
   const d = document.createElement("div");
   d.className = admin ? "m admin" : "m";
   const s = document.createElement("small");
   s.textContent = name;
+  if (prs > 0) showPrs(s.appendChild(Object.assign(document.createElement("span"), { className: "prs" })), prs);
   paintName(s, color);
   if (IS_ADMIN && id && id !== myId && id !== "me") {
     s.className = "mod";
@@ -3724,12 +3766,13 @@ function showWho(m) {
 
 // ---- Name above each trainer ----
 const nameTags = new Map(); // mesh -> div
-function nameTag(mesh, name, id, admin, color) {
+function nameTag(mesh, name, id, admin, color, prs = 0) {
   let el = nameTags.get(mesh);
   if (!el) {
     el = Object.assign(document.createElement("div"), { className: "tag" });
     el.append(
       Object.assign(document.createElement("b"), { className: "badge", textContent: "admin" }),
+      Object.assign(document.createElement("b"), { className: "contrib" }),
       Object.assign(document.createElement("span"), { className: "who" }),
     );
     if (IS_ADMIN && id) {
@@ -3742,10 +3785,12 @@ function nameTag(mesh, name, id, admin, color) {
   if (el.lastChild.textContent !== name) el.lastChild.textContent = name;
   if (el.dataset.color !== (color || "")) paintName(el, (el.dataset.color = color || ""));
   el.classList.toggle("admin", !!admin);
+  // contributor: a ball and the merged pull requests
+  showPrs(el.children[1], prs | 0);
 }
 function updateNameTags() {
-  nameTag(sprite, NAME, null, meAdmin, COLOR);
-  for (const [id, o] of others) nameTag(o.mesh, o.name || "trainer", id, o.admin, o.color);
+  nameTag(sprite, NAME, null, meAdmin, COLOR, myPrs);
+  for (const [id, o] of others) nameTag(o.mesh, o.name || "trainer", id, o.admin, o.color, o.prs);
   for (const [mesh, el] of nameTags) {
     if (!mesh.parent) { el.remove(); nameTags.delete(mesh); continue; }
     const baseY = mesh === sprite ? pos.y : mesh.position.y + (mesh.userData.lift || 0);
@@ -3795,8 +3840,8 @@ function updateBubbles() {
   }
 }
 
-function receiveChat(id, name, text, admin, color) {
-  addToHistory(name, text, id, admin, color);
+function receiveChat(id, name, text, admin, color, prs) {
+  addToHistory(name, text, id, admin, color, prs);
   const owner = id === myId || id === "me" ? sprite : others.get(id)?.mesh;
   if (owner) showBubble(owner, text, owner !== sprite && mentionsMe(mentionParts(text)));
 }
@@ -3808,6 +3853,14 @@ document.querySelector("#chat form").addEventListener("submit", (e) => {
   const text = elInput.value.trim().slice(0, 140);
   elInput.value = "";
   if (/^\/admin$/i.test(text)) return openAdminLogin();
+  // contributors: /github proves your GitHub login, and the room shows your merged pull requests
+  if (/^\/github$/i.test(text)) return startGithubLogin();
+  if (/^\/github (out|logout)$/i.test(text)) {
+    const session = githubSession();
+    try { localStorage.removeItem("github-session"); } catch {}
+    if (ws?.readyState === 1) ws.send(JSON.stringify({ t: "github-out", session }));
+    return addToHistory("system", "github: logged out");
+  }
   if (/^\/logout$/i.test(text)) {
     try { localStorage.removeItem("admin-password"); } catch {}
     location.reload();
@@ -3859,6 +3912,42 @@ adminLogin.addEventListener("submit", (e) => {
 });
 adminLogin.querySelector("[data-cancel]").addEventListener("click", closeAdminLogin);
 adminPw.addEventListener("keydown", (e) => e.key === "Escape" && closeAdminLogin());
+// GitHub login (device flow): the room hands out a code, the player types it at github.com and the room
+// learns their login. No password or GitHub token ever reaches this page; it keeps a session of the room's.
+const githubLogin = document.querySelector("#github-login");
+let githubPoll = 0;
+function githubSession() {
+  try { return localStorage.getItem("github-session") || ""; } catch { return ""; }
+}
+function startGithubLogin() {
+  if (!MULTIPLAYER || ws?.readyState !== 1) return addToHistory("system", "github login needs the room: you are offline");
+  ws.send(JSON.stringify({ t: "github-start" }));
+}
+function showGithubCode(m) {
+  closeGithubLogin();
+  githubLogin.querySelector("code").textContent = m.code;
+  githubLogin.querySelector("a").href = m.url;
+  githubLogin.hidden = false;
+  elInput.blur();
+  // ask the room now and then if the code was typed, until it says ok, fails or the code runs out
+  githubPoll = setInterval(() => {
+    if (Date.now() > m.until + 5000) return closeGithubLogin();
+    if (ws?.readyState === 1) ws.send(JSON.stringify({ t: "github-poll" }));
+  }, (m.every + 1) * 1000);
+}
+function closeGithubLogin() {
+  clearInterval(githubPoll);
+  githubLogin.hidden = true;
+}
+githubLogin.querySelector("[data-cancel]").addEventListener("click", closeGithubLogin);
+githubLogin.querySelector("[data-copy]").addEventListener("click", (e) => {
+  const button = e.currentTarget;
+  navigator.clipboard?.writeText(githubLogin.querySelector("code").textContent).then(() => {
+    button.textContent = "copied!";
+    button.classList.add("done");
+    setTimeout(() => (button.classList.remove("done"), (button.textContent = "copy")), 1500);
+  }, () => {});
+});
 elInput.addEventListener("focus", () => {
   Object.keys(keys).forEach((k) => (keys[k] = false));
   if (!MOBILE) elInput.placeholder = "Esc or empty Enter to walk…";
@@ -4134,9 +4223,11 @@ const fishing = createFishing({
   onChange: (target) => sendFish(target),
 });
 // tells the room your line is out (where the bobber is) or back in, so the others see it; the
-// timer stays yours
-const sendFish = (target) =>
-  ws?.readyState === 1 && ws.send(JSON.stringify(target ? { t: "fish", on: true, x: target.x, z: target.z } : { t: "fish", on: false }));
+// timer stays yours. A function declaration: createFishing above may call it while it starts
+// (a saved line whose fish got away while the tab was closed).
+function sendFish(target) {
+  if (ws?.readyState === 1) ws.send(JSON.stringify(target ? { t: "fish", on: true, x: target.x, z: target.z } : { t: "fish", on: false }));
+}
 const _waterFrom = new THREE.Vector3();
 /** @returns {number | null} the height of the water at (x, z), or null where there is none (or the town isn't loaded yet) */
 function waterY(x, z) {
