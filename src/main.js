@@ -7,7 +7,7 @@ import { createStones } from "./stones.js";
 import { addSitFrames, sitFramePos } from "./ground-sit.js";
 import { createCapybara, CAPY_NEAR, CAPY_RADIUS, PHRASES as CAPY_PHRASES, CHRISTMAS_PHRASES, isChristmas } from "./capybara.js";
 import { createFishing, createFishingGear, FISH_NEAR, FISH_LEAVE } from "./fishing.js";
-import { createSnow, createHouseLights } from "./christmas.js";
+import { createSnow, createHouseLights, createChristmasTree } from "./christmas.js";
 
 // ---- Asset config (change here to use other files) ----
 const TOWN = {
@@ -404,7 +404,9 @@ function bakeGeometry(o, indexed) {
 }
 
 // The town's own Christmas decorations, made once it is in place (src/christmas.js); shown by the switch
-let houseLights = null;
+let houseLights = null,
+  christmasTree = null;
+const XMAS_TREE_NEAR = new THREE.Vector2(12, 30); // the front pine to the right of the pond
 function dressTownForChristmas(root) {
   // one box per house: its own mesh (the FBX town), or the unnamed group of parts it is built from (the village)
   const houses = new Map();
@@ -421,6 +423,17 @@ function dressTownForChristmas(root) {
   };
   houseLights = createHouseLights({ scene, houses: [...houses.values()], roofAt: topHeight, wallAt });
   whenChristmas((on) => houseLights.setOn(on));
+  // the Christmas tree: the pine nearest that spot (the tallest part of it, in the village's trees)
+  const pines = townMeshes
+    .filter((o) => /pine|tree/i.test(o.name))
+    .map((o) => ({ o, box: new THREE.Box3().setFromObject(o) }))
+    .map((p) => ({ ...p, d: XMAS_TREE_NEAR.distanceTo(new THREE.Vector2((p.box.min.x + p.box.max.x) / 2, (p.box.min.z + p.box.max.z) / 2)) }));
+  const nearest = Math.min(...pines.map((p) => p.d));
+  const pine = pines.filter((p) => p.d < nearest + 1.5).sort((a, b) => b.box.max.y - a.box.max.y)[0];
+  if (pine) {
+    christmasTree = createChristmasTree({ scene, tree: pine.o });
+    whenChristmas((on) => christmasTree.setOn(on));
+  }
 }
 
 // ---- Original village (default on the published site) ----
@@ -3664,6 +3677,7 @@ function loop() {
   surfaceBudget = Math.max(surfaceBudget, 20);
   snow.update(dt, pos, dayAmount, rainAmount);
   houseLights?.update(performance.now() / 1000, dayAmount);
+  christmasTree?.update(performance.now() / 1000, dayAmount);
   stones.update(dt);
   updateFireflies();
   let dx = 0,
@@ -3751,6 +3765,7 @@ function loop() {
   requestAnimationFrame(loop);
 }
 loop();
+
 
 
 

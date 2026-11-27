@@ -188,3 +188,131 @@ export function createHouseLights({ scene, houses, roofAt, wallAt }) {
     },
   };
 }
+
+// ---- The Christmas tree ----
+// One of the pines by the pond gets baubles on its branches (where rays from around it meet the tree)
+// and a pixel-art star on top that glows and gently pulses.
+const BAUBLES = [new THREE.Color("#ff3b4e"), new THREE.Color("#ffd24a"), new THREE.Color("#5aa8ff"), new THREE.Color("#e8eef8")];
+const STAR = [
+  "....#....",
+  "....#....",
+  "...###...",
+  "#########",
+  ".#######.",
+  "..#####..",
+  "..##.##..",
+  ".##...##.",
+  ".#.....#.",
+];
+function pixelCanvas(rows, paint) {
+  const cv = Object.assign(document.createElement("canvas"), { width: rows[0].length, height: rows.length });
+  const c = cv.getContext("2d");
+  rows.forEach((row, y) => [...row].forEach((ch, x) => ch !== "." && ((c.fillStyle = paint(x, y)), c.fillRect(x, y, 1, 1))));
+  const tex = new THREE.CanvasTexture(cv);
+  tex.magFilter = tex.minFilter = THREE.NearestFilter;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+export function createChristmasTree({ scene, tree }) {
+  const box = new THREE.Box3().setFromObject(tree);
+  const center = box.getCenter(new THREE.Vector3());
+  const height = box.max.y - box.min.y;
+  const reach = Math.max(box.max.x - box.min.x, box.max.z - box.min.z);
+  const group = new THREE.Group();
+  group.visible = false;
+  scene.add(group);
+
+  // baubles: around the front and sides of the tree, a few at each height
+  const ray = new THREE.Raycaster();
+  const pts = [],
+    colors = [],
+    phases = [];
+  let n = 0;
+  for (let level = 0; level < 6; level++) {
+    const y = box.min.y + height * (0.2 + level * 0.11);
+    const perLevel = 6 - level;
+    for (let k = 0; k < perLevel; k++) {
+      // from -100° to 100° around the front (+z, toward the camera), shifted a little per level
+      const a = ((k + 0.5) / perLevel - 0.5) * 3.4 + (level % 2) * 0.25;
+      const dir = new THREE.Vector3(Math.sin(a), 0, Math.cos(a));
+      ray.set(center.clone().setY(y).addScaledVector(dir, reach), dir.clone().negate());
+      const hit = ray.intersectObject(tree, false)[0];
+      if (!hit) continue;
+      pts.push(...hit.point.addScaledVector(dir, 0.45).toArray()); // out from the branches, so they don't cut it
+      const c = BAUBLES[n % BAUBLES.length];
+      colors.push(c.r, c.g, c.b);
+      phases.push(Math.random() * Math.PI * 2);
+      n++;
+    }
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(pts, 3));
+  geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
+  geometry.setAttribute("phase", new THREE.Float32BufferAttribute(phases, 1));
+  const uniforms = { uTime: { value: 0 }, uGlow: { value: 1 } };
+  const baubles = new THREE.Points(
+    geometry,
+    new THREE.ShaderMaterial({
+      uniforms,
+      transparent: true,
+      depthWrite: false,
+      vertexShader: `attribute vec3 color; attribute float phase; uniform float uTime; uniform float uGlow;
+        varying vec3 vColor; varying float vShine;
+        void main() {
+          vColor = color;
+          vShine = 0.75 + 0.25 * sin(uTime * 0.9 + phase);
+          vec4 mv = modelViewMatrix * vec4(position, 1.0);
+          gl_PointSize = 13.0 * (60.0 / -mv.z);
+          gl_Position = projectionMatrix * mv;
+        }`,
+      // a round bauble with a white glint at the top left
+      fragmentShader: `uniform float uGlow; varying vec3 vColor; varying float vShine;
+        void main() {
+          vec2 p = gl_PointCoord - 0.5;
+          if (length(p) > 0.5) discard;
+          float glint = step(length(p - vec2(-0.16, -0.16)), 0.12);
+          vec3 c = mix(vColor * vShine * (0.55 + 0.45 * uGlow), vec3(1.0), glint * 0.8);
+          gl_FragColor = vec4(c, 1.0);
+        }`,
+    }),
+  );
+  group.add(baubles);
+
+  // the star on top, and its glow
+  const star = new THREE.Sprite(
+    new THREE.SpriteMaterial({
+      map: pixelCanvas(STAR, (x, y) => (Math.abs(x - 4) + Math.abs(y - 4) < 3 ? "#fff3b0" : "#ffcc33")),
+      depthWrite: false,
+    }),
+  );
+  star.position.set(center.x, box.max.y + 0.7, center.z);
+  star.scale.set(2, 2, 1);
+  const glowCv = Object.assign(document.createElement("canvas"), { width: 64, height: 64 });
+  const gc = glowCv.getContext("2d");
+  const grad = gc.createRadialGradient(32, 32, 0, 32, 32, 32);
+  grad.addColorStop(0, "rgba(255,220,120,0.9)");
+  grad.addColorStop(1, "rgba(255,220,120,0)");
+  gc.fillStyle = grad;
+  gc.fillRect(0, 0, 64, 64);
+  const glow = new THREE.Sprite(
+    new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(glowCv), blending: THREE.AdditiveBlending, depthWrite: false, transparent: true }),
+  );
+  glow.position.copy(star.position);
+  group.add(glow, star);
+
+  return {
+    count: n,
+    setOn(on) {
+      group.visible = on;
+    },
+    // t: seconds; day: 0 night .. 1 day (the glow is softer by day)
+    update(t, day) {
+      uniforms.uTime.value = t;
+      uniforms.uGlow.value = 1 - 0.5 * day;
+      const pulse = 1 + 0.06 * Math.sin(t * 2.2);
+      star.scale.set(2 * pulse, 2 * pulse, 1);
+      const g = (4.2 + 0.5 * Math.sin(t * 2.2)) * (1 - 0.45 * day);
+      glow.scale.set(g, g, 1);
+    },
+  };
+}
