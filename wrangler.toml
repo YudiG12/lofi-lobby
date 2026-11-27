@@ -40,6 +40,12 @@ binding = "VERSION"
 GITHUB_REPO = "YudiG12/lofi-lobby"
 GITHUB_CLIENT_ID = "Ov23liuvJkSpoqUXts9B"
 
+# Accounts and their sessions (worker/accounts.js). No database_id here: Wrangler creates the database on
+# the first deploy of each account and keeps it linked, so a deploy of your own needs no extra step.
+[[d1_databases]]
+binding = "DB"
+database_name = "lofi-lobby"
+
 # ALLOWED_ORIGINS (optional): extra origins allowed on the WebSocket, comma-separated.
 # ADMIN_PASSWORD: secret -> `npx wrangler secret put ADMIN_PASSWORD` (never here)
 # CF_ACCOUNT_ID, CF_API_TOKEN (Account Analytics: Read): secrets for /stats, set with `npx wrangler secret put`

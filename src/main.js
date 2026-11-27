@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader.js";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { connectRadioToServer, receiveCommand } from "./radio.js";
+import { setupSocial } from "./social.js";
 import { createBoard, setupWall } from "./board.js";
 import { createStones } from "./stones.js";
 import { addSitFrames, sitFramePos } from "./ground-sit.js";
@@ -11,6 +12,7 @@ import { createFishing, createFishingGear, FISH_NEAR, FISH_LEAVE } from "./fishi
 import { createCat, CATS, CAT_NEAR, CAT_SIT_MS, CAT_RIDE_MS, PHRASES as CAT_PHRASES, RIDE_PHRASES as CAT_RIDE_PHRASES } from "./cat.js";
 import { CAROUSEL, carouselSeat, createCarousel, inClearing, isCarouselSeat, onCarousel } from "./carousel.js";
 import { WHEEL, wheelSeat, createFerrisWheel, inWheelClearing, isWheelSeat, onWheel } from "./ferris-wheel.js";
+import { COASTER, coasterSeat, coasterCycle, coasterRiding, coasterBoardLeft, coasterBackIn, createCoaster, inCoasterClearing, isCoasterSeat, onCoaster } from "./roller-coaster.js";
 
 // ---- Asset config (change here to use other files) ----
 const TOWN = {
@@ -55,6 +57,34 @@ window.trainerFrame = () => {
   if (!img?.width || !(img instanceof HTMLCanvasElement)) return null;
   return { img, ...framePos(CHARACTER.cfg, "down", 0) };
 };
+// Any trainer's front frame, as a canvas of its own: the profile shows a player the way the town does
+// (their trainer and cap colour). One per look, drawn once.
+const looks = new Map();
+function trainerLook(gender, cap) {
+  const g = gender === "female" ? "female" : "male";
+  const c = capOf(cap) ?? SHEET_CAP[g];
+  if (!looks.has(g + c)) {
+    looks.set(g + c, new Promise((done) => {
+      const cut = (sheet, cfg) => {
+        const f = framePos(cfg, "down", 0);
+        const cv = Object.assign(document.createElement("canvas"), { width: f.w, height: f.h });
+        cv.getContext("2d").drawImage(sheet, f.x, f.y, f.w, f.h, 0, 0, f.w, f.h);
+        done(cv);
+      };
+      const drawn = () => cut(generateOriginalTrainer(g, c), GRID); // no sheet: the trainer drawn in code
+      if (!sheetAvailable(g)) return drawn();
+      const img = new Image();
+      img.onload = () => {
+        const t = { image: img, dispose() {} }; // removeBackground works on a texture: this stands in for one
+        removeBackground(t, CROP[g], g, c);
+        cut(t.image, CROP[g]);
+      };
+      img.onerror = drawn;
+      img.src = SHEETS[g];
+    }));
+  }
+  return looks.get(g + c);
+}
 // The cap lives in the top rows of a frame; lower down the same tones are something else (the
 // female's white scarf, bag and skirt). Where it ends is looked for frame by frame, between these two
 // rows: the first row with the fewest cap pixels, which is the gap between the beanie and the scarf
@@ -372,22 +402,28 @@ function clearFairGround(root) {
   root.traverse((o) => {
     if (!o.isMesh || !/tree/i.test(o.name)) return;
     new THREE.Box3().setFromObject(o).getCenter(at);
-    if (inClearing(at.x, at.z) || inWheelClearing(at.x, at.z)) pines.push(o);
+    if (inClearing(at.x, at.z) || inWheelClearing(at.x, at.z) || inCoasterClearing(at.x, at.z)) pines.push(o);
   });
   for (const o of pines) o.removeFromParent();
 }
 const carousel = createCarousel();
 const wheel = createFerrisWheel();
+const coaster = createCoaster();
 let fairPlaced = false;
 function placeFair() {
   carousel.root.position.y = groundHeight(CAROUSEL.x, CAROUSEL.z);
   wheel.root.position.y = groundHeight(WHEEL.x, WHEEL.z);
+  coaster.root.position.y = groundHeight((COASTER.station.x0 + COASTER.station.x1) / 2, COASTER.station.z0 - 1);
   for (const p of fairPosts) p.position.y = groundHeight(p.position.x, p.position.z);
-  if (!fairPlaced) scene.add(carousel.root, wheel.root);
+  if (!fairPlaced) scene.add(carousel.root, wheel.root, coaster.root);
   fairPlaced = true;
 }
 // the seats on a ride: their spot comes from the clock, they need no message while it turns
-const isRideSeat = (id) => isCarouselSeat(id) || isWheelSeat(id);
+const isRideSeat = (id) => isCarouselSeat(id) || isWheelSeat(id) || isCoasterSeat(id);
+// on the roller coaster while it is out on the track: no getting off until it is back at the station
+const strappedIn = () => isCoasterSeat(mySeat) && coasterRiding(roomNow());
+// solid ground of the rides, for everything that walks (you, the others' placement searches, the cats)
+const onRide = (x, z, r) => onCarousel(x, z, r) || onWheel(x, z, r) || onCoaster(x, z, r);
 
 // ---- Drawing the town in few draw calls ----
 // The town comes as ~1,300 meshes sharing one or a few materials, and each one would be a draw call
@@ -827,6 +863,8 @@ function seatSpot(id) {
   if (isCarouselSeat(id)) return fairPlaced ? carouselSeat(id - CAROUSEL.firstSeat, roomNow(), carousel.root.position.y) : null;
   // a Ferris wheel gondola: the same, up and down
   if (isWheelSeat(id)) return fairPlaced ? wheelSeat(id - WHEEL.firstSeat, roomNow(), wheel.root.position.y) : null;
+  // a seat in the roller coaster's sleigh: at the station, or wherever it is on the track
+  if (isCoasterSeat(id)) return fairPlaced ? coasterSeat(id - COASTER.firstSeat, roomNow(), coaster.root.position.y) : null;
   if (id >= benches.length * SEATS_PER_BENCH) return null;
   const b = benches[id >> 1];
   if (!b) return null;
@@ -1740,7 +1778,7 @@ function groundHeight(x, z) {
 // A point is "open" if the ground is flat within radius r (nothing tall nearby)
 function isOpen(x, z, r) {
   // a lamp post doesn't sit right next to a mailbox/sign/fence or in the pond
-  if (insideSolid(x, z, r + 1.5) || inPond(x, z) || onCarousel(x, z, r + 1.5) || onWheel(x, z, r + 1.5)) return false;
+  if (insideSolid(x, z, r + 1.5) || inPond(x, z) || onRide(x, z, r + 1.5)) return false;
   const y = groundHeight(x, z);
   for (let a = 0; a < 8; a++) {
     const ang = (a / 8) * Math.PI * 2;
@@ -1983,7 +2021,7 @@ function buildCatNavGrid() {
     )
       return false;
     if (insideSolid(x, z, BODY_RADIUS * 0.9, BODY_RADIUS * 1.7)) return false;
-    if (onCarousel(x, z, BODY_RADIUS) || onWheel(x, z, BODY_RADIUS)) return false; // cats walk around the rides, not through them
+    if (onRide(x, z, BODY_RADIUS)) return false; // cats walk around the rides, not through them
     if (
       inPond(x, z) ||
       inPond(x - BODY_RADIUS, z) ||
@@ -2446,8 +2484,7 @@ function isFree(x, z, currentY) {
   )
     return false;
   if (insideSolid(x, z, BODY_RADIUS * 0.8, BODY_RADIUS * 1.6)) return false;
-  if (onCarousel(x, z, BODY_RADIUS * 0.5)) return false; // round, so not a box: you can walk all around it
-  if (onWheel(x, z, BODY_RADIUS * 0.5)) return false;
+  if (onRide(x, z, BODY_RADIUS * 0.5)) return false; // the carousel is round, so not a box: you can walk all around it
   // pond: straight box (with the body width), not following the irregular stones
   if (
     inPond(x - BODY_RADIUS, z) ||
@@ -2865,9 +2902,15 @@ addEventListener("game:pause", (e) => {
   gamePaused = e.detail;
   if (gamePaused) Object.keys(keys).forEach((k) => (keys[k] = false));
 });
+// typing anywhere (the chat, a private chat's window, a name, the wall): the keys are letters, not steps
+const inTextField = (el = document.activeElement) => ["INPUT", "TEXTAREA"].includes(el?.tagName) || !!el?.isContentEditable;
 addEventListener("keydown", (e) => {
-  if (["msg", "name-input", "enter-name"].includes(document.activeElement?.id)) return; // typing: don't walk
+  if (inTextField()) return;
   keys[e.key.toLowerCase()] = true;
+});
+// a key held while a text field takes the focus would never be released for the game: let go of all
+addEventListener("focusin", (e) => {
+  if (inTextField(e.target)) Object.keys(keys).forEach((k) => (keys[k] = false));
 });
 addEventListener("keyup", (e) => (keys[e.key.toLowerCase()] = false));
 
@@ -3237,6 +3280,7 @@ function nearestFreeSeat() {
   for (let id = 0; id < benches.length * SEATS_PER_BENCH; id++) consider(id);
   for (let i = 0; i < CAROUSEL.seats; i++) consider(CAROUSEL.firstSeat + i);
   for (let i = 0; i < WHEEL.seats; i++) consider(WHEEL.firstSeat + i);
+  for (let i = 0; i < COASTER.seats; i++) consider(COASTER.firstSeat + i); // only while it is at the station (board)
   return best;
 }
 function sit(id) {
@@ -3244,6 +3288,7 @@ function sit(id) {
   if (!s) return;
   setGround(false);
   mySeat = id;
+  if (isCoasterSeat(id)) myRide = coasterCycle(roomNow()); // the ride you board: off when the next cycle begins
   const [ox, oz] = [pos.x, pos.z];
   pos.set(s.x, s.y, s.z);
   glideFrom(ox, oz);
@@ -3255,6 +3300,7 @@ function sit(id) {
 function standUp(notify = true, way = null) {
   if (isCarouselSeat(mySeat)) return getOffCarousel(notify);
   if (isWheelSeat(mySeat)) return getOffWheel(notify);
+  if (isCoasterSeat(mySeat)) return getOffCoaster(notify);
   const s = seatSpot(mySeat);
   const side = mySeat & 1 ? 1 : -1;
   mySeat = -1;
@@ -3303,6 +3349,34 @@ function getOffCarousel(notify) {
   }
   if (notify) sendSeat();
 }
+// Off the roller coaster's sleigh: onto the grass north of the station, by your seat, then further along
+let myRide = -1; // the coaster cycle you boarded in
+function getOffCoaster(notify) {
+  const s = seatSpot(mySeat);
+  mySeat = -1;
+  if (s) {
+    const z = COASTER.exitZ;
+    const S = COASTER.station;
+    const x0 = Math.max(S.x0, Math.min(S.x1, s.x));
+    search: for (let d = 0; d <= 8; d += 0.5)
+      for (const x of [x0 + d, x0 - d]) {
+        const ground = groundHeight(x, z);
+        if (isFree(x, z, ground)) {
+          const [ox, oz] = [pos.x, pos.z];
+          pos.set(x, ground, z);
+          glideFrom(ox, oz);
+          break search;
+        }
+      }
+  }
+  if (notify) sendSeat();
+}
+// The ride is over once its cycle is: everyone gets off at the station, so the next riders can board.
+// Checked every frame, and every second too, since a tab in the background draws no frames
+function leaveFinishedRide() {
+  if (isCoasterSeat(mySeat) && coasterCycle(roomNow()) > myRide) standUp();
+}
+setInterval(leaveFinishedRide, 1000);
 // Off a gondola: onto the grass in front of the wheel, below where it is (from up high too: the
 // glide brings you down), then further along
 function getOffWheel(notify) {
@@ -3310,7 +3384,7 @@ function getOffWheel(notify) {
   mySeat = -1;
   if (s) {
     const z = WHEEL.z + WHEEL.halfDepth + 1.4;
-    const x0 = Math.max(WHEEL.x - WHEEL.halfWidth, Math.min(WHEEL.x + WHEEL.halfWidth, s.x));
+    const x0 = Math.max(WHEEL.x - WHEEL.west, Math.min(WHEEL.x + WHEEL.east, s.x));
     search: for (let d = 0; d <= 6; d += 0.5)
       for (const x of [x0 + d, x0 - d]) {
         const ground = groundHeight(x, z);
@@ -3332,6 +3406,7 @@ const toggleSit = () => {
   const now = performance.now();
   if (gamePaused || now - lastToggle < SIT_COOLDOWN) return;
   lastToggle = now;
+  if (strappedIn()) return; // strapped in until the sleigh is back
   if (mySeat >= 0) return standUp();
   const id = nearestFreeSeat();
   if (id >= 0) sit(id);
@@ -3342,7 +3417,7 @@ addEventListener("keydown", (e) => {
   if (!typing && !e.repeat && !e.ctrlKey && !e.metaKey && k === "q") cycleHold();
   if (!typing && !e.repeat && !e.ctrlKey && !e.metaKey && k === "e") (mySeat >= 0 || (!nearBoard() && !nearCapy() && !nearCat())) && toggleSit();
   // a quick tap on a move key can end before the next frame: stand up right away
-  if (!typing && !gamePaused && mySeat >= 0 && MOVE_KEYS[k]) {
+  if (!typing && !gamePaused && mySeat >= 0 && !strappedIn() && MOVE_KEYS[k]) {
     dir = MOVE_KEYS[k];
     standUp(true, FACING[dir]);
   }
@@ -3553,9 +3628,11 @@ function createOther(p) {
     fish: fishTarget(p.fish), // on joining: someone whose line is already out
     name: p.name,
     gender: g,
+    cap, // for the profile
     color: p.color,
     admin: !!p.admin,
     prs: p.prs | 0, // merged pull requests: the contributor badge
+    n: Number.isInteger(p.n) ? p.n : -1, // account number (-1: no account), for the profile
   };
   mesh.position.copy(o.target);
   others.set(p.id, o);
@@ -3638,11 +3715,16 @@ function connect() {
     else if (m.t === "state") m.players.forEach(createOther);
     else if (m.t === "joined") createOther(m.player);
     else if (m.t === "left") removeOther(m.id);
-    else if (m.t === "chat") receiveChat(m.id, m.name, m.text, m.admin, m.color, m.prs);
+    else if (m.t === "chat") receiveChat(m.id, m.name, m.text, m.admin, m.color, m.prs, m.n);
+    else if (social.onMessage(m)) {} // accounts, profiles, friends and private chat (src/social.js)
+    else if (m.t === "acct") {
+      const o = others.get(m.id);
+      if (o) o.n = m.n;
+    }
     else if (m.t === "history") {
       // what was said before we arrived (also on reconnect, so start clean)
       elMsgs.replaceChildren();
-      m.messages.forEach((c) => addToHistory(c.name, c.text, c.id, c.admin, c.color, c.prs));
+      m.messages.forEach((c) => addToHistory(c.name, c.text, c.id, c.admin, c.color, c.prs, c.n));
       elMsgs.scrollTop = elMsgs.scrollHeight;
     }
     else if (m.t === "radio") receiveCommand(m.command);
@@ -3684,8 +3766,9 @@ function connect() {
       addToHistory("system", m.msg);
     }
     else if (m.t === "github-out") {
-      // the server no longer knows this session
+      // the server no longer knows this session: this browser has to log in again
       try { localStorage.removeItem("github-session"); } catch {}
+      social.sessionEnded();
     }
     else if (m.t === "admin-ok") {
       // the server accepted the password typed after /admin: keep it and reload to show the controls
@@ -3719,6 +3802,7 @@ function connect() {
           cap: m.cap,
           admin: o.admin,
           prs: o.prs,
+          n: o.n,
         };
         removeOther(m.id);
         createOther(p);
@@ -3914,16 +3998,17 @@ function showPrs(el, prs) {
   ball.style.backgroundPosition = `${(PR_TIERS.length - 1 - tier) * (100 / (PR_TIERS.length - 1))}% 0`;
   el.append(ball, prsText(prs));
 }
-function addToHistory(name, text, id, admin, color, prs = 0) {
+function addToHistory(name, text, id, admin, color, prs = 0, n = -1) {
   const d = document.createElement("div");
   d.className = admin ? "m admin" : "m";
   const s = document.createElement("small");
   s.textContent = name;
   if (prs > 0) showPrs(s.appendChild(Object.assign(document.createElement("span"), { className: "prs" })), prs);
   paintName(s, color);
-  if (IS_ADMIN && id && id !== myId && id !== "me") {
+  // a name opens that player's profile (the admin gets the kick and ban menu, with the profile in it)
+  if (id && name !== "system") {
     s.className = "mod";
-    s.addEventListener("click", (e) => openModMenu(e, id, name));
+    s.addEventListener("click", (e) => nameClicked(e, id, { name, color, prs, n }));
   }
   const t = document.createElement("span");
   if (name === "system") t.textContent = text; // textContent: no HTML from the chat
@@ -3964,7 +4049,17 @@ let IS_ADMIN = false;
 try { IS_ADMIN = !!localStorage.getItem("admin-password"); } catch {}
 const modMenu = Object.assign(document.createElement("div"), { id: "mod-menu", className: "glass", hidden: true });
 document.body.append(modMenu);
-function openModMenu(e, id, name) {
+// A click on a name: whose it is now (they may have logged in since that chat line), then the profile
+function nameClicked(e, id, seen) {
+  const mine = !id || id === myId || id === "me";
+  const o = mine ? null : others.get(id);
+  const who = mine
+    ? { ...seen, name: NAME, color: COLOR, gender: GENDER, cap: myCap(), n: social.myAccount(), online: true }
+    : { ...seen, ...(o && { name: o.name, color: o.color, gender: o.gender, cap: o.cap, n: o.n, online: true }) };
+  if (IS_ADMIN && !mine) return openModMenu(e, id, who.name, who);
+  social.openProfile(who.n ?? -1, who);
+}
+function openModMenu(e, id, name, who) {
   e.stopPropagation();
   let password = "";
   try { password = localStorage.getItem("admin-password") || ""; } catch {}
@@ -3974,6 +4069,11 @@ function openModMenu(e, id, name) {
   modMenu.replaceChildren(
     Object.assign(document.createElement("b"), { textContent: name }),
     Object.assign(document.createElement("small"), { className: "who", textContent: "…" }),
+    (() => {
+      const b = Object.assign(document.createElement("button"), { type: "button", textContent: "profile" });
+      b.addEventListener("click", () => ((modMenu.hidden = true), social.openProfile(who?.n ?? -1, who || { name })));
+      return b;
+    })(),
     ...["kick", "ban"].map((action) => {
       const b = Object.assign(document.createElement("button"), { type: "button", textContent: action });
       b.addEventListener("click", () => {
@@ -3986,7 +4086,7 @@ function openModMenu(e, id, name) {
     }),
   );
   modMenu.style.left = `${Math.min(e.clientX, innerWidth - 140)}px`;
-  modMenu.style.top = `${Math.min(e.clientY + 8, innerHeight - 110)}px`;
+  modMenu.style.top = `${Math.min(e.clientY + 8, innerHeight - 140)}px`;
   modMenu.hidden = false;
 }
 addEventListener("pointerdown", (e) => {
@@ -4012,10 +4112,9 @@ function nameTag(mesh, name, id, admin, color, prs = 0) {
       Object.assign(document.createElement("b"), { className: "contrib" }),
       Object.assign(document.createElement("span"), { className: "who" }),
     );
-    if (IS_ADMIN && id) {
-      el.classList.add("mod");
-      el.addEventListener("click", (e) => openModMenu(e, id, el.lastChild.textContent));
-    }
+    // a name opens that player's profile (yours too); the admin gets the kick and ban menu first
+    el.classList.add("mod");
+    el.addEventListener("click", (e) => nameClicked(e, id || myId, { name: el.lastChild.textContent, color: el.dataset.color }));
     document.body.append(el);
     nameTags.set(mesh, el);
   }
@@ -4045,6 +4144,25 @@ sitPrompt.addEventListener("click", (e) => {
   toggleSit();
   e.currentTarget.blur(); // give the keyboard back to the game
 });
+// The roller coaster's countdown over its station, for whoever is near it or riding: the seconds left
+// to board while the train waits, then the seconds until it is back
+const coasterSign = document.querySelector("#coaster-sign");
+const COASTER_SIGN_NEAR = 18;
+const COASTER_SIGN_AT = { x: (COASTER.station.x0 + COASTER.station.x1) / 2, z: COASTER.station.z1 };
+function updateCoasterSign() {
+  const near = Math.hypot(pos.x - COASTER_SIGN_AT.x, pos.z - COASTER_SIGN_AT.z) < COASTER_SIGN_NEAR || isCoasterSeat(mySeat);
+  const now = roomNow();
+  const board = coasterBoardLeft(now);
+  coasterSign.hidden = !fairPlaced || gamePaused || !near;
+  if (coasterSign.hidden) return;
+  const html = board ? `all aboard! leaves in <b>${board}s</b>` : `back at the station in <b>${coasterBackIn(now) || 1}s</b>`;
+  if (coasterSign.innerHTML !== html) coasterSign.innerHTML = html;
+  coasterSign.classList.toggle("go", !!board);
+  _v.set(COASTER_SIGN_AT.x, coaster.root.position.y + 7.4, COASTER_SIGN_AT.z).project(camera); // over the garland
+  coasterSign.hidden = _v.z > 1; // behind the camera
+  coasterSign.style.left = `${(_v.x * 0.5 + 0.5) * innerWidth}px`;
+  coasterSign.style.top = `${(-_v.y * 0.5 + 0.5) * innerHeight}px`;
+}
 function updateSitPrompt(seat) {
   const s = seat >= 0 && !gamePaused && !typing() && !nearBoard() && !nearCapy() && !nearCat() ? seatSpot(seat) : null;
   sitPrompt.hidden = !s;
@@ -4077,8 +4195,8 @@ function updateBubbles() {
   }
 }
 
-function receiveChat(id, name, text, admin, color, prs) {
-  addToHistory(name, text, id, admin, color, prs);
+function receiveChat(id, name, text, admin, color, prs, n) {
+  addToHistory(name, text, id, admin, color, prs, n);
   const owner = id === myId || id === "me" ? sprite : others.get(id)?.mesh;
   if (owner) showBubble(owner, text, owner !== sprite && mentionsMe(mentionParts(text)));
 }
@@ -4092,12 +4210,7 @@ document.querySelector("#chat form").addEventListener("submit", (e) => {
   if (/^\/admin$/i.test(text)) return openAdminLogin();
   // contributors: /github proves your GitHub login, and the room shows your merged pull requests
   if (/^\/github$/i.test(text)) return startGithubLogin();
-  if (/^\/github (out|logout)$/i.test(text)) {
-    const session = githubSession();
-    try { localStorage.removeItem("github-session"); } catch {}
-    if (ws?.readyState === 1) ws.send(JSON.stringify({ t: "github-out", session }));
-    return addToHistory("system", "github: logged out");
-  }
+  if (/^\/github (out|logout)$/i.test(text)) return githubLogout();
   if (/^\/logout$/i.test(text)) {
     try { localStorage.removeItem("admin-password"); } catch {}
     location.reload();
@@ -4115,6 +4228,7 @@ document.querySelector("#chat form").addEventListener("submit", (e) => {
     ws.send(JSON.stringify({ t: "mod", action: "unban", password }));
     return;
   }
+  if (social.sendChat(text)) return; // a private chat's tab is open: it goes to that friend only
   if (MULTIPLAYER && ws?.readyState === 1)
     ws.send(JSON.stringify({ t: "chat", text }));
   else receiveChat("me", NAME, text, false, COLOR); // offline: show only to me
@@ -4155,6 +4269,12 @@ const githubLogin = document.querySelector("#github-login");
 let githubPoll = 0;
 function githubSession() {
   try { return localStorage.getItem("github-session") || ""; } catch { return ""; }
+}
+function githubLogout() {
+  const session = githubSession();
+  try { localStorage.removeItem("github-session"); } catch {}
+  if (ws?.readyState === 1) ws.send(JSON.stringify({ t: "github-out", session }));
+  addToHistory("system", "github: logged out");
 }
 function startGithubLogin() {
   if (!MULTIPLAYER || ws?.readyState !== 1) return addToHistory("system", "github login needs the room: you are offline");
@@ -4262,6 +4382,19 @@ elInput.addEventListener("keydown", (e) => {
 
 // ---- Message wall ----
 const wall = setupWall({ getName: () => NAME, getGender: () => GENDER, isAdmin: () => IS_ADMIN });
+// accounts, profiles, friends and private chat
+const social = setupSocial({
+  send: (msg) => MULTIPLAYER && ws?.readyState === 1 && (ws.send(JSON.stringify(msg)), true),
+  paintName,
+  showPrs,
+  login: startGithubLogin,
+  logout: githubLogout,
+  say: (text) => addToHistory("system", text),
+  me: () => ({ name: NAME, color: COLOR, gender: GENDER, cap: myCap() }),
+  look: trainerLook,
+  elMsgs,
+  elInput,
+});
 // near the board: a prompt over it ("E" or tap to read)
 const wallPrompt = Object.assign(document.createElement("button"), { id: "wall-prompt", type: "button" });
 wallPrompt.innerHTML = MOBILE ? "tap to read the wall" : "<kbd>E</kbd> read the wall";
@@ -4664,6 +4797,8 @@ function loop() {
     dz = 0;
   }
   const run = keys.shift || stick.mag > 0.9;
+  leaveFinishedRide();
+  if (strappedIn()) (dx = 0), (dz = 0); // the move keys do nothing while the sleigh is out
   if (mySeat >= 0 && (dx || dz)) standUp(true, [dx, dz]); // any move key gets you up, off that way
   const riding = isRideSeat(mySeat);
   if (riding) {
@@ -4726,6 +4861,7 @@ function loop() {
 
   carousel.update(roomNow(), dayAmount);
   wheel.update(roomNow(), dayAmount);
+  coaster.update(roomNow(), dayAmount);
   // Riders cast no shadow and are no lamp's concern: the lamps by the pond reach the rides, and
   // someone going round would make them redraw their 6 shadow passes every frame, all night
   sprite.castShadow = !riding;
@@ -4736,6 +4872,7 @@ function loop() {
   updateNameTags();
   updateBubbles();
   updateSitPrompt(eNow === "sit" ? freeSeat : -1);
+  updateCoasterSign();
   updateWallPrompt();
   updateStonePrompt();
   requestAnimationFrame(loop);
