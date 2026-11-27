@@ -13,6 +13,7 @@ import { createCat, CATS, CAT_NEAR, CAT_SIT_MS, CAT_RIDE_MS, PHRASES as CAT_PHRA
 import { CAROUSEL, carouselSeat, createCarousel, inClearing, isCarouselSeat, onCarousel } from "./carousel.js";
 import { WHEEL, wheelSeat, createFerrisWheel, inWheelClearing, isWheelSeat, onWheel } from "./ferris-wheel.js";
 import { COASTER, coasterSeat, coasterCycle, coasterRiding, coasterBoardLeft, coasterBackIn, createCoaster, inCoasterClearing, isCoasterSeat, onCoaster } from "./roller-coaster.js";
+import { createAmbience } from "./ambience.js";
 
 // ---- Asset config (change here to use other files) ----
 const TOWN = {
@@ -244,6 +245,11 @@ Object.assign(sun.shadow.camera, {
 sun.shadow.bias = -0.0005;
 sun.shadow.normalBias = 0.05;
 scene.add(sun);
+
+const ambience = createAmbience();
+window.unlockAmbience = () => ambience.unlock();
+window.isAmbienceEnabled = () => ambience.isEnabled();
+window.setAmbience = (on) => ambience.setEnabled(on);
 
 function resize() {
   renderer.setSize(innerWidth, innerHeight);
@@ -4660,6 +4666,9 @@ function loop() {
   carousel.update(roomNow(), dayAmount);
   wheel.update(roomNow(), dayAmount);
   coaster.update(roomNow(), dayAmount);
+  const pondDist = pondBox ? pondBox.distanceToPoint(pos) : Math.hypot(pos.x, pos.z - 34);
+  const pondFactor = THREE.MathUtils.clamp(1 - pondDist / 26, 0, 1);
+  ambience.update({ rainAmount, dayAmount, pondFactor, paused: gamePaused });
   // Riders cast no shadow and are no lamp's concern: the lamps by the pond reach the rides, and
   // someone going round would make them redraw their 6 shadow passes every frame, all night
   sprite.castShadow = !riding;
