@@ -3239,6 +3239,7 @@ function changeName(newName) {
   } catch {}
   if (MULTIPLAYER && ws?.readyState === 1)
     ws.send(JSON.stringify({ t: "name", name: NAME }));
+  if (MULTIPLAYER) wall.rename();
 }
 // the enter/pause screen has its own name field: fill it in and apply it on enter
 window.applyName = changeName;
