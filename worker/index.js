@@ -3,12 +3,17 @@
 //   client -> server: { t: "hello", name, gender, color, cap, x, z, dir } | { t: "pos", x, z, dir, step, run }
 //                     { t: "chat", text } | { t: "name", name } | { t: "gender", gender, cap }
 //                     { t: "color", color }   (name colour: one of NAME_COLORS)
-//                     { t: "sit", seat, n }   (bench seats 0..15, tic-tac-toe seats 16..17, or -1 to stand; n numbers the request)
+//                     { t: "sit", seat, n }   (bench seat 0..15, carousel horse 16..23, Ferris wheel gondola 24..31, roller coaster 32..36 while it waits at the station, tic-tac-toe chairs 37..38, or -1 to stand; n numbers the request)
 //                     { t: "ttt", action: "move", cell, rev } | { t: "ttt", action: "rematch", rev }
 //                     { t: "capy" }   (feed the capybara)
 //                     { t: "stone", pts: [[x, z], ...] }   (a stone skipped on the pond: where it touched the water, 1 to 6)
 //                     { t: "ground", on }   (sit on the ground, or get up)
 //                     { t: "fish", on, x, z }   (your fishing line is out, the bobber at x, z; or back in)
+//                     { t: "cat", id }   (feed one of the town cats)
+//                     { t: "github-start" }   (log in with GitHub: ask for a code to type at github.com/login/device)
+//                     { t: "github-poll" }   (has the player typed the code yet?)
+//                     { t: "github", session }   (on reconnect: the session a login gave this browser)
+//                     { t: "github-out" }   (forget that session)
 //                     { t: "radio", idx, password }   (admin)
 //                     { t: "auth", password, quiet }   (admin login: admin-ok or an error; quiet = on reconnect, no admin-ok)
 //                     { t: "who", id, password }   (admin: who is this player)
@@ -28,6 +33,14 @@
 //                     { t: "capy", at, until, lost, phrase }   (the capybara was fed: it sits from at to until, room clock;
 //                                                               lost = all its sitting before; phrase picks what it says.
 //                                                               Also sent on join, without phrase)
+//                     { t: "cat", id, at, until, lost, phrase }   (same clock-pause feeding state, per cat id)
+//                     { t: "cat-ride", id, playerId, at, until, phrase }   (the room picked a player for that cat to
+//                                                               sit on their head from at to until; playerId null ends it early.
+//                                                               Only the server starts rides. Also sent on join, without phrase)
+//                     { t: "github-code", code, url, every, until }   (type code at url; ask again every `every` seconds)
+//                     { t: "github-ok", session, login, prs } | { t: "github-fail", msg } | { t: "github-out" }
+//                     { t: "contrib", id, prs }   (that player is a contributor with prs merged pull requests;
+//                                                  players and chat also carry prs)
 //                     { t: "history", messages: [{ id, name, text, at }] } (on join)
 //                     { t: "notice", msg } | { t: "rename", name } (your name was refused)
 //                     { t: "who", id, tag, names, sameTag } (admin only)
@@ -75,7 +88,14 @@ const MAX_BYTES = 1024;
 const COORD_LIMIT = 500;
 const ADMIN_ATTEMPTS = 20; // per IP, then locked for ADMIN_LOCK_MS (the "other" rate limit already caps tries at ~1/s)
 const ADMIN_LOCK_MS = 60_000;
-const MAX_SEATS = 18; // benches 0..15 (bench * 2 + side), tic-tac-toe chairs 16 (X) and 17 (O)
+const MAX_SEATS = TTT_SEAT_O + 1; // bench seats 0..15 (bench * 2 + side), carousel horses 16..23, Ferris wheel gondolas 24..31, roller coaster 32..36, tic-tac-toe chairs 37..38
+// The roller coaster runs in cycles by the room's clock (src/roller-coaster.js): it waits at the station
+// for BOARD_MS, then rides for RIDE_MS. Its seats can be taken only while it waits (plus a little for the trip).
+const COASTER_SEATS = [32, 37];
+const COASTER_BOARD_MS = 12_000;
+const COASTER_CYCLE_MS = COASTER_BOARD_MS + 30_000;
+const COASTER_LATE_MS = 1_500;
+const coasterBoarding = (now) => now % COASTER_CYCLE_MS < COASTER_BOARD_MS + COASTER_LATE_MS;
 const MAX_PER_IP = 3; // tabs/devices behind one IP
 const KICK_MS = 10 * 60_000; // kick = a short ban, so the client's auto-reconnect doesn't undo it
 const BAN_MS = 7 * 24 * 60 * 60_000;
@@ -101,13 +121,37 @@ const NOTE_COLORS = ["cream", "yellow", "pink", "blue", "green", "lilac"];
 // the capybara: fed, it sits for a while, and then walks a little before it can be fed again
 const CAPY_SIT_MS = 6000;
 const CAPY_REST_MS = 3000;
+// cats: same clock-pause sync per id so multiple cats can be added from config
+const CAT_IDS = ["black", "orange", "calico", "tuxedo", "siamese"];
+const CAT_SIT_MS = 6000;
+const CAT_REST_MS = 3000;
+// now and then (on the heartbeat alarm) a cat climbs onto a random online player's head
+const CAT_RIDE_MS = 18_000;
+const CAT_RIDE_EVERY_MS = 90_000;
+const CAT_RIDE_CHANCE = 0.65;
 const LIKES_PER_IP = 3; // on one note: a house can share an IP, a like farm can't hide behind fresh wall keys
 const LIKES_MAX = 2000; // likers kept per note (one storage value)
 const NOTE_ID = /^note:\d{15}-[a-z0-9]{6}$/;
 const AFTER_EVERY_NOTE = "note:999999999999999-zzzzzz"; // a cursor above every note id
 const topKey = (likes, id) => `top:${String(likes).padStart(6, "0")}:${id}`;
 // rate buckets: capacity, refill per second
-const RATES = { pos: [30, 20], chat: [8, 1], sit: [20, 6], ttt: [15, 4], like: [30, 0.5], other: [10, 1] };
+const RATES = { pos: [30, 20], chat: [8, 1], sit: [20, 6], ttt: [15, 4], like: [30, 0.5], github: [4, 1 / 30], other: [10, 1] };
+// contributors: a player proves their GitHub login (OAuth device flow, GITHUB_CLIENT_ID) and the room counts
+// their merged pull requests in GITHUB_REPO. GitHub's token is used once and never kept: the browser gets a
+// random session of the room's own, stored here only as a hash.
+const GH_WEB = "https://github.com";
+const GH_API = "https://api.github.com";
+const GH_HEADERS = { Accept: "application/json", "User-Agent": "lofi-lobby" };
+const GH_SESSION = /^[a-f0-9]{48}$/;
+const GH_LOGIN = /^[a-z0-9-]{1,39}$/;
+const GH_REPO = /^[\w.-]{1,100}\/[\w.-]{1,100}$/;
+const GH_COUNTS_FRESH_MS = 6 * 3600_000; // the counts are read again after this long
+const GH_RETRY_MS = 10 * 60_000; // and after a failed read, not before this
+const GH_PAGES = 10; // closed pull requests read, 100 a page
+const sessionKey = async (session) => {
+  const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode("github|" + session));
+  return "gh:" + [...new Uint8Array(hash)].map((b) => b.toString(16).padStart(2, "0")).join("");
+};
 const HEARTBEAT_CHECK_MS = 60_000;
 const HEARTBEAT_TIMEOUT_MS = 120_000; // > 60s background tab timer throttling
 const HELLO_TIMEOUT_MS = 15_000; // pre-hello sockets cannot hold room slots via edge pings
@@ -221,6 +265,8 @@ export class Room {
     this.spam = new Map(); // ip -> { strikes, mutedUntil, lastStrike, lastText, lastAt }
     this.leftSockets = new WeakSet();
     this.tttQueue = Promise.resolve();
+    this.ghBusy = new Set(); // player ids with a GitHub call in flight
+    this.ghTriedAt = 0; // last read of the pull requests, good or bad
     this.state.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
   }
 
@@ -520,6 +566,22 @@ export class Room {
     if (radio) server.send(JSON.stringify({ t: "radio", command: radio }));
     const capy = await this.state.storage.get("capy");
     if (capy) server.send(JSON.stringify({ t: "capy", ...capy }));
+    const cats = await this.state.storage.get("cats");
+    if (cats && typeof cats === "object") {
+      for (const id of CAT_IDS) {
+        if (cats[id]) server.send(JSON.stringify({ t: "cat", id, ...cats[id] }));
+      }
+    }
+    const rides = await this.state.storage.get("cat-rides");
+    if (rides && typeof rides === "object") {
+      const online = new Set(this.players().map((q) => q.id));
+      for (const id of CAT_IDS) {
+        const r = rides[id];
+        if (r?.playerId && r.until > Date.now() && online.has(r.playerId)) {
+          server.send(JSON.stringify({ t: "cat-ride", id, playerId: r.playerId, at: r.at, until: r.until }));
+        }
+      }
+    }
     const messages = await this.history();
     if (messages.length) server.send(JSON.stringify({ t: "history", messages }));
     server.send(JSON.stringify({ t: "state", players: this.players().filter((p) => p.id !== id) }));
@@ -532,7 +594,7 @@ export class Room {
 
   // only each player's public fields (never the IP)
   public(p) {
-    return { id: p.id, name: p.name, gender: p.gender, color: p.color || "", cap: p.cap ?? -1, x: p.x, z: p.z, dir: p.dir, step: p.step, seat: p.seat ?? -1, hold: p.hold | 0, ground: !!p.ground, fish: p.fish || null, admin: !!p.admin };
+    return { id: p.id, name: p.name, gender: p.gender, color: p.color || "", cap: p.cap ?? -1, x: p.x, z: p.z, dir: p.dir, step: p.step, seat: p.seat ?? -1, hold: p.hold | 0, ground: !!p.ground, fish: p.fish || null, admin: !!p.admin, prs: p.prs | 0 };
   }
   players() {
     return this.openSockets()
@@ -600,7 +662,7 @@ export class Room {
     const p = ws.deserializeAttachment();
     if (!p) return;
     if (!p.joinedAt && m.t !== "hello") return;
-    const type = m.t === "pos" || m.t === "chat" || m.t === "sit" || m.t === "ttt" ? m.t : "other";
+    const type = m.t === "pos" || m.t === "chat" || m.t === "sit" || m.t === "ttt" ? m.t : m.t === "github-start" ? "github" : "other";
     // the seat the room really has for this player, tagged with the request it answers
     const seatReply = (seat = p.seat ?? -1) => ws.send(JSON.stringify({ t: "seat", id: p.id, seat, n: Number.isSafeInteger(m.n) ? m.n : 0 }));
     if (!this.allowed(p, type)) {
@@ -661,6 +723,11 @@ export class Room {
           seatReply(prevSeat);
           return;
         }
+        // Nobody boards the roller coaster while the train is out on the track.
+        if (seat >= COASTER_SEATS[0] && seat < COASTER_SEATS[1] && seat !== prevSeat && !coasterBoarding(Date.now())) {
+          seatReply(prevSeat);
+          return;
+        }
         current.seat = seat;
         ws.serializeAttachment(current);
         // not back to the sender: it already moved, and a late echo would undo a quick sit/stand
@@ -709,11 +776,33 @@ export class Room {
       p.fish = m.on === true ? [number(m.x), number(m.z)] : null;
       ws.serializeAttachment(p);
       this.broadcast({ t: "fish", id: p.id, fish: p.fish }, ws);
+    } else if (m.t === "cat") {
+      if (typeof m.id !== "string" || !CAT_IDS.includes(m.id)) return;
+      const now = Date.now();
+      const cats = (await this.state.storage.get("cats")) || {};
+      const c = cats[m.id] || { at: 0, until: 0, lost: 0 };
+      if (now < c.until + CAT_REST_MS) return;
+      // a cat riding someone's head cannot be fed until it hops back down
+      const rides = (await this.state.storage.get("cat-rides")) || {};
+      if (rides[m.id]?.playerId && rides[m.id].until > now) return;
+      const fed = { at: now, until: now + CAT_SIT_MS, lost: c.lost + (c.until - c.at) };
+      cats[m.id] = fed;
+      await this.state.storage.put("cats", cats);
+      this.broadcast({ t: "cat", id: m.id, ...fed, phrase: Math.floor(Math.random() * 1000) });
     } else if (m.t === "hold") {
       // what the player holds; the client draws it on someone seated, and the coffee or cigarette also on someone standing still
       p.hold = [1, 2, 3, 4].includes(m.item) ? m.item : 0;
       ws.serializeAttachment(p);
       this.broadcast({ t: "hold", id: p.id, item: p.hold }, ws);
+    } else if (m.t === "github-start") {
+      await this.githubStart(ws);
+    } else if (m.t === "github-poll") {
+      await this.githubPoll(ws);
+    } else if (m.t === "github") {
+      await this.githubResume(ws, m.session);
+    } else if (m.t === "github-out") {
+      if (typeof m.session === "string" && GH_SESSION.test(m.session)) await this.state.storage.delete(await sessionKey(m.session));
+      this.setContributor(ws, "");
     } else if (m.t === "auth") {
       if (!(await this.isAdmin(ws, p, m.password))) return;
       // everyone sees who the admin is (badge over the name, colour in the chat)
@@ -751,10 +840,134 @@ export class Room {
       if (s.repeats > REPEAT_LIMIT) return this.strike(ws, p.ip);
       s.lastText = text;
       s.lastAt = now;
-      const msg = { id: p.id, name: p.name, text, at: now, ...(p.color && { color: p.color }), ...(p.admin && { admin: true }) };
+      const msg = { id: p.id, name: p.name, text, at: now, ...(p.color && { color: p.color }), ...(p.admin && { admin: true }), ...(p.prs > 0 && { prs: p.prs }) };
       this.broadcast({ t: "chat", ...msg });
       this.stat("chat", p);
       await this.saveHistory([...(await this.history()), msg]);
+    }
+  }
+
+  // ---- contributors (GitHub login) ----
+  // Step 1 of the device flow: GitHub gives a short code the player types at github.com/login/device.
+  async githubStart(ws) {
+    const fail = (msg) => ws.send(JSON.stringify({ t: "github-fail", msg }));
+    const id = ws.deserializeAttachment()?.id;
+    if (!this.env.GITHUB_CLIENT_ID) return fail("github login is not set up on this server");
+    if (!id || this.ghBusy.has(id)) return;
+    this.ghBusy.add(id);
+    let r = null;
+    try {
+      const res = await fetch(GH_WEB + "/login/device/code", {
+        method: "POST",
+        headers: { ...GH_HEADERS, "Content-Type": "application/json" },
+        body: JSON.stringify({ client_id: this.env.GITHUB_CLIENT_ID }),
+      });
+      r = await res.json();
+    } catch {} finally { this.ghBusy.delete(id); }
+    if (typeof r?.device_code !== "string" || r.device_code.length > 100 || typeof r.user_code !== "string") return fail("github did not answer, try again");
+    // the calls above took a while: read the player again, not a copy from before
+    const p = ws.deserializeAttachment();
+    if (!p || p.left) return;
+    const every = Math.min(30, Math.max(5, r.interval | 0));
+    p.ghDevice = r.device_code;
+    p.ghUntil = Date.now() + Math.min(900, Math.max(60, r.expires_in | 0)) * 1000;
+    ws.serializeAttachment(p);
+    ws.send(JSON.stringify({ t: "github-code", code: cleanText(r.user_code, 12), url: GH_WEB + "/login/device", every, until: p.ghUntil }));
+  }
+  // Step 2: ask GitHub if the code was typed. Then the token says who the player is, reads the pull
+  // requests once and is thrown away; the browser keeps a session of the room's own.
+  async githubPoll(ws) {
+    const first = ws.deserializeAttachment();
+    if (!first?.ghDevice || this.ghBusy.has(first.id)) return;
+    const end = (msg) => {
+      const p = ws.deserializeAttachment();
+      if (p) {
+        delete p.ghDevice;
+        delete p.ghUntil;
+        ws.serializeAttachment(p);
+      }
+      if (msg) ws.send(JSON.stringify({ t: "github-fail", msg }));
+    };
+    if (Date.now() > first.ghUntil) return end("the code expired, type /github again");
+    this.ghBusy.add(first.id);
+    try {
+      const r = await (await fetch(GH_WEB + "/login/oauth/access_token", {
+        method: "POST",
+        headers: { ...GH_HEADERS, "Content-Type": "application/json" },
+        body: JSON.stringify({ client_id: this.env.GITHUB_CLIENT_ID, device_code: first.ghDevice, grant_type: "urn:ietf:params:oauth:grant-type:device_code" }),
+      })).json();
+      if (r?.error === "authorization_pending" || r?.error === "slow_down") return;
+      if (typeof r?.access_token !== "string") return end(r?.error === "access_denied" ? "github login cancelled" : "github login failed, type /github again");
+      const auth = { ...GH_HEADERS, Authorization: "Bearer " + r.access_token };
+      const user = await (await fetch(GH_API + "/user", { headers: auth })).json();
+      const login = typeof user?.login === "string" ? user.login.toLowerCase() : "";
+      if (!GH_LOGIN.test(login)) return end("github login failed, type /github again");
+      await this.readContributors(auth);
+      const session = [...crypto.getRandomValues(new Uint8Array(24))].map((b) => b.toString(16).padStart(2, "0")).join("");
+      await this.state.storage.put(await sessionKey(session), { login, at: Date.now() });
+      end();
+      const prs = await this.setContributor(ws, login);
+      ws.send(JSON.stringify({ t: "github-ok", session, login, prs }));
+    } catch {
+      // GitHub is slow or down: the player keeps asking until the code expires
+    } finally {
+      this.ghBusy.delete(first.id);
+    }
+  }
+  // A browser that logged in before comes back with its session.
+  async githubResume(ws, session) {
+    if (typeof session !== "string" || !GH_SESSION.test(session)) return;
+    const saved = await this.state.storage.get(await sessionKey(session));
+    if (!GH_LOGIN.test(saved?.login || "")) return void ws.send(JSON.stringify({ t: "github-out" }));
+    await this.setContributor(ws, saved.login);
+  }
+  // Whose connection this is on GitHub ("" = nobody) and how many merged pull requests that is; everyone is told.
+  async setContributor(ws, login) {
+    const counts = login ? await this.contributors() : {};
+    const p = ws.deserializeAttachment();
+    if (!p || p.left) return 0;
+    const before = p.prs | 0;
+    p.gh = login;
+    p.prs = Math.min(9999, counts[login] | 0);
+    ws.serializeAttachment(p);
+    if (p.prs !== before) this.broadcast({ t: "contrib", id: p.id, prs: p.prs });
+    return p.prs;
+  }
+  // { login: merged pull requests }, from storage; read again from GitHub in the background when it gets old
+  // or after a deploy
+  async contributors() {
+    const saved = (await this.state.storage.get("contributors")) || { counts: {}, at: 0 };
+    // old, or counted by another deploy: a deploy often follows a merge, so the first read after one is fresh
+    const stale = Date.now() - saved.at > GH_COUNTS_FRESH_MS || (saved.v || "") !== (this.env.VERSION?.id || "");
+    if (stale && Date.now() - this.ghTriedAt > GH_RETRY_MS) this.state.waitUntil(this.readContributors().catch(() => {}));
+    return saved.counts;
+  }
+  // Counts the merged pull requests of GITHUB_REPO per author. With a player's token on a login, without one
+  // otherwise (public data; GitHub allows few such calls an hour, hence the cache). A failed read keeps the old counts.
+  async readContributors(headers = GH_HEADERS) {
+    const repo = this.env.GITHUB_REPO || "";
+    if (!GH_REPO.test(repo)) return;
+    this.ghTriedAt = Date.now();
+    const counts = {};
+    for (let page = 1; page <= GH_PAGES; page++) {
+      const res = await fetch(`${GH_API}/repos/${repo}/pulls?state=closed&per_page=100&page=${page}`, { headers });
+      if (!res.ok) return;
+      const list = await res.json();
+      if (!Array.isArray(list)) return;
+      for (const pr of list) {
+        const login = typeof pr?.user?.login === "string" ? pr.user.login.toLowerCase() : "";
+        if (pr?.merged_at && GH_LOGIN.test(login)) counts[login] = (counts[login] || 0) + 1;
+      }
+      if (list.length < 100) break;
+    }
+    await this.state.storage.put("contributors", { counts, at: Date.now(), v: this.env.VERSION?.id || "" });
+    // players already in the room get their new count
+    for (const ws of this.openSockets()) {
+      const p = ws.deserializeAttachment();
+      if (!p?.gh || p.left || (p.prs | 0) === (counts[p.gh] | 0)) continue;
+      p.prs = Math.min(9999, counts[p.gh] | 0);
+      ws.serializeAttachment(p);
+      this.broadcast({ t: "contrib", id: p.id, prs: p.prs });
     }
   }
 
@@ -903,8 +1116,53 @@ export class Room {
       if (now - lastSeen > HEARTBEAT_TIMEOUT_MS) stale.push(ws);
     }
     for (const ws of stale) this.leave(ws, 1000, "heartbeat timeout");
+    await this.maybeStartCatRide(Date.now());
     if (this.openSockets().length > 0) await this.state.storage.setAlarm(Date.now() + HEARTBEAT_CHECK_MS);
     await this.tttQueue;
+  }
+  // Server-only cat-on-head lottery: picks a random online player on the heartbeat alarm,
+  // avoiding players already carrying another cat and launching at most one new ride per tick.
+  async maybeStartCatRide(now) {
+    const players = this.players();
+    if (!players.length) return;
+    const rides = (await this.state.storage.get("cat-rides")) || {};
+    const cats = (await this.state.storage.get("cats")) || {};
+    const occupied = new Set(
+      Object.values(rides)
+        .filter((r) => r?.playerId && r.until > now)
+        .map((r) => r.playerId),
+    );
+    const available = players.filter((p) => !occupied.has(p.id));
+    if (!available.length) return;
+    let changed = false;
+    for (const id of CAT_IDS) {
+      const r = rides[id];
+      if (r && now < r.until + CAT_RIDE_EVERY_MS) continue;
+      if (cats[id]?.until > now) continue;
+      if (Math.random() > CAT_RIDE_CHANCE) continue;
+      const pick = available[Math.floor(Math.random() * available.length)];
+      const ride = { playerId: pick.id, at: now, until: now + CAT_RIDE_MS };
+      rides[id] = ride;
+      changed = true;
+      this.broadcast({ t: "cat-ride", id, ...ride, phrase: Math.floor(Math.random() * 1000) });
+      break;
+    }
+    if (changed) await this.state.storage.put("cat-rides", rides);
+  }
+  async clearCatRideFor(playerId) {
+    const rides = await this.state.storage.get("cat-rides");
+    if (!rides || typeof rides !== "object") return;
+    const now = Date.now();
+    let changed = false;
+    for (const id of CAT_IDS) {
+      const r = rides[id];
+      if (r?.playerId === playerId && r.until > now) {
+        rides[id] = { playerId: null, at: r.at, until: now };
+        changed = true;
+        this.broadcast({ t: "cat-ride", id, playerId: null, at: now, until: now });
+      }
+    }
+    if (changed) await this.state.storage.put("cat-rides", rides);
   }
   async leaveByBeacon(req) {
     const bytes = req.headers.get("Content-Length");
@@ -953,7 +1211,10 @@ export class Room {
       if (p.joinedAt) this.stat("leave", p, [Math.round((Date.now() - p.joinedAt) / 1000)]);
       for (const k of this.buckets.keys()) if (k.startsWith(p.id + "|")) this.buckets.delete(k);
       safeClose(ws, code, reason);
-      if (p.joinedAt) this.broadcast({ t: "left", id: p.id }, ws);
+      if (p.joinedAt) {
+        this.broadcast({ t: "left", id: p.id }, ws);
+        this.clearCatRideFor(p.id).catch(() => {});
+      }
       if (wasTttSeat) {
         const work = this.queueTtt(() => this.syncTttAndBroadcast());
         this.state.waitUntil?.(work);

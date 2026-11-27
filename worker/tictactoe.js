@@ -1,5 +1,5 @@
-export const TTT_SEAT_X = 16;
-export const TTT_SEAT_O = 17;
+export const TTT_SEAT_X = 37;
+export const TTT_SEAT_O = 38;
 export const isTttSeat = (seat) => seat === TTT_SEAT_X || seat === TTT_SEAT_O;
 
 export const WIN_LINES = Object.freeze(
