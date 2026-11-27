@@ -35,11 +35,13 @@ Open the URL, pick a trainer and press **enter the room**: the click is what let
 | M or the speaker button | mute the radio for you |
 | Phone: drag anywhere | walk (push to the edge of the ring to run); **chat** button opens the chat |
 | Enter | open the chat; it stays open after sending · Esc or Enter on an empty box goes back to walking |
+| @ in the chat | mention someone in the room (Tab or Enter picks the name); everyone reads it, but it is highlighted for them |
 | G | switch trainer |
 | N or the day/night button | switch between day and night for you |
 | R or the rain button | turn the rain on or off for you (greyer sky by day) |
 | F or the full screen button | enter or leave full screen (hidden where the browser can't, e.g. iPhone) |
 | B, or E (or a tap on the note) by the board | open the message wall: read the notes, like them and pin your own (most liked first, or newest) |
+| E (or a tap on the note) at the pond's edge, facing the water | fish: choose how many minutes to focus; when the time is up a fish bites and you have a minute to press E again and pull it in |
 | Space | pause the music for you only |
 
 - There are two scenes, each its own room: the town (`lobby`) and the lake (`lago`), reached by the path at the top of the town. The server refuses any other room name; the list is [`src/scenes.js`](src/scenes.js).
@@ -57,6 +59,7 @@ Open the URL, pick a trainer and press **enter the room**: the click is what let
 | Music | YouTube player with no controls; position = clock time since a fixed start, or since the last admin command kept in the object's storage | [ADR 002](docs/adr/002-radio-synced-by-the-clock.md) |
 | Rendering | three.js: sprites as lit planes in a 3D scene, real shadows from each lamp, **every sprite pixel takes the depth of the feet** | [ADR 003](docs/adr/003-sprites-take-the-depth-of-the-feet.md) |
 | Assets | The repo and live site include the **Twinleaf FBX town, its textures and both trainer sheets** from `public/assets/`; code-generated fallbacks remain for load failures | [ADR 005](docs/adr/005-version-and-deploy-game-assets.md) |
+| Presence | `pagehide` beacon (`/api/leave` with per-socket token), zero-wake `ping`/`pong` heartbeat + DO `alarm()`, and strict pre-`hello` gating | [ADR 006](docs/adr/006-reliable-disconnect-and-stale-socket-cleanup.md) |
 | Message wall | Notes go over HTTP (`/api/notes`), not the WebSocket, and live in the room object's storage: **one key per note**, so the wall has no size limit and is read a page at a time | [SECURITY.md](SECURITY.md) |
 | Admin | Secret `ADMIN_PASSWORD`, checked in the room object in constant time, few tries per connection | [SECURITY.md](SECURITY.md) |
 

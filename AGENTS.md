@@ -19,7 +19,7 @@ npm run deploy-your-own
 ## Working on the code
 
 - Check changes in the browser; anything multiplayer in two tabs.
-- Design decisions are ADRs in `docs/adr/`; the low-level design is the Architecture section of the `README.md`.
+- Design decisions are ADRs in `docs/adr/`; the low-level design is the Architecture section of the `README.md`. Keep ADR entries in the `README.md` Architecture table ordered by ascending ADR number (before non-ADR references such as `SECURITY.md`).
 - The server trusts nothing from the client: keep the limits and cleaning in `worker/index.js` ([SECURITY.md](SECURITY.md)).
 - Keep the town model, textures and trainer sheets in `public/assets/` versioned and included in production builds; the code-generated fallbacks remain for load failures ([ADR 005](docs/adr/005-version-and-deploy-game-assets.md)).
 - Secrets live only in Worker secrets and the git-ignored `.dev.vars`.
