@@ -77,9 +77,18 @@ export const LIFT_PHRASES = [
 ];
 // the line said `k` beats into a hold that started with `phrase` (everyone works out the same one)
 export const sayAt = (phrase, k) => LIFT_PHRASES[(Math.abs(phrase | 0) + k * 5) % LIFT_PHRASES.length];
+// what a thrown cat says when it lands (on its feet, and deeply offended)
 export const THROW_PHRASES = [
-  "Caí de pé. Como sempre. Nota 10.",
-  "Mrrrp! De novo! …mentira, nunca mais.",
-  "Voei mais que o seu sprint planejado.",
-  "Aterrissagem perfeita. Ninguém viu nada.",
+  "Uau. Que força. Vou contar pros outros gatos, eles vão rir muito.",
+  "Parabéns, você arremessou algo que não te ama. De novo.",
+  "Pousei de pé, óbvio. Você que deveria se preocupar com onde dorme hoje.",
+  "Anotado. Seu teclado agora é meu, por tempo indeterminado.",
+  "Ah, sim, a clássica demonstração de afeto humano: violência.",
+  "Que lindo. Faz isso com o seu chefe também ou só com quem não tem polegar?",
+  "Considere seu sapato oficialmente amaldiçoado.",
+  "Nota 3. A execução foi fraca, mas o arrependimento vai ser excelente.",
+  "Interessante. Eu também sei derrubar coisas da mesa. Aguarde.",
+  "Você chama isso de arremesso? Já fui jogado melhor por uma criança de quatro anos.",
+  "Tudo bem. Eu não guardo rancor. Eu guardo uma lista.",
+  "Que experiência enriquecedora. Para você, que vai acordar com um presente no travesseiro.",
 ];
