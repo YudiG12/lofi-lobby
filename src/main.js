@@ -8,6 +8,7 @@ import { createStones } from "./stones.js";
 import { addSitFrames, sitFramePos } from "./ground-sit.js";
 import { createCapybara, CAPY_NEAR, CAPY_RADIUS, PHRASES as CAPY_PHRASES } from "./capybara.js";
 import { createOwl } from "./owl.js";
+import { createFrog, createLilyPad } from "./frog.js";
 import { createFishing, createFishingGear, FISH_NEAR, FISH_LEAVE } from "./fishing.js";
 import { createCat, CATS, CAT_NEAR, CAT_SIT_MS, CAT_RIDE_MS, PHRASES as CAT_PHRASES, RIDE_PHRASES as CAT_RIDE_PHRASES } from "./cat.js";
 import { CAROUSEL, carouselSeat, createCarousel, inClearing, isCarouselSeat, onCarousel } from "./carousel.js";
@@ -339,6 +340,7 @@ function prepareTown(fbx) {
     townMeshes = [];
     fbx.traverse((o) => o.isMesh && townMeshes.push(o));
     computePondBox();
+    placeLilies();
     placeFair(); // before the lamps, benches and capybara look for open ground around it
     fbx.traverse((o) => {
       if (o.isMesh && /mailbox|sign|fence/i.test(o.name))
@@ -1748,6 +1750,31 @@ function placeOwl() {
     [new THREE.Vector3(b.x, b.y + 6.85, b.z), ...posts.map((p) => p.position.clone().add(new THREE.Vector3(0, 9.55, 0)))],
     performance.now(),
   );
+}
+
+// ---- Water lilies and a frog hopping between them (the pad it sits on comes from the room's clock) ----
+// [x, z, radius], from the pond's middle; the first two have a flower
+const LILY_PADS = [[-6, -2.5, 1.4], [-2.5, 1.5, 1.1], [1.5, -2, 1.5], [5.5, 1, 1.3], [-6.5, 2.8, 1], [2.5, 3.2, 1], [7, -3, 1.1]];
+const lilyPads = []; // where the frog lands on each, its feet on the pad
+const frog = createFrog(catHash);
+scene.add(frog.mesh);
+function placeLilies() {
+  if (!pondBox || lilyPads.length) return;
+  const c = pondBox.getCenter(new THREE.Vector3());
+  LILY_PADS.forEach(([dx, dz, r], i) => {
+    const x = c.x + dx,
+      z = c.z + dz,
+      y = waterY(x, z);
+    if (y === null) return;
+    const pad = createLilyPad(r, i < 2);
+    pad.position.set(x, y + 0.03, z);
+    scene.add(pad);
+    lilyPads.push(new THREE.Vector3(x, y + 0.05, z));
+  });
+}
+function updateFrog() {
+  frog.update(roomNow(), lilyPads);
+  frog.mesh.rotation.set(camera.rotation.x * 0.5, 0, 0); // faces the camera like the trainers
 }
 
 // ---- Capybara (middle of town; E feeds it) ----
@@ -4650,6 +4677,7 @@ function loop() {
   updateCapy();
   owl.update(performance.now(), pos);
   owl.mesh.rotation.set(camera.rotation.x * 0.5, 0, 0); // faces the camera like the trainers
+  updateFrog();
   updateFishing();
   updateCats();
   updateOcclusion();
