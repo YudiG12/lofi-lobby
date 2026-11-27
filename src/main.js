@@ -2605,17 +2605,47 @@ function generateOriginalTrainer(gender = "male", cap = null) {
   });
   return withSitFrames(cv, GRID);
 }
+// A trainer is a flat billboard facing the camera, so a lamp beside or a little behind it (the
+// pond lamps, for whoever sits on the benches between them) reaches its face edge-on and so lit it
+// hardly at all. For the lamps only (point lights), the sprite takes their light "wrapped": light
+// from the front counts in full, from the side about a third, and only from right behind nothing.
+// The moon (sun) and the sky light it as before.
+const LAMP_WRAP = 0.5;
+function litAround(material) {
+  material.onBeforeCompile = (shader) => {
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        "#include <lights_lambert_pars_fragment>",
+        `#include <lights_lambert_pars_fragment>
+void RE_Direct_Around( const in IncidentLight directLight, const in vec3 geometryPosition, const in vec3 geometryNormal, const in vec3 geometryViewDir, const in vec3 geometryClearcoatNormal, const in LambertMaterial material, inout ReflectedLight reflectedLight ) {
+  float dotNL = saturate( ( dot( geometryNormal, directLight.direction ) + ${LAMP_WRAP.toFixed(2)} ) / ${(1 + LAMP_WRAP).toFixed(2)} );
+  reflectedLight.directDiffuse += dotNL * directLight.color * BRDF_Lambert( material.diffuseColor );
+}`,
+      )
+      .replace(
+        "#include <lights_fragment_begin>",
+        THREE.ShaderChunk.lights_fragment_begin.replace(
+          /(NUM_POINT_LIGHTS > 0[\s\S]*?)RE_Direct\( directLight/,
+          "$1RE_Direct_Around( directLight",
+        ),
+      );
+  };
+  material.customProgramCacheKey = () => "lit-around";
+  return material;
+}
 // Lit "billboard" plane: receives lamp light and casts a shadow
 // with the sprite's cutout (alphaTest on the depth materials too).
 const characterGeo = new THREE.PlaneGeometry(1, 1);
 characterGeo.translate(0, 0.45, 0); // feet near the origin
 const sprite = new THREE.Mesh(
   characterGeo,
-  new THREE.MeshLambertMaterial({
-    map: sheetTex,
-    alphaTest: 0.5,
-    side: THREE.DoubleSide,
-  }),
+  litAround(
+    new THREE.MeshLambertMaterial({
+      map: sheetTex,
+      alphaTest: 0.5,
+      side: THREE.DoubleSide,
+    }),
+  ),
 );
 sprite.customDepthMaterial = new THREE.MeshDepthMaterial({
   map: sheetTex,
@@ -2697,7 +2727,9 @@ function useFeetDepth(mesh, feet = new THREE.Vector3(), order = 10) {
   mesh.renderOrder = order;
   mesh.material.depthTest = true;
   mesh.material.depthWrite = true;
-  mesh.material.onBeforeCompile = (shader) => {
+  const before = mesh.material.onBeforeCompile; // a trainer's lamp light (litAround)
+  mesh.material.onBeforeCompile = (shader, renderer) => {
+    before.call(mesh.material, shader, renderer);
     shader.uniforms.uFeet = uFeet;
     shader.vertexShader = shader.vertexShader
       .replace("#include <common>", "#include <common>\nuniform vec3 uFeet;")
@@ -3379,11 +3411,13 @@ function createOther(p) {
   tex.colorSpace = THREE.SRGBColorSpace;
   const mesh = new THREE.Mesh(
     characterGeo,
-    new THREE.MeshLambertMaterial({
-      map: tex,
-      alphaTest: 0.5,
-      side: THREE.DoubleSide,
-    }),
+    litAround(
+      new THREE.MeshLambertMaterial({
+        map: tex,
+        alphaTest: 0.5,
+        side: THREE.DoubleSide,
+      }),
+    ),
   );
   mesh.customDepthMaterial = new THREE.MeshDepthMaterial({
     map: tex,

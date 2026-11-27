@@ -60,6 +60,7 @@
 - A single room, `lobby`: `?room=` is gone and the server refuses other room names, so nobody can open extra rooms to run up the bill.
 
 ### Fixed
+- **Lamps light the trainers beside them**: a trainer is a flat sprite facing the camera, so a lamp beside or a little behind it hardly lit it, and whoever sat on the pond benches (the lamps a bit behind them) or walked just past a lamp went dark. The lamps now light trainers from the side too (about a third of their light) and only not from right behind; from the front nothing changes. The moon and the sun light them as before.
 - The game no longer fails to start when you come back to a fishing line whose fish got away while the tab was closed.
 - **Stones thrown while your tab was hidden** no longer all fly at once when you come back: a stone someone throws while you are on another tab is skipped.
 - A player whose cap colour is not known shows the cap their trainer is drawn with (red for the male, white for the female) instead of always red.
