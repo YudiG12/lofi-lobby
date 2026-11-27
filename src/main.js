@@ -7,7 +7,7 @@ import { createBoard, setupWall } from "./board.js";
 import { createStones } from "./stones.js";
 import { addSitFrames, sitFramePos } from "./ground-sit.js";
 import { createCapybara, CAPY_NEAR, CAPY_RADIUS, PHRASES as CAPY_PHRASES } from "./capybara.js";
-import { createOwl } from "./owl.js";
+import { createOwl, OWLS } from "./owl.js";
 import { createFishing, createFishingGear, FISH_NEAR, FISH_LEAVE } from "./fishing.js";
 import { createCat, CATS, CAT_NEAR, CAT_SIT_MS, CAT_RIDE_MS, PHRASES as CAT_PHRASES, RIDE_PHRASES as CAT_RIDE_PHRASES } from "./cat.js";
 import { CAROUSEL, carouselSeat, createCarousel, inClearing, isCarouselSeat, onCarousel } from "./carousel.js";
@@ -1737,17 +1737,56 @@ function placeLampPost(p) {
   }
 }
 
-// ---- Owl (on the message wall's roof; flies to the two nearest lamp posts and back) ----
-const owl = createOwl();
-scene.add(owl.mesh);
-// perches: the top of the wall's roof and the caps of the two lamp posts closest to the wall
+// ---- Owls (perches picked by the room's clock; now and then the room sends one to a player's head) ----
+const owls = OWLS.map((cfg) => ({ ...cfg, ...createOwl(cfg.palette), visit: null, onHead: null }));
+for (const o of owls) scene.add(o.mesh);
+let owlPerches = [];
+// perches: the wall's roof, the caps of the lamp posts by the pond and around the rides (not the ones
+// up the road, behind the wall), the carousel's star, the Ferris wheel's hub and the bows on the
+// roller coaster station's candy canes
 function placeOwl() {
   const b = board.position;
-  const posts = [...lampPosts].sort((p, q) => p.position.distanceTo(b) - q.position.distanceTo(b)).slice(0, 2);
-  owl.setPerches(
-    [new THREE.Vector3(b.x, b.y + 6.85, b.z), ...posts.map((p) => p.position.clone().add(new THREE.Vector3(0, 9.55, 0)))],
-    performance.now(),
-  );
+  const S = COASTER.station,
+    sy = coaster.root.position.y + 5.5;
+  owlPerches = [
+    new THREE.Vector3(b.x, b.y + 6.85, b.z),
+    ...lampPosts.filter((p) => p.position.z > b.z).map((p) => p.position.clone().add(new THREE.Vector3(0, 9.55, 0))),
+    new THREE.Vector3(CAROUSEL.x, carousel.root.position.y + 8.7, CAROUSEL.z),
+    new THREE.Vector3(WHEEL.x, wheel.root.position.y + WHEEL.axle + 0.6, WHEEL.z),
+    new THREE.Vector3(S.x0 + 0.2, sy, S.z1 - 0.2),
+    new THREE.Vector3(S.x1 - 0.2, sy, S.z1 - 0.2),
+  ];
+}
+const OWL_PERCH_MS = 30000; // each owl moves on this often, half a turn apart from the other
+// the perch owl i sits on at room time t: the same for everyone. The second owl never picks the first one's.
+function owlPerch(i, t) {
+  const n = owlPerches.length;
+  const p = catHash(i + 1, Math.floor((t + (i * OWL_PERCH_MS) / 2) / OWL_PERCH_MS)) % n;
+  return i > 0 && p === owlPerch(0, t) ? (p + 1) % n : p;
+}
+const _owlAt = new THREE.Vector3();
+function updateOwls() {
+  if (!owlPerches.length) return;
+  const t = roomNow(),
+    now = performance.now();
+  owls.forEach((o, i) => {
+    const head = o.visit && o.visit.until > t ? resolveRideTarget(o.visit.playerId) : null;
+    let flying;
+    if (head) {
+      const hy = head.baseY + (head.grounded ? CAT_HEAD_OFFSET_Y - 0.47 : CAT_HEAD_OFFSET_Y);
+      flying = o.update(now, "h" + o.visit.playerId, _owlAt.set(head.mesh.position.x, hy, head.mesh.position.z));
+    } else {
+      const p = owlPerch(i, t);
+      flying = o.update(now, "p" + p, owlPerches[p]);
+    }
+    o.onHead = head && !flying ? head : null;
+    o.mesh.rotation.set(camera.rotation.x * 0.5, 0, 0); // faces the camera like the trainers
+  });
+}
+// the room sent an owl to a head, or called it back (playerId null)
+function owlVisitUpdate(m) {
+  const o = owls.find((w) => w.id === m.id);
+  if (o) o.visit = m.playerId && m.until > roomNow() ? { playerId: m.playerId, until: m.until } : null;
 }
 
 // ---- Capybara (middle of town; E feeds it) ----
@@ -2088,7 +2127,7 @@ function resolveRideTarget(playerId) {
   };
 }
 
-const headCatLift = (mesh) => (cats.some((c) => c.ridingMesh === mesh) ? 2.2 : 0);
+const headCatLift = (mesh) => (cats.some((c) => c.ridingMesh === mesh) || owls.some((o) => o.onHead?.mesh === mesh) ? 2.2 : 0);
 
 function catSlotAt(cat, t) {
   const eating = t >= cat.fed.at && t < cat.fed.until;
@@ -2693,7 +2732,7 @@ gl_Position.z = (feetClip.z / feetClip.w) * gl_Position.w;`,
 }
 const myFeet = useFeetDepth(sprite);
 const capyFeet = useFeetDepth(capy.mesh);
-const owlFeet = useFeetDepth(owl.mesh);
+for (const o of owls) o.feet = useFeetDepth(o.mesh);
 const _toCam = new THREE.Vector3();
 const occlusionRay = new THREE.Ray();
 const _hit = new THREE.Vector3();
@@ -2724,7 +2763,6 @@ function setFeet(feet, x, y, z) {
 function updateOcclusion() {
   setFeet(myFeet, pos.x + slide.x, pos.y, pos.z + slide.z);
   setFeet(capyFeet, capy.mesh.position.x, capy.mesh.position.y, capy.mesh.position.z);
-  setFeet(owlFeet, owl.mesh.position.x, owl.mesh.position.y, owl.mesh.position.z);
   for (const o of others.values()) setFeet(o.feet, o.mesh.position.x, o.mesh.position.y, o.mesh.position.z);
   // After trainers: a perched cat shares its rider's depth nudged slightly forward so it sits
   // over the cap without Z-fighting while still hiding behind walls/benches in front of the rider.
@@ -2733,6 +2771,13 @@ function updateOcclusion() {
       _toCam.copy(camera.position).sub(cat.ridingFeet).normalize();
       cat.feet.copy(cat.ridingFeet).addScaledVector(_toCam, 0.05);
     } else setFeet(cat.feet, cat.mesh.position.x, cat.mesh.position.y, cat.mesh.position.z);
+  }
+  // an owl on a head the same way
+  for (const o of owls) {
+    if (o.onHead) {
+      _toCam.copy(camera.position).sub(o.onHead.feet).normalize();
+      o.feet.copy(o.onHead.feet).addScaledVector(_toCam, 0.05);
+    } else setFeet(o.feet, o.mesh.position.x, o.mesh.position.y, o.mesh.position.z);
   }
 }
 
@@ -3538,6 +3583,7 @@ function connect() {
     else if (m.t === "stone") stoneThrown(m);
     else if (m.t === "cat") catWasFed(m);
     else if (m.t === "cat-ride") catRideUpdate(m);
+    else if (m.t === "owl") owlVisitUpdate(m);
     else if (m.t === "error" || m.t === "notice") addToHistory("system", m.msg);
     else if (m.t === "rename") {
       // the server refused our name and gave us another one
@@ -4648,8 +4694,7 @@ function loop() {
   camera.position.set(pos.x + slide.x, pos.y + 38, pos.z + 42 + slide.z);
   camera.lookAt(pos.x + slide.x, pos.y + 1, pos.z + slide.z);
   updateCapy();
-  owl.update(performance.now(), pos);
-  owl.mesh.rotation.set(camera.rotation.x * 0.5, 0, 0); // faces the camera like the trainers
+  updateOwls();
   updateFishing();
   updateCats();
   updateOcclusion();
@@ -4664,7 +4709,7 @@ function loop() {
   // someone going round would make them redraw their 6 shadow passes every frame, all night
   sprite.castShadow = !riding;
   const movers = [...others.values()].filter((o) => !isRideSeat(o.seat)).map((o) => o.mesh);
-  updateLampShadows([...(riding ? [] : [sprite]), capy.mesh, owl.mesh, ...cats.map((c) => c.mesh), ...movers]);
+  updateLampShadows([...(riding ? [] : [sprite]), capy.mesh, ...owls.map((o) => o.mesh), ...cats.map((c) => c.mesh), ...movers]);
   renderer.render(scene, camera);
   updateNameTags();
   updateBubbles();

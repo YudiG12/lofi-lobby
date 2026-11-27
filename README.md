@@ -73,6 +73,7 @@ Open the URL, pick a trainer and press **enter the room**: the click is what let
 | Roller coaster | Over the pond, in 42 s cycles by the room's clock: 12 s at the station to board seats 32..36, one per car of a level 5-car train (the server checks the time), 30 s along a curve whose speed comes from a precomputed table; riders get off when the cycle ends | [ADR 013](docs/adr/013-roller-coaster-in-cycles.md) |
 | Message wall | Notes go over HTTP (`/api/notes`), not the WebSocket, and live in the room object's storage: **one key per note**, so the wall has no size limit and is read a page at a time | [SECURITY.md](SECURITY.md) |
 | Accounts, friends, private chat | An account is a GitHub login (device flow), numbered in the order they were made and named by that number everywhere; medals are rules over the account; friends need both sides, and so does a private chat with a non-friend (an invitation); private chat goes through the room's WebSocket and its storage keeps the last 50 messages per pair (`worker/social.js`, `src/social.js`) | [ADR 014](docs/adr/014-accounts-friends-and-private-chat.md) |
+| Owls | Two code-drawn owls: between visits each sits on a perch picked from the room's clock (`roomNow()`), so perching sends no messages; head visits use the cats' heartbeat lottery (`{ t: "owl" }`), one animal per head | [`src/owl.js`](src/owl.js) |
 | Admin | Secret `ADMIN_PASSWORD`, checked in the room object in constant time, few tries per connection | [SECURITY.md](SECURITY.md) |
 
 **Limits of this design.** There is a single room (`lobby`), and a room is one object, so it holds a few dozen players (capped at 100); growing past that would mean opening more rooms, not a bigger one. Positions are relayed, not simulated on the server, so a modified client can teleport; nothing in the lobby is worth cheating for. The YouTube player can't be fully controlled (ads, embeds disabled by the owner): those videos are skipped. It plays off screen, which YouTube's terms for embedded players do not expect.
@@ -87,6 +88,7 @@ src/
   main.js           scene, lights, water, asset loading and code-generated fallbacks,
                     collision, chat bubbles, name tags, multiplayer client
   cat.js            procedural pixel-art town cats (5 coats, walk, eat, 4-dir head perch)
+  owl.js            procedural pixel-art owls (2 coats, perched and flying frames)
   debug.js          dev-only modular debug hub (stripped from production builds)
   cat-debug.js      dev-only cat & NavGrid debug module (stripped from production builds)
   cycle-debug.js    dev-only cycle debug module (stripped from production builds)

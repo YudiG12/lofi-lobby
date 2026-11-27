@@ -1,6 +1,5 @@
-// Owl: a pixel-art billboard perched on the message wall's roof. Every so often, or when you walk
-// up to its perch, it flies to another perch (the wall or the tops of the two nearest lamp posts).
-// Only for you: nothing goes to the server.
+// Owls: pixel-art billboards that fly to wherever main.js points them (a perch picked by the room's
+// clock, or a player's head the room picked), so everyone sees them in the same place.
 import * as THREE from "three";
 
 // 4 frames side by side, 16x16 logical pixels each, drawn at 2x like the trainers:
@@ -9,22 +8,21 @@ const W = 16,
   H = 16,
   P = 2,
   FRAMES = 4;
-const C = {
-  body: "#7a5230",
-  dark: "#5e3c20",
-  belly: "#c9a77a",
-  speck: "#8a6640",
-  disc: "#d8bf94",
-  eye: "#ffcc33",
-  pupil: "#1b1b24",
-  beak: "#e0a030",
-  outline: "#1b1b24",
-};
-const NEAR = 6; // walk this close to its perch and it flies off (the wall is 8 wide)
+// ids match OWL_IDS in worker/index.js
+export const OWLS = [
+  {
+    id: "brown",
+    palette: { body: "#7a5230", dark: "#5e3c20", belly: "#c9a77a", speck: "#8a6640", disc: "#d8bf94", eye: "#ffcc33", pupil: "#1b1b24", beak: "#e0a030", outline: "#1b1b24" },
+  },
+  {
+    id: "snowy",
+    palette: { body: "#d9dde3", dark: "#9aa3ad", belly: "#f4f5f7", speck: "#aab2bc", disc: "#ffffff", eye: "#ffcc33", pupil: "#1b1b24", beak: "#4a4a55", outline: "#1b1b24" },
+  },
+];
 const SPEED = 10; // units per second in the air
 const ARC = 2; // how much higher than a straight line it flies, at the middle of the way
 
-function drawFrame(c, f) {
+function drawFrame(c, f, C) {
   const grid = Array.from({ length: H }, () => Array(W).fill(null));
   const fill = (x, y, col) => x >= 0 && x < W && y >= 0 && y < H && (grid[y][x] = col);
   const flying = f >= 2;
@@ -79,10 +77,10 @@ function drawFrame(c, f) {
       }
 }
 
-export function createOwl() {
+export function createOwl(palette) {
   const cv = Object.assign(document.createElement("canvas"), { width: W * P * FRAMES, height: H * P });
   const c = cv.getContext("2d");
-  for (let f = 0; f < FRAMES; f++) drawFrame(c, f);
+  for (let f = 0; f < FRAMES; f++) drawFrame(c, f, palette);
   const tex = new THREE.CanvasTexture(cv);
   tex.magFilter = tex.minFilter = THREE.NearestFilter;
   tex.colorSpace = THREE.SRGBColorSpace;
@@ -97,52 +95,34 @@ export function createOwl() {
   mesh.customDepthMaterial = new THREE.MeshDepthMaterial({ map: tex, alphaTest: 0.5, depthPacking: THREE.RGBADepthPacking });
   mesh.castShadow = true;
   mesh.scale.set(2.5, 2.5, 1); // same pixel size as a trainer (5 units per 32px)
-  mesh.visible = false; // until it has somewhere to perch
+  mesh.visible = false; // until it has somewhere to go
 
-  let perches = [],
-    at = 0, // the perch it sits on (or flies to)
-    nextAt = 0, // when it flies off on its own
-    flight = null, // { from, to, start, time }
-    calm = false; // landed next to you: it stays until you walk away and come back
-  const rest = (now) => (nextAt = now + 20000 + Math.random() * 20000);
+  let key = null, // where it is going: main.js names it ("p3" a perch, "h<id>" a head)
+    flight = null; // { from, start, time }
+  const blink = Math.random() * 5000; // the owls don't blink together
   const setFrame = (f) => (tex.offset.x = f / FRAMES);
-  const near = (p, player) => Math.hypot(player.x - p.x, player.z - p.z) < NEAR;
-  function flyOff(now, player) {
-    const from = mesh.position.clone();
-    const others = perches.map((_, i) => i).filter((i) => i !== at);
-    // away from you if it can
-    const away = others.filter((i) => !near(perches[i], player));
-    const choices = away.length ? away : others;
-    at = choices[Math.floor(Math.random() * choices.length)];
-    const to = perches[at];
-    flight = { from, to, start: now, time: Math.max(1200, (from.distanceTo(to) / SPEED) * 1000) };
-  }
   return {
     mesh,
-    // where it can sit (THREE.Vector3, feet position); it starts on the first one
-    setPerches(points, now) {
-      perches = points;
-      at = 0;
-      flight = null;
-      mesh.position.copy(perches[0]);
-      mesh.visible = true;
-      rest(now);
-    },
-    // player: where you are, so it flies off when you come close
-    update(now, player) {
-      if (perches.length < 2) return;
+    // target: where its feet go, read again every frame (a head moves). A new key starts a flight
+    // from where it is; the first one puts it there at once. Returns true while it flies.
+    update(now, to, target) {
+      if (key === null) (key = to), mesh.position.copy(target), (mesh.visible = true);
+      else if (to !== key) {
+        key = to;
+        const from = mesh.position.clone();
+        flight = { from, start: now, time: Math.max(1200, (from.distanceTo(target) / SPEED) * 1000) };
+      }
       if (flight) {
         const t = Math.min(1, (now - flight.start) / flight.time);
-        mesh.position.lerpVectors(flight.from, flight.to, t);
+        mesh.position.lerpVectors(flight.from, target, t);
         mesh.position.y += Math.sin(Math.PI * t) * ARC;
         setFrame(2 + (Math.floor(now / 120) % 2));
-        if (t === 1) (calm = near(flight.to, player)), (flight = null), rest(now);
-        return;
+        if (t === 1) flight = null;
+        return true;
       }
-      setFrame(now % 5000 < 150 ? 1 : 0); // blinks every 5 s
-      const close = near(perches[at], player);
-      if (!close) calm = false;
-      if (now > nextAt || (close && !calm)) flyOff(now, player);
+      setFrame((now + blink) % 5000 < 150 ? 1 : 0); // blinks every 5 s
+      mesh.position.copy(target);
+      return false;
     },
   };
 }
