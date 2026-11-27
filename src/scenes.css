@@ -1,0 +1,8 @@
+/* going through a portal: the screen dims, the next scene loads, it comes back */
+#travel-fade { position: fixed; inset: 0; z-index: 3; background: #05060c; opacity: 0; pointer-events: none; transition: opacity .25s ease; }
+#travel-fade.on { opacity: 1; }
+/* near a portal: where it leads, like the wall's and the capybara's prompts */
+#portal-hint { position: fixed; z-index: 2; transform: translate(-50%, -100%); font: inherit; font-size: 11px; color: #F2F2F5;
+  background: rgba(10,11,16,.84); border: 1px solid rgba(160,220,140,.6); border-radius: 6px; padding: 6px 10px;
+  opacity: 0; pointer-events: none; transition: opacity .2s; white-space: nowrap; animation: wall-bob 1.6s ease-in-out infinite; }
+#portal-hint.on { opacity: 1; }

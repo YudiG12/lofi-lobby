@@ -3,6 +3,9 @@ import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader.js";
 import { connectRadioToServer, receiveCommand } from "./radio.js";
 import { createBoard, setupWall } from "./board.js";
 import { createCapybara, CAPY_NEAR, CAPY_RADIUS, PHRASES as CAPY_PHRASES } from "./capybara.js";
+import { SCENES, HOME, isScene, portalAt } from "./scenes.js";
+import { createLake } from "./lake.js";
+import "./scenes.css";
 
 // ---- Asset config (change here to use other files) ----
 const TOWN = {
@@ -182,6 +185,12 @@ document.body.appendChild(renderer.domElement);
 const scene = new THREE.Scene();
 scene.background = new THREE.Color("#070a18");
 scene.fog = new THREE.Fog("#070a18", 50, 140);
+// Everything that belongs to the town only (the model, lamp posts, benches, board, candles,
+// capybara) lives in this group: leaving for another scene takes the whole group out of the
+// scene, so none of it is drawn, lit or shadowed there (see "Scenes" below).
+const lobbyRoot = new THREE.Group();
+lobbyRoot.name = "Lobby";
+scene.add(lobbyRoot);
 
 const camera = new THREE.PerspectiveCamera(30, 1, 0.1, 1000);
 
@@ -295,7 +304,7 @@ function prepareTown(fbx) {
     fbx.position.z -= c.z;
     fbx.position.y -= box2.min.y;
     townBox = new THREE.Box3().setFromObject(fbx);
-    scene.add(fbx);
+    lobbyRoot.add(fbx);
     townMeshes = [];
     fbx.traverse((o) => o.isMesh && townMeshes.push(o));
     computePondBox();
@@ -313,6 +322,7 @@ function prepareTown(fbx) {
     board.position.y = groundHeight(board.position.x, board.position.z);
     placeCapybara();
     placeCapyWalk();
+    lobbyReady(fbx);
 }
 
 // ---- Original village (default on the published site) ----
@@ -537,7 +547,7 @@ function createLampPost(x, z) {
   g.add(glow);
   g.add(base, pole, arm, lantern, cap, light);
   g.position.set(x, 0, z);
-  scene.add(g);
+  lobbyRoot.add(g);
   return g;
 }
 // positions along the paths (tweak freely)
@@ -551,7 +561,7 @@ const lampPosts = LAMP_POSTS.map(([x, z]) => createLampPost(x, z));
 const lampPostSolids = lampPosts.flatMap((p) => p.children.filter((c) => c.isMesh));
 // message wall: a cork board under the lamp light, in front of the lower-left house's window
 const BOARD_AT = [-7.5, 15];
-const board = createBoard(scene);
+const board = createBoard(lobbyRoot);
 board.position.set(BOARD_AT[0], 0, BOARD_AT[1]);
 
 // ---- Benches ----
@@ -571,7 +581,8 @@ const benchBoxes = [];
 // ends, the same iron as the lamp posts.
 const woodLight = new THREE.MeshLambertMaterial({ color: "#b07a45", flatShading: true });
 const woodDark = new THREE.MeshLambertMaterial({ color: "#8a5a34", flatShading: true });
-function createBench(x, y, z, face) {
+// a bench's meshes, facing that way (also lent to the lake)
+function buildBench(face) {
   const g = new THREE.Group();
   const part = (mat, w, h, d, px, py, pz, tilt = 0) => {
     const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
@@ -595,9 +606,13 @@ function createBench(x, y, z, face) {
   // backrest: two slats leaning back a little
   part(woodDark, 4.5, 0.36, 0.14, 0, 2.0, -0.78, -0.08);
   part(woodLight, 4.5, 0.36, 0.14, 0, 2.55, -0.83, -0.08);
-  g.position.set(x, y, z);
   g.rotation.y = { down: 0, right: Math.PI / 2, up: Math.PI, left: -Math.PI / 2 }[face];
-  scene.add(g);
+  return g;
+}
+function createBench(x, y, z, face) {
+  const g = buildBench(face);
+  g.position.set(x, y, z);
+  lobbyRoot.add(g);
   g.updateMatrixWorld(true);
   benches.push({ x, y, z, face });
   const box = new THREE.Box3().setFromObject(g);
@@ -698,7 +713,7 @@ benchGlow.position.y = 1.1;
 let candleLight = 0; // steady strength; the flicker plays around it each frame
 candles.add(benchGlow);
 candles.position.set(0, 0, 23.6);
-scene.add(candles);
+lobbyRoot.add(candles);
 const mixNum = ([a, b], t) => a + (b - a) * t;
 const mixColor = (target, [a, b], t) => target.copy(a).lerp(b, t);
 const OVERCAST_SKY = new THREE.Color("#7d8794");
@@ -1038,8 +1053,10 @@ scene.add(fireflyMesh);
 let firefliesPlaced = false;
 // In a ring around the pond, on land, at about knee to head height.
 function placeFireflies() {
-  if (!pondBox) return;
-  const { min, max } = pondBox;
+  // the town's are around the pond; the lake's over its shore
+  const area = sceneId === HOME ? pondBox : lake?.fireflies;
+  if (!area) return;
+  const { min, max } = area;
   const m = FIREFLIES.margin;
   for (let i = 0, tries = 0; i < FIREFLIES.count && tries < 2000; tries++) {
     const x = min.x - m + Math.random() * (max.x - min.x + 2 * m);
@@ -1224,7 +1241,7 @@ function placeLampPost(p) {
 // ---- Capybara (middle of town; E feeds it) ----
 const capy = createCapybara();
 capy.mesh.position.set(6, 0, 4);
-scene.add(capy.mesh);
+lobbyRoot.add(capy.mesh);
 // the open spot nearest the middle, off the spawn point and clear of benches, posts and the board
 function placeCapybara() {
   for (let r = 0; r <= 14; r += 0.5)
@@ -1306,6 +1323,8 @@ const BODY_RADIUS = 0.9; // character "width"
 const MAX_STEP = 1.2; // height difference it can climb
 const POST_RADIUS = 1.1;
 function isFree(x, z, currentY) {
+  // other scenes are flat, with their own obstacles (no raycasts)
+  if (sceneId !== HOME) return !!lake && !lake.blocked(x, z, BODY_RADIUS * 0.8);
   if (
     x < townBox.min.x ||
     x > townBox.max.x ||
@@ -1659,7 +1678,7 @@ function setFeet(feet, x, y, z) {
     if (occlusionRay.intersectBox(box, _hit)) margin = Math.min(margin, Math.max(0, feet.distanceTo(_hit) - 0.1));
   }
   // (the same for the candles on the grass, which are small and low)
-  for (const [thing, halfWidth] of [[board, 5], [candles, 1.6]]) {
+  for (const [thing, halfWidth] of sceneId === HOME ? [[board, 5], [candles, 1.6]] : lake ? [[lake.board, 5]] : []) {
     const behind = thing.position.z - z;
     if (behind > 0 && Math.abs(x - thing.position.x) < halfWidth)
       margin = Math.max(0, Math.min(margin, behind * _toCam.z - 0.3));
@@ -1755,14 +1774,15 @@ function checkSavedPosition() {
       const x = pos.x + Math.cos(a) * r, z = pos.z + Math.sin(a) * r;
       if (free(x, z)) return void pos.set(x, pos.y, z);
     }
-  pos.set(0, 0, 0);
+  const { x, z } = SCENES[sceneId].spawn;
+  pos.set(x, 0, z);
 }
 let lastSaved = 0,
   lastSavedState = "";
 function savePosition(now) {
   if (mySeat >= 0 || now - lastSaved < 1000) return;
   lastSaved = now;
-  const state = JSON.stringify({ x: +pos.x.toFixed(2), z: +pos.z.toFixed(2), dir });
+  const state = JSON.stringify({ x: +pos.x.toFixed(2), z: +pos.z.toFixed(2), dir, scene: sceneId });
   if (state === lastSavedState) return;
   lastSavedState = state;
   try { localStorage.setItem("position", state); } catch {}
@@ -2035,7 +2055,8 @@ document.querySelector("#respawn").addEventListener("click", (e) => {
   clearTimeout(respawnTimer);
   btn.classList.remove("confirm");
   if (mySeat >= 0) standUp(); // free the seat first, or the room keeps you on the bench
-  pos.set(0, 0, 0);
+  const { x, z } = SCENES[sceneId].spawn;
+  pos.set(x, 0, z);
   lastSaved = 0;
   savePosition(performance.now());
   e.currentTarget.blur();
@@ -2045,7 +2066,12 @@ const clock = new THREE.Clock();
 // ---- Multiplayer ----
 // Other players use their configured sheets, with independent textures and crops.
 // Position comes over the WebSocket and is smoothed.
-const ROOM = "lobby"; // v1: one room only (the server refuses any other)
+// the scene you are in is also the room you are in (src/scenes.js); you come back where you left
+let sceneId = HOME;
+try {
+  const saved = JSON.parse(localStorage.getItem("position") || "null")?.scene;
+  if (isScene(saved)) sceneId = saved;
+} catch {}
 let NAME = "trainer";
 try {
   NAME =
@@ -2254,7 +2280,7 @@ function connect() {
   clearTimeout(reconnectTimer);
   if (pageUnloading) return;
   const proto = location.protocol === "https:" ? "wss" : "ws";
-  const sock = new WebSocket(`${proto}://${location.host}/ws/${ROOM}`);
+  const sock = new WebSocket(`${proto}://${location.host}/ws/${sceneId}`);
   ws = sock;
   sock.onopen = () => {
     if (ws !== sock) return;
@@ -2393,7 +2419,7 @@ if (MULTIPLAYER) {
     pingTimer = 0;
     clearTimeout(reconnectTimer);
     if (myId && myLeaveToken && navigator.sendBeacon) {
-      try { navigator.sendBeacon("/api/leave", JSON.stringify({ id: myId, token: myLeaveToken })); } catch {}
+      try { navigator.sendBeacon(`/api/leave?room=${sceneId}`, JSON.stringify({ id: myId, token: myLeaveToken })); } catch {}
       myLeaveToken = "";
     }
     if (ws && (ws.readyState === 0 || ws.readyState === 1)) {
@@ -2695,7 +2721,12 @@ const wallPrompt = Object.assign(document.createElement("button"), { id: "wall-p
 wallPrompt.innerHTML = MOBILE ? "tap to read the wall" : "<kbd>E</kbd> read the wall";
 wallPrompt.addEventListener("click", () => wall.show());
 document.body.append(wallPrompt);
-const nearBoard = () => Math.hypot(pos.x - board.position.x, pos.z - board.position.z - 1) < wall.NEAR;
+// the town's board, or the lake's (the same wall: notes are the town's, read from anywhere)
+const boardHere = () => (sceneId === HOME ? board : lake?.board);
+const nearBoard = () => {
+  const b = boardHere();
+  return !!b && Math.hypot(pos.x - b.position.x, pos.z - b.position.z - 1) < wall.NEAR;
+};
 addEventListener("keydown", (e) => {
   if (typing() || e.repeat || gamePaused || e.metaKey || e.ctrlKey || e.altKey) return;
   const k = e.key.toLowerCase();
@@ -2718,12 +2749,13 @@ capyPrompt.addEventListener("click", (e) => {
 });
 document.body.append(capyPrompt);
 const nearCapy = () =>
-  mySeat < 0 && !nearBoard() && Math.hypot(pos.x - capy.mesh.position.x, pos.z - capy.mesh.position.z) < CAPY_NEAR;
+  sceneId === HOME && mySeat < 0 && !nearBoard() && Math.hypot(pos.x - capy.mesh.position.x, pos.z - capy.mesh.position.z) < CAPY_NEAR;
 addEventListener("keydown", (e) => {
   if (typing() || e.repeat || gamePaused || wall.isOpen() || e.metaKey || e.ctrlKey || e.altKey) return;
   if (e.key.toLowerCase() === "e" && nearCapy()) feedCapy();
 });
 function updateCapy() {
+  if (sceneId !== HOME) return void capyPrompt.classList.remove("on");
   const t = roomNow();
   walkCapy(t);
   capy.update(t);
@@ -2739,9 +2771,167 @@ function updateWallPrompt() {
   const show = nearBoard() && !wall.isOpen() && !gamePaused;
   wallPrompt.classList.toggle("on", show);
   if (!show) return;
-  _v.set(board.position.x, board.position.y + 7.4, board.position.z).project(camera);
+  const b = boardHere();
+  _v.set(b.position.x, b.position.y + 7.4, b.position.z).project(camera);
   wallPrompt.style.left = `${(_v.x * 0.5 + 0.5) * innerWidth}px`;
   wallPrompt.style.top = `${(-_v.y * 0.5 + 0.5) * innerHeight}px`;
+}
+
+// ---- Scenes ----
+// One scene is drawn at a time. The town (lobbyRoot) is loaded once and kept: leaving takes it out
+// of the scene, so it costs nothing to draw, and coming back is instant (no 5 MB model to fetch
+// again). The lake is built the first time you go there, and kept the same way. Each scene is
+// its own room on the server, so its chat and its players are its own.
+let lake = null;
+let townKit = null; // pieces of the town the lake reuses (its pine, its flower)
+let lobbyWorld = null; // the town's collision data, kept while you're elsewhere
+// the town finished loading (prepareTown): keep its collision data; if you're not there, step back out
+function lobbyReady(town) {
+  townKit = { pine: pieceOf(town, /TreePine/), rim: pieceOf(town, /pCube/) };
+  lobbyWorld = {
+    meshes: townMeshes,
+    box: townBox,
+    solids: [...solidBoxes],
+    water: [...waterMeshes],
+    edges: [...edgeMeshes],
+    pond: pondBox,
+    benches: [...benches],
+    benchBoxes: [...benchBoxes],
+  };
+  if (sceneId !== HOME) useWorld(sceneId);
+}
+// One of the town model's meshes, baked to world size with its foot at the origin, to be repeated
+// elsewhere (the lake's pines are the town's pines). null if the model has none (code-built town).
+function pieceOf(town, name) {
+  let mesh = null;
+  town.traverse((o) => {
+    if (!mesh && o.isMesh && name.test(o.name)) mesh = o;
+  });
+  if (!mesh) return null;
+  town.updateMatrixWorld(true);
+  const geometry = mesh.geometry.clone().applyMatrix4(mesh.matrixWorld);
+  geometry.computeBoundingBox();
+  const b = geometry.boundingBox;
+  geometry.translate(-(b.min.x + b.max.x) / 2, -b.min.y, -(b.min.z + b.max.z) / 2);
+  return { geometry, material: mesh.material };
+}
+// what the lake borrows from the town
+function lakeKit() {
+  return {
+    atlas,
+    water: waterMaterial,
+    pine: townKit?.pine,
+    rim: townKit?.rim,
+    board: (parent) => createBoard(parent),
+    bench: buildBench,
+    // a lamp post like the town's, lit and dimmed by day and night with the town's
+    lamp: (x, z) => {
+      const g = createLampPost(x, z);
+      g.children.forEach((c) => (c.isPointLight ? lampLights.push(c) : c.isSprite && lampGlows.push(c)));
+      return g;
+    },
+  };
+}
+// draw and collide with that scene only
+function useWorld(id) {
+  waterMeshes.clear();
+  edgeMeshes.clear();
+  solidBoxes.length = 0;
+  // the seats are the scene's: the same numbers (0..15) mean other benches in another room
+  benches.length = 0;
+  benchBoxes.length = 0;
+  if (id === HOME) {
+    lake?.group.removeFromParent();
+    scene.add(lobbyRoot);
+    const w = lobbyWorld;
+    townMeshes = w ? w.meshes : [];
+    if (w) townBox = w.box;
+    w?.solids.forEach((b) => solidBoxes.push(b));
+    w?.water.forEach((m) => waterMeshes.add(m));
+    w?.edges.forEach((m) => edgeMeshes.add(m));
+    pondBox = w ? w.pond : null;
+    w?.benches.forEach((b) => benches.push(b));
+    w?.benchBoxes.forEach((b) => benchBoxes.push(b));
+  } else {
+    // built once the town is loaded: it borrows the town's pieces
+    if (!lake && lobbyWorld) {
+      lake = createLake(lakeKit());
+      applyLook(dayAmount);
+    }
+    lobbyRoot.removeFromParent();
+    pondBox = null;
+    if (lake) {
+      scene.add(lake.group);
+      townMeshes = [...lake.walk];
+      townBox = lake.box;
+      waterMeshes.add(lake.water); // the rain splashes on it
+      lake.seats.forEach((b) => benches.push(b));
+      lake.seatBoxes.forEach((b) => benchBoxes.push(b));
+    } else townMeshes = [];
+  }
+  surfaceCache.clear(); // the rain's landing spots were the other scene's
+  firefliesPlaced = false;
+  placeFireflies();
+  document.querySelector("#place b").textContent = SCENES[id].name;
+}
+if (sceneId !== HOME) useWorld(sceneId);
+
+const travelFade = Object.assign(document.createElement("div"), { id: "travel-fade" });
+const portalHint = Object.assign(document.createElement("div"), { id: "portal-hint" });
+document.body.append(travelFade, portalHint);
+let travelling = false;
+function checkPortal() {
+  if (travelling || mySeat >= 0) return;
+  const p = portalAt(sceneId, pos.x, pos.z);
+  if (p) travel(p);
+}
+// dim the screen, leave this room, swap the scene, join the next room, and light it back up
+async function travel(portal) {
+  travelling = true;
+  travelFade.classList.add("on");
+  await new Promise((r) => setTimeout(r, 260));
+  const old = ws;
+  ws = null; // its close is ours: no reconnect, no "you left" handling
+  clearInterval(pingTimer);
+  pingTimer = 0;
+  myLeaveToken = "";
+  if (old && old.readyState <= 1) try { old.close(1000, "travel"); } catch {}
+  [...others.keys()].forEach(removeOther);
+  elMsgs.replaceChildren(); // the next room's chat is its own (it sends its history)
+  sceneId = portal.to;
+  useWorld(sceneId);
+  pos.set(portal.arrive.x, 0, portal.arrive.z);
+  pos.y = topHeight(pos.x, pos.z);
+  dir = portal.arrive.dir;
+  slide.x = slide.z = 0;
+  lastSaved = 0;
+  savePosition(performance.now());
+  updateCount();
+  if (MULTIPLAYER && !kicked) connect();
+  renderer.compile(scene, camera); // new lights and materials: compile now, behind the dark screen
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  travelFade.classList.remove("on");
+  travelling = false;
+}
+// near a portal, a hint over it says where it goes
+function updatePortalHint() {
+  let near = null;
+  if (!travelling && !gamePaused)
+    for (const p of SCENES[sceneId].portals) {
+      const b = p.box;
+      const cx = (b.minX + b.maxX) / 2,
+        cz = Math.max(b.minZ, Math.min(b.maxZ, pos.z));
+      if (Math.abs(pos.x - cx) < 9 && Math.abs(pos.z - cz) < 9) near = p;
+    }
+  portalHint.classList.toggle("on", !!near);
+  if (!near) return;
+  const b = near.box;
+  const up = b.maxZ < 0; // the town's portal is at the top, the lake's at the bottom
+  portalHint.textContent = `${up ? "↑" : "↓"} ${SCENES[near.to].name}`;
+  // over the way out: past your head going up, below your feet going down
+  _v.set((b.minX + b.maxX) / 2, up ? 4 : 0, up ? b.maxZ : b.minZ + 3).project(camera);
+  portalHint.style.left = `${(_v.x * 0.5 + 0.5) * innerWidth}px`;
+  portalHint.style.top = `${(-_v.y * 0.5 + 0.5) * innerHeight}px`;
 }
 
 function loop() {
@@ -2787,7 +2977,7 @@ function loop() {
     // facing follows the stronger axis
     dir = Math.abs(dx) > Math.abs(dz) ? (dx > 0 ? "right" : "left") : dz > 0 ? "down" : "up";
   }
-  if (gamePaused || wall.isOpen()) {
+  if (gamePaused || wall.isOpen() || travelling) {
     dx = 0;
     dz = 0;
   }
@@ -2804,6 +2994,7 @@ function loop() {
     if (isFree(pos.x, nz, pos.y)) pos.z = nz;
     tAnim += dt * 8 * (speed / SPEED);
   } else tAnim = 0;
+  checkPortal();
   const currentStep = walking ? Math.floor(tAnim) % CHARACTER.steps : 0;
   const running = Boolean(walking && run);
   setFrame(dir, currentStep, running);
@@ -2828,6 +3019,8 @@ function loop() {
   camera.position.set(pos.x + slide.x, pos.y + 38, pos.z + 42 + slide.z);
   camera.lookAt(pos.x + slide.x, pos.y + 1, pos.z + slide.z);
   updateCapy();
+  if (sceneId !== HOME) lake?.update(waterUniforms.uTime.value, 1 - dayAmount, mySeat === 0 || mySeat === 1 || seatTaken(0) || seatTaken(1));
+  updatePortalHint();
   updateOcclusion();
   // facing the camera, tilted only halfway (the shadow looks like a standing body)
   sprite.rotation.set(camera.rotation.x * 0.5, 0, 0);

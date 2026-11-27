@@ -42,7 +42,7 @@ Open the URL, pick a trainer and press **enter the room**: the click is what let
 | B, or E (or a tap on the note) by the board | open the message wall: read the notes, like them and pin your own (most liked first, or newest) |
 | Space | pause the music for you only |
 
-- There is one room, `lobby`, for everyone (the server refuses any other name).
+- There are two scenes, each its own room: the town (`lobby`) and the lake (`lago`), reached by the path at the top of the town. The server refuses any other room name; the list is [`src/scenes.js`](src/scenes.js).
 - Admin: type `/admin` in the chat and enter the password in the login box (`ADMIN_PASSWORD`); `/logout` leaves. Then you can restart or skip the song for everyone, and click a player's name (above them or in the chat) to kick or ban them, and delete notes on the message wall (the ✕ on a note); `/unban` in the chat lifts every ban.
 - Change the song list in [`src/radio.js`](src/radio.js) (`LISTA`, YouTube video ids).
 
@@ -60,7 +60,9 @@ Open the URL, pick a trainer and press **enter the room**: the click is what let
 | Message wall | Notes go over HTTP (`/api/notes`), not the WebSocket, and live in the room object's storage: **one key per note**, so the wall has no size limit and is read a page at a time | [SECURITY.md](SECURITY.md) |
 | Admin | Secret `ADMIN_PASSWORD`, checked in the room object in constant time, few tries per connection | [SECURITY.md](SECURITY.md) |
 
-**Limits of this design.** There is a single room (`lobby`), and a room is one object, so it holds a few dozen players (capped at 100); growing past that would mean opening more rooms, not a bigger one. Positions are relayed, not simulated on the server, so a modified client can teleport; nothing in the lobby is worth cheating for. The YouTube player can't be hidden or fully controlled (ads, embeds disabled by the owner): those videos are skipped.
+**Scenes.** Each scene is a room; a portal (a box at a map edge, in [`src/scenes.js`](src/scenes.js)) closes the socket, swaps the scene and joins the next room behind a short fade. The town is loaded once and kept out of the scene while you're away, so only one place is drawn at a time. Bans live in the town's object, which the other rooms ask.
+
+**Limits of this design.** A room is one object, so it holds a few dozen players (capped at 100); growing past that would mean opening more rooms, not a bigger one. Positions are relayed, not simulated on the server, so a modified client can teleport; nothing in the lobby is worth cheating for. The YouTube player can't be hidden or fully controlled (ads, embeds disabled by the owner): those videos are skipped.
 
 The full design, with the protocol and the sync rules, is in the [v1 spec](docs/spec/v1.md).
 
@@ -72,8 +74,13 @@ src/
   main.js           scene, lights, water, asset loading and code-generated fallbacks,
                     collision, chat bubbles, name tags, multiplayer client
   radio.js          YouTube player synced by the clock or by the room's radio command
+  scenes.js         the scenes (= rooms) and their portals
+  lake.js           the lake scene, built from the town's pieces
+  lake-layout.js    the lake's tile map and where everything stands (pure, tested)
+test/               unit tests (npm test)
 public/assets/      Twinleaf FBX model, textures and male/female trainer sheets
 worker/index.js     Worker (static assets + /ws routing) and the Room Durable Object
+worker/rooms.js     which room a request is for
 scripts/            deploy-your-own, README image rendering
 docs/               PRD, spec, ADRs, README images and real gameplay screenshot
 ```

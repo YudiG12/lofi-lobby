@@ -3,6 +3,10 @@
 ## Unreleased
 
 ### Added
+- **A second scene, the Lago**: walk off the top of the town, up the dirt path between the pines, and the screen dims and opens on a lake under a cliff, with two waterfalls fed by a river, a wooden pier, the notice board (the same wall) and a lamp post by its landing, benches along the path, picnic tables and a swing. Walk back down the path to return. Only one scene is drawn at a time; the town stays loaded, so coming back is instant. Built from the town's own pieces (its atlas tiles, pines, water, stone pond rim, benches, lamp post and board); only the waterfalls, round trees, cattails, tables and swing are new.
+- **Each scene is its own room**: its own players, chat and seats. You come back to the scene you left. Kicks and bans cover every room.
+- **Sit on the swing and at the picnic tables** (E, like the benches): two seats on the swing, four at each table.
+- Unit tests: `npm test` (Node's test runner, no new dependencies) checks the scenes, the portals, the lake's map and that every spot in it can be walked to.
 - A small GitHub link beside the chat: the game is open source, come and contribute.
 - **Cap colour**: pick one of five cap colours on the enter/pause screen, next to a preview of your trainer; everyone sees it.
 - **Trainer and cap in the top card**: a male/female switch and, beside it, the cap you wear (drawn as a little cap, so it is not taken for the name colour's dot). Click the cap to see the other colours; picking one folds them away.

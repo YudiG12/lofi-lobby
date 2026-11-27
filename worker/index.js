@@ -25,7 +25,7 @@
 //                     { t: "who", id, tag, names, sameTag } (admin only)
 //                     { t: "kicked", msg } (the server closes you; don't reconnect)
 //                     { t: "admin", id } (that player logged in as admin; players and chat also carry admin: true)
-//   POST /api/leave   { id, token } (pagehide beacon: closes that socket immediately using its per-connection token)
+//   POST /api/leave?room=<room>   { id, token } (pagehide beacon: closes that socket immediately using its per-connection token)
 //
 // Security (the client is public, so nothing coming from it is trusted):
 //  - max message size, per-connection rate limit, max players per room
@@ -61,8 +61,6 @@
 // (CF_ACCOUNT_ID and CF_API_TOKEN secrets) for public/stats.html.
 
 const MAX_PLAYERS = 100;
-// v1 has a single room; any other name is refused so nobody can spin up extra rooms (and extra cost)
-const ROOMS = ["lobby"];
 const MAX_BYTES = 1024;
 const COORD_LIMIT = 500;
 const ADMIN_ATTEMPTS = 20; // per IP, then locked for ADMIN_LOCK_MS (the "other" rate limit already caps tries at ~1/s)
@@ -111,6 +109,7 @@ function safeClose(ws, code = 1000, reason = "") {
 }
 
 import { badName, cleanChat, hasLink, normalize } from "./moderation.js";
+import { HOME, roomOfPath, leaveRoom } from "./rooms.js";
 
 const DIRS = ["down", "up", "left", "right"];
 const cleanText = (s, max) =>
@@ -484,12 +483,13 @@ export class Room {
     if (path.startsWith("/api/notes")) return this.notes(req);
     if (path === "/api/leave") return this.leaveByBeacon(req);
     if (path === "/internal/archive") { await this.archive(); return new Response("ok"); }
+    if (path === "/internal/ban") return this.banStore(req);
     if (req.headers.get("Upgrade") !== "websocket") return new Response("expected websocket", { status: 426 });
     const active = this.openSockets();
     if (active.length >= MAX_PLAYERS) return new Response("room is full", { status: 503 });
     const ip = req.headers.get("CF-Connecting-IP") || "local";
-    const ban = await this.state.storage.get("ban:" + ip);
-    if (ban > Date.now()) return new Response("banned", { status: 403 });
+    const room = req.headers.get("X-Room") || HOME;
+    if ((await this.banUntil(ip, room)) > Date.now()) return new Response("banned", { status: 403 });
     const sameIp = active.filter((w) => w.deserializeAttachment()?.ip === ip).length;
     if (sameIp >= MAX_PER_IP) return new Response("too many connections", { status: 429 });
 
@@ -500,7 +500,7 @@ export class Room {
     // hibernation: the DO can sleep with connections open; each player's
     // state lives on its own socket (serializeAttachment)
     this.state.acceptWebSocket(server);
-    server.serializeAttachment({ id, leaveToken, connectedAt, name: "trainer", gender: "male", color: "", x: 0, z: 0, dir: "down", step: 0, seat: -1, ip,
+    server.serializeAttachment({ id, leaveToken, connectedAt, name: "trainer", gender: "male", color: "", x: 0, z: 0, dir: "down", step: 0, seat: -1, ip, room,
       country: String(req.cf?.country || "").slice(0, 2), visitor: await visitorOf(ip) });
     await this.ensureHeartbeatAlarm();
     // v: the deploy that is running. A tab that reconnects and sees another one reloads itself.
@@ -710,14 +710,40 @@ export class Room {
     return { ok: true };
   }
 
+  // Bans live in the town's storage (HOME), one list for every room: walking through a portal
+  // can't dodge a kick, and the wall (also the town's) sees the same bans. Other rooms ask it.
+  home() {
+    return this.env.ROOM.get(this.env.ROOM.idFromName(HOME));
+  }
+  async banUntil(ip, room) {
+    if (room === HOME) return (await this.state.storage.get("ban:" + ip)) || 0;
+    const r = await this.home().fetch("https://room/internal/ban?ip=" + encodeURIComponent(ip));
+    return Number(await r.text()) || 0;
+  }
+  async setBans(room, ips, until) {
+    if (room !== HOME) return void (await this.home().fetch("https://room/internal/ban", { method: "POST", body: JSON.stringify({ ips, until }) }));
+    for (const ip of ips) await this.state.storage.put("ban:" + ip, until);
+  }
+  async clearBans(room) {
+    if (room !== HOME) return Number(await (await this.home().fetch("https://room/internal/ban", { method: "DELETE" })).text()) || 0;
+    const bans = await this.state.storage.list({ prefix: "ban:" });
+    await this.state.storage.delete([...bans.keys()]);
+    return bans.size;
+  }
+  // the town answering the other rooms (only reachable from inside the Worker, never from outside)
+  async banStore(req) {
+    if (req.method === "GET") return new Response(String(await this.banUntil(new URL(req.url).searchParams.get("ip") || "", HOME)));
+    if (req.method === "DELETE") return new Response(String(await this.clearBans(HOME)));
+    const { ips, until } = await req.json();
+    if (Array.isArray(ips) && Number.isFinite(until)) await this.setBans(HOME, ips.map(String).slice(0, 10), until);
+    return new Response("ok");
+  }
+
   // kick / ban a player by id: everyone on that player's IP loses the room
   async moderate(adminWs, action, id) {
     const tell = (msg) => adminWs.send(JSON.stringify({ t: "notice", msg }));
-    if (action === "unban") {
-      const bans = await this.state.storage.list({ prefix: "ban:" });
-      await this.state.storage.delete([...bans.keys()]);
-      return tell(`unbanned ${bans.size}`);
-    }
+    const room = adminWs.deserializeAttachment()?.room || HOME;
+    if (action === "unban") return tell(`unbanned ${await this.clearBans(room)}`);
     if (action !== "kick" && action !== "ban") return;
     const sockets = this.openSockets();
     const target = sockets.map((w) => w.deserializeAttachment()).find((p) => p?.id === id);
@@ -728,7 +754,7 @@ export class Room {
     const gone = new Set(sockets.map((w) => w.deserializeAttachment()).filter((q) => q && ips.has(q.ip)).map((q) => q.id));
     await this.saveHistory((await this.history()).filter((m) => !gone.has(m.id)));
     const until = Date.now() + (action === "ban" ? BAN_MS : KICK_MS);
-    for (const ip of ips) await this.state.storage.put("ban:" + ip, until);
+    await this.setBans(room, [...ips], until);
     const msg = action === "ban" ? "you were banned from the room" : "you were kicked, come back later";
     for (const w of sockets) {
       if (w === adminWs || !ips.has(w.deserializeAttachment()?.ip)) continue;
@@ -871,14 +897,14 @@ export class Room {
 export default {
   // once a day: archive yesterday's numbers in the room's storage (see Room.archive)
   async scheduled(event, env) {
-    await env.ROOM.get(env.ROOM.idFromName(ROOMS[0])).fetch("https://room/internal/archive");
+    await env.ROOM.get(env.ROOM.idFromName(HOME)).fetch("https://room/internal/archive");
   },
   async fetch(req, env) {
     const url = new URL(req.url);
     // stats: the room's Durable Object checks the admin password (same lockout as the game)
     if (url.pathname === "/api/stats") {
       if (req.method !== "GET") return new Response("method not allowed", { status: 405 });
-      return env.ROOM.get(env.ROOM.idFromName(ROOMS[0])).fetch(req);
+      return env.ROOM.get(env.ROOM.idFromName(HOME)).fetch(req);
     }
     // pagehide beacon: immediate cleanup when closing the tab or browser
     if (url.pathname === "/api/leave") {
@@ -886,7 +912,7 @@ export default {
       const origin = req.headers.get("Origin");
       const ok = [url.origin, ...(env.ALLOWED_ORIGINS || "").split(",").map((s) => s.trim()).filter(Boolean)];
       if (!origin || !ok.includes(origin)) return new Response("origin not allowed", { status: 403 });
-      return env.ROOM.get(env.ROOM.idFromName(ROOMS[0])).fetch(req);
+      return env.ROOM.get(env.ROOM.idFromName(leaveRoom(url.searchParams))).fetch(req);
     }
     // message wall: writes only from the site itself (same origin check as the WebSocket)
     if (url.pathname === "/api/notes" || url.pathname.startsWith("/api/notes/")) {
@@ -895,12 +921,12 @@ export default {
         const ok = [url.origin, ...(env.ALLOWED_ORIGINS || "").split(",").map((s) => s.trim()).filter(Boolean)];
         if (!origin || !ok.includes(origin)) return new Response("origin not allowed", { status: 403 });
       }
-      return env.ROOM.get(env.ROOM.idFromName(ROOMS[0])).fetch(req);
+      return env.ROOM.get(env.ROOM.idFromName(HOME)).fetch(req);
     }
     // /ws/<room>  ->  that room's Durable Object. Everything else is the static site (assets).
-    const m = url.pathname.match(/^\/ws\/([a-z0-9-]{1,32})$/i);
-    if (!m) return env.ASSETS ? env.ASSETS.fetch(req) : new Response("lofi-lobby", { status: 404 });
-    if (!ROOMS.includes(m[1].toLowerCase())) return new Response("unknown room", { status: 404 });
+    const room = roomOfPath(url.pathname);
+    if (room === "") return env.ASSETS ? env.ASSETS.fetch(req) : new Response("lofi-lobby", { status: 404 });
+    if (room === null) return new Response("unknown room", { status: 404 });
 
     // only accept connections from the site itself (or origins listed in ALLOWED_ORIGINS)
     const origin = req.headers.get("Origin");
@@ -908,7 +934,9 @@ export default {
     allowed.push(url.origin);
     if (!origin || !allowed.includes(origin)) return new Response("origin not allowed", { status: 403 });
 
-    const stub = env.ROOM.get(env.ROOM.idFromName(m[1].toLowerCase()));
-    return stub.fetch(req);
+    // the room's object doesn't know its own name: tell it (it keeps bans in the town, see banUntil)
+    const fwd = new Request(req);
+    fwd.headers.set("X-Room", room);
+    return env.ROOM.get(env.ROOM.idFromName(room)).fetch(fwd);
   },
 };

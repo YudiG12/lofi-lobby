@@ -8,7 +8,8 @@
     "build": "vite build",
     "deploy": "vite build && wrangler deploy",
     "deploy-your-own": "bash scripts/deploy-your-own.sh",
-    "render-docs": "bash scripts/render-docs.sh"
+    "render-docs": "bash scripts/render-docs.sh",
+    "test": "node --test \"test/*.test.js\""
   },
   "dependencies": {
     "three": "^0.187.0"
