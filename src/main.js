@@ -355,9 +355,77 @@ function prepareTown(fbx) {
     placeCapybara();
     placeCapyWalk();
     placeOwl();
+    frameTown();
     mergeTown(fbx);
     markLampShadowsStale(); // the town, the lamps and everything around them just took their places
     buildCatNavGrid();
+}
+
+// ---- Beyond the town ----
+// The town model ends a few steps past its last pines, and past that was only the night sky's colour:
+// from the pond, the rides or anywhere near an edge, the bottom of the screen was a flat dark blue.
+// Now the town's own pine stands on, row after row, on the same grid as the town's pines, over the
+// town's own grass, and the fog takes the rest. One draw call each (instanced); nobody walks there,
+// no ray looks at them, and they cast no shadow.
+const FRAME_PINE_ROWS = 4; // pine rows around the town
+const FRAME_GRASS = 45; // how far past the town the grass goes, under the pines and beyond
+function frameTown() {
+  const pine = townMeshes.find((m) => /tree/i.test(m.name));
+  // the town's floor: its most common grass tile (plain grass, not a path or a slope), and where it ends
+  const tileKey = (m) => { const uv = m.geometry.attributes.uv; return uv ? `${uv.getX(0).toFixed(3)},${uv.getY(0).toFixed(3)}` : ""; };
+  const grass = townMeshes.filter((m) => /ground_grass/i.test(m.name));
+  const counts = new Map();
+  for (const m of grass) counts.set(tileKey(m), (counts.get(tileKey(m)) || 0) + 1);
+  const plain = [...counts].sort((a, b) => b[1] - a[1])[0]?.[0];
+  const tile = grass.find((m) => tileKey(m) === plain);
+  if (!pine || !tile) return; // another town: it brings its own edges
+  const floor = new THREE.Box3();
+  for (const m of grass) if (tileKey(m) === plain) floor.expandByObject(m);
+  const local = (m) => {
+    // the mesh in world space, moved to stand at x = z = 0 (its height kept)
+    m.updateWorldMatrix(true, false);
+    const g = m.geometry.clone().applyMatrix4(m.matrixWorld);
+    g.computeBoundingBox();
+    const c = g.boundingBox.getCenter(new THREE.Vector3());
+    return { geo: g.translate(-c.x, 0, -c.z), x: c.x, z: c.z, size: g.boundingBox.getSize(new THREE.Vector3()) };
+  };
+  const p = local(pine);
+  const t = local(tile);
+  const { min, max } = townBox;
+  const outside = (x, z, pad, box = townBox) =>
+    x < box.min.x - pad || x > box.max.x + pad || z < box.min.z - pad || z > box.max.z + pad;
+  // a spot on a grid through (x0, z0), every step, from the town's box out to `reach` past it
+  const grid = (x0, z0, step, reach, keep) => {
+    const at = [];
+    const from = (a, a0) => a0 + Math.floor((a - a0) / step) * step;
+    for (let x = from(min.x - reach, x0); x <= max.x + reach; x += step)
+      for (let z = from(min.z - reach, z0); z <= max.z + reach; z += step) if (keep(x, z)) at.push([x, z]);
+    return at;
+  };
+  const step = 5.15; // the town's pine grid (ADR 011)
+  const reach = FRAME_PINE_ROWS * step;
+  // the town box ends half a pine past its last row; none on the south (camera) side, where they would
+  // stand between the camera and the town and cover half the screen: grass there, into the fog
+  const pines = grid(p.x, p.z, step, reach, (x, z) => outside(x, z, 0.5) && z < max.z);
+  const tiles = grid(t.x, t.z, t.size.x, FRAME_GRASS, (x, z) => outside(x, z, t.size.x / 2 - 0.01, floor)); // at the floor's height (kept by local())
+  const place = (geo, material, spots, look) => {
+    const mesh = new THREE.InstancedMesh(geo, material, spots.length);
+    const m = new THREE.Matrix4();
+    const q = new THREE.Quaternion();
+    const up = new THREE.Vector3(0, 1, 0);
+    spots.forEach(([x, z], i) => {
+      const [turn, scale] = look(x, z);
+      mesh.setMatrixAt(i, m.compose(new THREE.Vector3(x, 0, z), q.setFromAxisAngle(up, turn), new THREE.Vector3(scale, scale, scale)));
+    });
+    mesh.castShadow = false;
+    mesh.receiveShadow = true;
+    mesh.computeBoundingSphere();
+    scene.add(mesh);
+  };
+  // a little variety for the pines, the same in every browser: a quarter turn and 90..115% tall
+  const hash = (x, z) => Math.abs(Math.sin(x * 12.9898 + z * 78.233) * 43758.5453) % 1;
+  place(p.geo, pine.material, pines, (x, z) => [Math.floor(hash(x, z) * 4) * (Math.PI / 2), 0.9 + 0.25 * hash(z, x)]);
+  place(t.geo, tile.material, tiles, () => [0, 1]);
 }
 
 // ---- The fair: carousel and Ferris wheel ----
@@ -4552,6 +4620,26 @@ if (import.meta.env.DEV) {
   });
 }
 
+// What the camera looks at: you, or the ride you are on. It sits at a fixed offset from it, so
+// following a Ferris wheel gondola took the whole town round in a circle 12 units across, up and
+// down, every minute, and the carousel swayed it too. On those two the camera glides to the ride's
+// middle and holds still: the ride turns and you go round in it. Getting off, it glides back to you.
+// The roller coaster is a trip, so the camera goes along with the train.
+const RIDE_FOCUS_Y = 3; // over the ride's base: the wheel's 14-unit height and its riders fit in view
+const rideFocus = new THREE.Vector3();
+let rideHold = 0; // 0 = on you, 1 = on the ride
+const _focus = new THREE.Vector3();
+function cameraFocus(dt) {
+  const still = mySeat >= 0 && (isWheelSeat(mySeat) || isCarouselSeat(mySeat));
+  if (still) {
+    const root = isWheelSeat(mySeat) ? wheel.root : carousel.root;
+    const center = isWheelSeat(mySeat) ? WHEEL : CAROUSEL;
+    rideFocus.set(center.x, root.position.y + RIDE_FOCUS_Y, center.z);
+  }
+  rideHold += ((still ? 1 : 0) - rideHold) * (1 - Math.exp(-dt * 4));
+  if (Math.abs(rideHold - (still ? 1 : 0)) < 0.001) rideHold = still ? 1 : 0;
+  return _focus.set(pos.x + slide.x, pos.y, pos.z + slide.z).lerp(rideFocus, rideHold);
+}
 function loop() {
   const now = performance.now();
   const dt = Math.min(clock.getDelta(), 0.05);
@@ -4646,8 +4734,9 @@ function loop() {
   if (running && GENDER === "male") sprite.position.y -= 0.8;
   shadow.position.set(pos.x + slide.x, pos.y + 0.05, pos.z + slide.z);
   shadow.visible = mySeat < 0; // would float under the hanging feet
-  camera.position.set(pos.x + slide.x, pos.y + 38, pos.z + 42 + slide.z);
-  camera.lookAt(pos.x + slide.x, pos.y + 1, pos.z + slide.z);
+  const focus = cameraFocus(dt);
+  camera.position.set(focus.x, focus.y + 38, focus.z + 42);
+  camera.lookAt(focus.x, focus.y + 1, focus.z);
   updateCapy();
   owl.update(performance.now(), pos);
   owl.mesh.rotation.set(camera.rotation.x * 0.5, 0, 0); // faces the camera like the trainers
@@ -4676,3 +4765,5 @@ function loop() {
   requestAnimationFrame(loop);
 }
 loop();
+
+

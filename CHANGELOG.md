@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- **A forest around the town**: past the town's edges there used to be only the night sky's dark blue, plain to see from the pond, the rides or anywhere near an edge. Now the town's grass goes on, and its pines stand on in rows to the north, east and west, into the fog. The south side, toward the camera, stays grass, so no tree stands between the camera and the town.
 - **Accounts**: press the GitHub button in the top card, or **log in** on the start screen, and connect GitHub (the only way to make one). Your account gets a number in the order accounts were made: the game's owner is #0, the next one #1, and so on. Nobody else sees your GitHub login, only the number. `/github` still works, and whoever had logged in for the contributor badge gets an account the next time they open the game.
 - **Profile**: click a name, over a trainer or in the chat (yours too), to open that player's profile: their trainer, a green dot when they are online, their account number, their merged pull requests and their medals.
 - A guest is told about the Founding member medal while it can still be had (until the end of November 2026): on the start screen, and in the room on a card that can be closed (it is back the next time the game is opened).
@@ -68,6 +69,7 @@
 - A single room, `lobby`: `?room=` is gone and the server refuses other room names, so nobody can open extra rooms to run up the bill.
 
 ### Fixed
+- **The camera holds still on the Ferris wheel and the carousel**: it used to follow your seat, so a ride on the wheel took the whole town round in a circle 12 units across, up and down, every minute, and the carousel swayed it. Now it glides to the ride's middle and stays there while you go round, and back to you when you get off. On the roller coaster it still goes along with the train.
 - **Room to walk between the pond and the Ferris wheel**: the wheel stood so close to the pond's corner that nobody could pass. It moved a little to the right and blocks less of the grass, so you can walk by on both sides of it.
 - The game no longer fails to start when you come back to a fishing line whose fish got away while the tab was closed.
 - **Stones thrown while your tab was hidden** no longer all fly at once when you come back: a stone someone throws while you are on another tab is skipped.
