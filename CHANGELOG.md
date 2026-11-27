@@ -4,6 +4,7 @@
 
 ### Added
 - **Your trainer's look**: on the enter/pause screen, next to the cap colour, pick a skin tone (6), a hair colour (7), a top colour (7), a bottom colour (6, the jeans or the skirt) or keep the trainer's own, and put on **headphones** and **glasses**. The preview shows it at once, and in the game the **look** button in the top card (or Space) opens the same choices again. It is remembered, and everyone sees it on every frame: walking, running and sitting on the ground. No new assets: the colours are put on the trainer's own sheet in code (hair, top and eyes share tones, so each part is found by where it is, frame by frame; the skin has tones of its own) and the accessories are drawn there too. Trainers with the same look share one sheet on the GPU.
+- **Contributor badge**: whoever had a pull request merged in the game gets a pixel-art ball and their PR count over their name and in the chat, next to where the admin has the gold badge. The ball is red at 1–10 PRs, blue at 11–20, black at 21–50 and a purple Master Ball at 51 or more. Type **/github** in the chat, open GitHub and type the code shown: the room learns your GitHub login (nothing else, and no password or token is kept) and counts your merged pull requests. The browser remembers it; **/github out** forgets it. A deploy of your own needs the Client ID of a GitHub OAuth App with Device Flow on, in `GITHUB_CLIENT_ID` (`wrangler.toml`).
 - **Skipping stones**: by the pond, press **T** (or tap the note over you) to throw a stone into the water. It flies from your hand in an arc, skips one to four times (a ring and a few drops at each touch, each hop shorter and lower) and sinks with a bigger splash. Everyone sees the same throw: the thrower plans where it touches the water and the room passes it on. No new assets: the pebble, the rings and the drops are made in code.
 - **Cigarette**: **Q** now goes coffee, cigarette, empty hands while you stand (and through it on a bench too). The ember glows at night and a thin trail of smoke rises from the tip; everyone sees it, and like the coffee it goes away while you walk.
 - **Sit on the ground**: press **C** (or the sitting button in the top card) to sit down wherever you are, facing the way you stand: front, back, left or right. Everyone sees it, also whoever joins later; walking, sitting on a bench or C again gets you up. The sitting frames are drawn in code from each trainer's own standing frames (with its cap colour), so there are no new assets.
@@ -53,6 +54,7 @@
 - A single room, `lobby`: `?room=` is gone and the server refuses other room names, so nobody can open extra rooms to run up the bill.
 
 ### Fixed
+- The game no longer fails to start when you come back to a fishing line whose fish got away while the tab was closed.
 - **Stones thrown while your tab was hidden** no longer all fly at once when you come back: a stone someone throws while you are on another tab is skipped.
 - A player whose cap colour is not known shows the cap their trainer is drawn with (red for the male, white for the female) instead of always red.
 - The chat button is back on phones (a desktop-only rule was hiding it there too).
