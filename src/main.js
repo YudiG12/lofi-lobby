@@ -4577,6 +4577,33 @@ function frameDue(now) {
   return true;
 }
 
+// ---- The moon's (sun's) shadow on demand ----
+// three.js redrew it every frame: one more pass of everything that casts a shadow, town included.
+// Now it is redrawn at once when you or another trainer moved (or changed frame), so the shadow under
+// your feet never lags, and otherwise at most every MOON_SHADOW_MS: enough for the cats, the
+// capybara, the owl, stones and the moon itself going round in the day/night cycle.
+const MOON_SHADOW_MS = 66; // ~15 times a second
+sun.shadow.autoUpdate = false;
+let moonShadowAt = -Infinity;
+let moonShadowFor = 0; // what the trainers looked like when it was last drawn (a hash)
+function trainersHash() {
+  let h = 0;
+  const add = (v) => (h = (Math.imul(h, 31) + Math.round(v * 100)) | 0);
+  for (const o of [sprite, ...[...others.values()].map((t) => t.mesh)]) {
+    const map = o.material.map;
+    add(o.position.x), add(o.position.y), add(o.position.z), add(o.visible), add(o.castShadow);
+    add(map?.offset.x ?? 0), add(map?.offset.y ?? 0), add(map?.id ?? 0);
+  }
+  return h;
+}
+function updateMoonShadow(now) {
+  const h = trainersHash();
+  if (h === moonShadowFor && now - moonShadowAt < MOON_SHADOW_MS) return;
+  sun.shadow.needsUpdate = true; // three.js clears it once drawn
+  moonShadowAt = now;
+  moonShadowFor = h;
+}
+
 function loop() {
   const now = performance.now();
   if (!frameDue(now)) return void requestAnimationFrame(loop);
@@ -4693,6 +4720,7 @@ function loop() {
   sprite.castShadow = !riding;
   const movers = [...others.values()].filter((o) => !isRideSeat(o.seat)).map((o) => o.mesh);
   updateLampShadows([...(riding ? [] : [sprite]), capy.mesh, owl.mesh, ...cats.map((c) => c.mesh), ...movers]);
+  updateMoonShadow(now);
   renderer.render(scene, camera);
   updateNameTags();
   updateBubbles();
