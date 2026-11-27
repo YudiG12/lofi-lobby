@@ -215,10 +215,38 @@ sun.shadow.bias = -0.0005;
 sun.shadow.normalBias = 0.05;
 scene.add(sun);
 
+// ---- Camera framing ----
+// The camera sits over and behind you (CAM_OFFSET) and the lens is fixed, so the window's shape alone
+// used to decide how much town you saw: a phone held upright saw a strip 10 units wide, and a big
+// monitor saw no more than a laptop. Now it backs away so that at least CAM_MIN_WIDTH of town fits
+// across your row, a little more on a tall window (up to CAM_SCREEN_MAX), and you can zoom in or
+// out (mouse wheel, + and -, a pinch), which is remembered.
+const CAM_OFFSET = new THREE.Vector3(0, 38, 42);
+const CAM_DIST = CAM_OFFSET.length();
+const CAM_MIN_WIDTH = 30;
+const CAM_SCREEN_MAX = 1.3; // a 1440p window sees about 30% more than a laptop
+const ZOOM_MIN = 0.6;
+const ZOOM_MAX = 1.8;
+let camZoom = 1;
+try { camZoom = THREE.MathUtils.clamp(Number(localStorage.getItem("zoom")) || 1, ZOOM_MIN, ZOOM_MAX); } catch {}
+let camFit = 1; // how far back the window's size and shape put the camera
+let camAway = null; // what the camera shows now: glides to camFit * camZoom
+function fitCamera() {
+  const halfWidth = CAM_DIST * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) * camera.aspect;
+  const narrow = Math.max(1, CAM_MIN_WIDTH / 2 / halfWidth);
+  const tall = THREE.MathUtils.clamp(innerHeight / 820, 1, CAM_SCREEN_MAX);
+  camFit = narrow * tall;
+}
+function zoomBy(factor) {
+  camZoom = THREE.MathUtils.clamp(camZoom * factor, ZOOM_MIN, ZOOM_MAX);
+  try { localStorage.setItem("zoom", camZoom.toFixed(3)); } catch {}
+}
 function resize() {
   renderer.setSize(innerWidth, innerHeight);
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
+  fitCamera();
+  camAway ??= camFit * camZoom; // the first time: no glide from elsewhere
 }
 addEventListener("resize", resize);
 resize();
@@ -1106,6 +1134,9 @@ const OVERCAST_SKY = new THREE.Color("#7d8794");
 const OVERCAST_LIGHT = new THREE.Color("#a3adbb");
 let rainAmount = 0; // 0 = dry, 1 = full rain (eased in the loop)
 let dayAmount = 0;
+// The fog starts where it did with the camera at its usual distance: zoomed out, it moves back with it
+let fogNear = 50;
+let fogFar = 140;
 function applyLook(look) {
   const t = look.daylight;
   dayAmount = t;
@@ -1118,8 +1149,8 @@ function applyLook(look) {
   // rain closes the fog in; at night it is always closed in, rain or not, so the town stays
   // dark around the lamps' pools of light
   const closed = Math.max(rainAmount, 1 - t);
-  scene.fog.near = 50 - 12 * closed;
-  scene.fog.far = 140 - 22 * closed;
+  fogNear = 50 - 12 * closed;
+  fogFar = 140 - 22 * closed;
   skyLight.color.copy(look.skyTop).lerp(OVERCAST_LIGHT, 0.5 * overcast);
   skyLight.groundColor.copy(look.skyGround);
   const gloom = 1 - (0.2 + 0.2 * t) * closed;
@@ -2841,6 +2872,43 @@ const releaseStick = (e) => {
 };
 canvasEl.addEventListener("pointerup", releaseStick);
 canvasEl.addEventListener("pointercancel", releaseStick);
+
+// Zoom: the mouse wheel over the scene, + and - (= and _ too, same keys), or two fingers pinching
+// (a second finger ends the walking stick)
+canvasEl.addEventListener("wheel", (e) => zoomBy(Math.exp(THREE.MathUtils.clamp(e.deltaY, -200, 200) * 0.0015)), { passive: true });
+addEventListener("keydown", (e) => {
+  const typing = ["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName) || document.activeElement?.isContentEditable;
+  if (typing || e.ctrlKey || e.metaKey || e.altKey) return; // Ctrl and + is the browser's own zoom
+  if (e.key === "+" || e.key === "=") zoomBy(1 / 1.15);
+  if (e.key === "-" || e.key === "_") zoomBy(1.15);
+});
+const pinchTouches = new Map(); // pointerId -> { x, y }
+let pinchFrom = null; // { dist, zoom } while two fingers are down
+const pinchDist = () => {
+  const [a, b] = [...pinchTouches.values()];
+  return Math.hypot(a.x - b.x, a.y - b.y) || 1;
+};
+canvasEl.addEventListener("pointerdown", (e) => {
+  if (e.pointerType !== "touch") return;
+  pinchTouches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (pinchTouches.size !== 2) return;
+  if (stick.id !== null) releaseStick({ pointerId: stick.id });
+  pinchFrom = { dist: pinchDist(), zoom: camZoom };
+  try { canvasEl.setPointerCapture(e.pointerId); } catch {} // keeps the pinch if the finger slides over the HUD
+});
+canvasEl.addEventListener("pointermove", (e) => {
+  if (!pinchTouches.has(e.pointerId)) return;
+  pinchTouches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (!pinchFrom || pinchTouches.size !== 2) return;
+  camZoom = pinchFrom.zoom; // fingers apart bring the town closer
+  zoomBy(pinchFrom.dist / pinchDist());
+});
+const endPinch = (e) => {
+  pinchTouches.delete(e.pointerId);
+  if (pinchTouches.size < 2) pinchFrom = null;
+};
+canvasEl.addEventListener("pointerup", endPinch);
+canvasEl.addEventListener("pointercancel", endPinch);
 const pos = new THREE.Vector3(0, 0, 0);
 // sitting or standing moves you at once; the sprite and camera glide over from where you were
 const slide = { x: 0, z: 0 };
@@ -4601,7 +4669,10 @@ function loop() {
   if (running && GENDER === "male") sprite.position.y -= 0.8;
   shadow.position.set(pos.x + slide.x, pos.y + 0.05, pos.z + slide.z);
   shadow.visible = mySeat < 0; // would float under the hanging feet
-  camera.position.set(pos.x + slide.x, pos.y + 38, pos.z + 42 + slide.z);
+  camAway += (camFit * camZoom - camAway) * (1 - Math.exp(-dt * 10));
+  camera.position.set(pos.x + slide.x, pos.y, pos.z + slide.z).addScaledVector(CAM_OFFSET, camAway);
+  scene.fog.near = fogNear + CAM_DIST * (camAway - 1);
+  scene.fog.far = fogFar + CAM_DIST * (camAway - 1);
   camera.lookAt(pos.x + slide.x, pos.y + 1, pos.z + slide.z);
   updateCapy();
   owl.update(performance.now(), pos);
