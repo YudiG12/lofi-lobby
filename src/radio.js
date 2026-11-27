@@ -3,13 +3,30 @@
 // at a fixed date, looping through the playlist. With multiplayer, the room's
 // Durable Object becomes the source of that "start".
 
+// Each video with its length in whole seconds. The second everyone hears comes from the clock,
+// looping through the playlist since START, so every listener must use the same lengths: YouTube
+// reports a video's length a little differently from one load to the next (10556 or 10555.341 s
+// for the first one), and over the thousands of loops since START that put listeners up to half
+// an hour apart. Add a video with its length.
 export const PLAYLIST = [
-  "x6ujm9B-vAc",
-  // add more YouTube IDs here
+  { id: "x6ujm9B-vAc", seconds: 10555 }, // 2:55:55
 ];
 
 const START = Date.UTC(2026, 0, 1); // radio's time zero
-const durations = {}; // id -> seconds (learned as each video loads)
+// a video added without its length: learned when it loads (whole seconds), 1h until then
+const learned = {};
+const broken = new Set(); // unavailable or not embeddable: counts as 1 second, so it's skipped
+function lengthOf(idx) {
+  const { id, seconds } = PLAYLIST[idx];
+  return broken.has(id) ? 1 : seconds || learned[id] || 3600;
+}
+function learnLength(idx, d) {
+  const { id, seconds } = PLAYLIST[idx] || {};
+  d = Math.floor(d);
+  if (!id || seconds || !(d > 1) || learned[id] === d) return false;
+  learned[id] = d;
+  return true;
+}
 
 let player = null;
 let playingIdx = -1;
@@ -44,7 +61,7 @@ function nowByCommand() {
   let t = (Date.now() - command.at) / 1000;
   // walk the playlist while time is past the video's duration
   for (let n = 0; n < 500; n++) {
-    const d = durations[PLAYLIST[idx]] || 3600;
+    const d = lengthOf(idx);
     if (t < d) return { idx, sec: Math.max(0, t) };
     t -= d;
     idx = (idx + 1) % PLAYLIST.length;
@@ -81,14 +98,13 @@ export const admin = {
   previous: () => applyCommand(playingIdx - 1),
 };
 
-// Which video and which second, right now. A video with unknown duration counts
-// as 1h until it loads (then it's recomputed).
+// Which video and which second, right now.
 function nowOnRadio() {
   if (command) return nowByCommand();
-  const total = PLAYLIST.reduce((s, id) => s + (durations[id] || 3600), 0);
+  const total = PLAYLIST.reduce((s, _, i) => s + lengthOf(i), 0);
   let t = ((Date.now() - START) / 1000) % total;
   for (let i = 0; i < PLAYLIST.length; i++) {
-    const d = durations[PLAYLIST[i]] || 3600;
+    const d = lengthOf(i);
     if (t < d) return { idx: i, sec: t };
     t -= d;
   }
@@ -99,17 +115,20 @@ function sync() {
   if (paused || !player?.getPlayerState) return;
   const { idx, sec } = nowOnRadio();
   if (idx !== playingIdx) {
-    const sameVideo = PLAYLIST[idx] === player.getVideoData?.()?.video_id;
+    const sameVideo = PLAYLIST[idx].id === player.getVideoData?.()?.video_id;
     playingIdx = idx;
     // restart with a 1-video playlist: same id, just seek back
     if (sameVideo) player.seekTo(sec, true);
-    else player.loadVideoById({ videoId: PLAYLIST[idx], startSeconds: sec });
+    else player.loadVideoById({ videoId: PLAYLIST[idx].id, startSeconds: sec });
     return;
   }
-  // correct drift (ads, slow connection) of more than 3s
+  // correct drift (ads, slow connection, a pause) of more than 3s. Also while stopped, so coming
+  // back from a pause starts at the room's second instead of playing the old one first
+  const state = player.getPlayerState();
+  if (state === YT.PlayerState.BUFFERING) return;
   const current = player.getCurrentTime?.() || 0;
-  if (Math.abs(current - sec) > 3 && player.getPlayerState() === YT.PlayerState.PLAYING) player.seekTo(sec, true);
-  if (player.getPlayerState() !== YT.PlayerState.PLAYING && player.getPlayerState() !== YT.PlayerState.BUFFERING) player.playVideo();
+  if (Math.abs(current - sec) > 3) player.seekTo(sec, true);
+  if (state !== YT.PlayerState.PLAYING) player.playVideo();
 }
 
 const TOUCH = matchMedia("(pointer: coarse)").matches;
@@ -129,7 +148,7 @@ export async function startRadio({ elPlayer, elTitle }) {
     clearTimeout(coverTimer);
     if (playing) coverTimer = setTimeout(() => (cover.hidden = true), 4500);
     else {
-      cover.src = `https://i.ytimg.com/vi/${PLAYLIST[Math.max(0, playingIdx)]}/hqdefault.jpg`;
+      cover.src = `https://i.ytimg.com/vi/${PLAYLIST[Math.max(0, playingIdx)].id}/hqdefault.jpg`;
       cover.hidden = false;
     }
   };
@@ -137,7 +156,7 @@ export async function startRadio({ elPlayer, elTitle }) {
   player = new YT.Player(elPlayer, {
     width: 176,
     height: 99,
-    videoId: PLAYLIST[idx],
+    videoId: PLAYLIST[idx].id,
     playerVars: { autoplay: 1, controls: 0, disablekb: 1, modestbranding: 1, rel: 0, playsinline: 1, start: Math.floor(sec) },
     events: {
       onReady: (e) => {
@@ -155,6 +174,11 @@ export async function startRadio({ elPlayer, elTitle }) {
           addEventListener("pointerdown", unmute, { once: true, capture: true });
         }
         if (muted) e.target.mute();
+        // a video added without its length started at a guess: once it tells its length, go to the right second
+        if (learnLength(playingIdx, e.target.getDuration())) {
+          playingIdx = -1;
+          sync();
+        }
         if (paused) e.target.pauseVideo();
         else e.target.playVideo();
       },
@@ -166,19 +190,15 @@ export async function startRadio({ elPlayer, elTitle }) {
           return;
         }
         if (e.data === YT.PlayerState.PLAYING) {
-          const id = PLAYLIST[playingIdx];
-          const d = p.getDuration();
-          if (d && durations[id] !== d) {
-            durations[id] = d;
-            sync(); // now with the real duration, recompute the point
-          }
+          if (learnLength(playingIdx, p.getDuration())) sync(); // a video added without its length: recompute the point
           elTitle.textContent = p.getVideoData()?.title || "—";
         }
         if (e.data === YT.PlayerState.ENDED) sync();
       },
       onError: () => {
         // video unavailable / not embeddable: skip to the next
-        durations[PLAYLIST[playingIdx]] = 1;
+        const v = PLAYLIST[playingIdx];
+        if (v) broken.add(v.id);
         sync();
       },
     },
