@@ -38,6 +38,7 @@ Open the URL, pick a trainer and press **enter the room**: the click is what let
 | @ in the chat | mention someone in the room (Tab or Enter picks the name); everyone reads it, but it is highlighted for them |
 | G | switch trainer |
 | T by the pond | skip a stone on the water (everyone sees it) |
+| H by a cat | pick the cat up over your head; H again throws it the way you face (everyone sees it) |
 | C, or the sitting button | sit on the ground, facing the way you stand (any move gets you up) |
 | N or the day/night button | switch between night, day and automatic day/night cycle for you |
 | R or the rain button | turn the rain on or off for you (greyer sky by day) |
@@ -64,7 +65,7 @@ Open the URL, pick a trainer and press **enter the room**: the click is what let
 | Assets | The repo and live site include the **Twinleaf FBX town, its textures and both trainer sheets** from `public/assets/`; code-generated fallbacks remain for load failures | [ADR 005](docs/adr/005-version-and-deploy-game-assets.md) |
 | Presence | `pagehide` beacon (`/api/leave` with per-socket token), zero-wake `ping`/`pong` heartbeat + DO `alarm()`, and strict pre-`hello` gating | [ADR 006](docs/adr/006-reliable-disconnect-and-stale-socket-cleanup.md) |
 | Day / night / auto | Client-side 3-state switch (`night`, `day`, `auto`): 10-minute keyframed cycle (`DEFAULT_CYCLE_MS` in `src/main.js`), persisted in `localStorage`; dev-only module in `src/cycle-debug.js` | [ADR 008](docs/adr/008-client-side-day-night-cycle.md) |
-| Town cats | Five clock-synced procedural cats roaming a whole-town BFS NavGrid (`src/cat.js`), fed with `E`, with DO heartbeat lottery for head-perching (`worker/index.js`) | [ADR 009](docs/adr/009-free-roaming-town-cats-and-head-perching.md) |
+| Town cats | Five clock-synced procedural cats roaming a whole-town BFS NavGrid (`src/cat.js`), fed with `E`, picked up and thrown with `H` (rules in `src/cat-carry.js`, shared with the room), with DO heartbeat lottery for head-perching (`worker/index.js`) | [ADR 009](docs/adr/009-free-roaming-town-cats-and-head-perching.md) |
 | Debug hub | Single dev-only `import.meta.env.DEV` hub (`src/debug.js`) behind one toolbar bug button, hosting modular debug views (`src/cat-debug.js`, `src/cycle-debug.js`) and stripped from production builds | [ADR 010](docs/adr/010-dev-only-modular-debug-hub.md) |
 | Carousel | Built in code where pines are taken out of the town as it loads; turned by the room's clock (`roomNow()`), so its horses are just seats 16..23 and riding sends no messages; nothing that turns casts a shadow | [ADR 011](docs/adr/011-christmas-carousel.md) |
 | Ferris wheel and fair lamps | The carousel's pattern right of the pond: gondolas are seats 24..31, boarded only near the bottom, placed upright each frame from the room's clock; four lamps around the rides whose light casts no shadow | [ADR 012](docs/adr/012-ferris-wheel-and-fair-lamps.md) |
@@ -85,6 +86,7 @@ src/
                     collision, chat bubbles, name tags, multiplayer client
   cat.js            procedural pixel-art town cats (5 coats, walk, eat, 4-dir head perch)
   debug.js          dev-only modular debug hub (stripped from production builds)
+  cat-carry.js      picking up and throwing cats: rules, landing spot and arc (shared with the worker)
   cat-debug.js      dev-only cat & NavGrid debug module (stripped from production builds)
   cycle-debug.js    dev-only cycle debug module (stripped from production builds)
   radio.js          YouTube player synced by the clock or by the room's radio command
