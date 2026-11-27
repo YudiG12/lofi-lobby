@@ -2336,11 +2336,13 @@ function catRideUpdate(m) {
   if (!cat) return;
   const now = roomNow();
   if (m.throw && Number.isFinite(m.throw.x) && Number.isFinite(m.throw.z)) {
+    hushHolder(cat);
     startThrow(cat, now, m.throw.x, m.throw.z);
     if (Number.isInteger(m.phrase)) showBubble(cat.mesh, THROW_PHRASES[Math.abs(m.phrase) % THROW_PHRASES.length]);
     return;
   }
   if (!m.playerId || !(m.until > m.at) || m.until <= now) {
+    hushHolder(cat);
     if (cat.ride) startHopOff(cat, now);
     return;
   }
@@ -4383,12 +4385,23 @@ function updateWallPrompt() {
 // line for everyone (picked from the room's phrase number)
 function sayHeldLines(cat, t) {
   const r = cat.ride;
-  if (!r?.held || r.phrase === null || t >= r.until) return;
+  if (r?.held && t >= r.until - CAT_HOP_MS) return hushHolder(cat); // held too long: it wriggles free
+  if (!r?.held || r.phrase === null) return;
   const k = Math.floor((t - r.at) / SAY_EVERY_MS);
   if (k === r.said) return;
   r.said = k;
   const who = resolveRideTarget(r.playerId);
-  if (who) showBubble(who.mesh, sayAt(r.phrase, k));
+  if (!who) return;
+  r.line = sayAt(r.phrase, k);
+  r.lineOn = who.mesh;
+  showBubble(who.mesh, r.line);
+}
+// the cat left the hands (thrown, put down, wriggled free): what the trainer was saying about holding
+// it goes with it, unless they have said something else since (a chat message)
+function hushHolder(cat) {
+  const r = cat.ride;
+  const b = r?.lineOn && bubbles.get(r.lineOn);
+  if (b && b.el.textContent === r.line) b.until = Math.min(b.until, performance.now());
 }
 function updateCats() {
   const t = roomNow();
