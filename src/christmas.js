@@ -193,7 +193,7 @@ export function createHouseLights({ scene, houses, roofAt, wallAt }) {
 }
 
 // ---- The Christmas tree ----
-// One of the pines by the pond gets baubles on its branches (where rays from around it meet the tree)
+// The pine below the pond (between the carousel and the Ferris wheel) gets baubles on its branches (where rays from around it meet the tree)
 // and a pixel-art star on top that glows and gently pulses.
 const BAUBLES = [new THREE.Color("#ff3b4e"), new THREE.Color("#ffd24a"), new THREE.Color("#5aa8ff"), new THREE.Color("#e8eef8")];
 const STAR = [

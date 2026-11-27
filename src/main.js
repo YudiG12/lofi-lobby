@@ -453,7 +453,7 @@ function bakeGeometry(o, indexed) {
 // The town's own Christmas decorations, made once it is in place (src/christmas.js); shown by the switch
 let houseLights = null,
   christmasTree = null;
-const XMAS_TREE_NEAR = new THREE.Vector2(12, 30); // the front pine to the right of the pond
+const XMAS_TREE_NEAR = new THREE.Vector2(0, 41); // the pine just below the pond, between the carousel and the Ferris wheel
 function dressTownForChristmas(root) {
   // one box per house: its own mesh (the FBX town), or the unnamed group of parts it is built from (the village)
   const houses = new Map();
