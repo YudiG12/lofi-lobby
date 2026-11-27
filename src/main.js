@@ -1673,13 +1673,59 @@ function placeCapyWalk() {
 // The last feeding: it sat from `at` to `until` (room clock, ms); `lost` is all the sitting before that.
 let capyFed = { at: 0, until: 0, lost: 0 };
 const roomNow = () => Date.now() + clockOffset;
-// Christmas by the room's clock (so it starts and ends for everyone at once); in development, ?xmas forces it
+// ---- Christmas ----
+// "auto" decorates the town in the season (1 December to 6 January by the room's clock, so it starts and
+// ends for everyone at once); "on" and "off" are for whoever wants it always or never. Only for you,
+// remembered, like rain and day/night: the X key or the tree button in the top card goes through them.
+// In development, ?xmas makes "auto" think it is the season.
+const XMAS_MODES = ["auto", "on", "off"];
+let xmasMode = "auto";
+try {
+  const saved = localStorage.getItem("christmas");
+  if (XMAS_MODES.includes(saved)) xmasMode = saved;
+} catch {}
 const FORCE_XMAS = import.meta.env.DEV && new URLSearchParams(location.search).has("xmas");
-const christmasNow = () => FORCE_XMAS || isChristmas(roomNow());
-// the capybara dresses as a reindeer in the season; checked every minute, since the lobby stays open for days
-const dressCapy = () => capy.setReindeer(christmasNow());
-dressCapy();
-setInterval(dressCapy, 60_000);
+const christmasNow = () => xmasMode === "on" || (xmasMode === "auto" && (FORCE_XMAS || isChristmas(roomNow())));
+// what dresses up for it: each is told now and whenever it changes
+const xmasDressers = [];
+let xmasOn = christmasNow();
+function whenChristmas(dress) {
+  xmasDressers.push(dress);
+  dress(xmasOn);
+}
+function applyChristmas() {
+  const on = christmasNow();
+  drawChristmasButton();
+  if (on === xmasOn) return;
+  xmasOn = on;
+  xmasDressers.forEach((dress) => dress(on));
+}
+const xmasBtn = document.querySelector("#christmas");
+function drawChristmasButton() {
+  xmasBtn.classList.toggle("on", christmasNow());
+  xmasBtn.setAttribute("aria-label", {
+    auto: "christmas: automatic (1 Dec – 6 Jan)",
+    on: "christmas: always",
+    off: "christmas: off",
+  }[xmasMode]);
+}
+function cycleChristmas() {
+  xmasMode = XMAS_MODES[(XMAS_MODES.indexOf(xmasMode) + 1) % XMAS_MODES.length];
+  try { localStorage.setItem("christmas", xmasMode); } catch {}
+  applyChristmas();
+}
+xmasBtn.addEventListener("click", (e) => {
+  cycleChristmas();
+  e.currentTarget.blur(); // give the keyboard back to the game
+});
+addEventListener("keydown", (e) => {
+  const typing = ["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName) || document.activeElement?.isContentEditable;
+  if (!typing && !e.repeat && !e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === "x") cycleChristmas();
+});
+drawChristmasButton();
+setInterval(applyChristmas, 60_000); // the lobby stays open for days: the season starts and ends by itself
+// the capybara dresses as a reindeer
+whenChristmas((on) => capy.setReindeer(on));
 // where the room's clock puts it: there and back at one speed, standing still on the clock while it sits
 function walkCapy(t) {
   const eating = t >= capyFed.at && t < capyFed.until;
@@ -1697,7 +1743,7 @@ function walkCapy(t) {
 function capyWasFed(m) {
   if (![m.at, m.until, m.lost].every(Number.isFinite)) return;
   capyFed = { at: m.at, until: m.until, lost: m.lost };
-  const phrases = christmasNow() ? CHRISTMAS_PHRASES : CAPY_PHRASES;
+  const phrases = xmasOn ? CHRISTMAS_PHRASES : CAPY_PHRASES;
   if (Number.isInteger(m.phrase)) showBubble(capy.mesh, phrases[Math.abs(m.phrase) % phrases.length]);
 }
 
@@ -2754,7 +2800,7 @@ function connect() {
     if (m.t === "you") {
       myId = m.id;
       if (Number.isFinite(m.now)) clockOffset = m.now - Date.now(); // the capybara walks by the room's clock
-      dressCapy(); // the room's date, not this device's
+      applyChristmas(); // the room's date, not this device's
       myLeaveToken = m.token || "";
       // the room reconnected us to a newer deploy than the one this tab loaded with: reload to get
       // it, but not in the middle of something being written
@@ -3674,3 +3720,4 @@ function loop() {
   requestAnimationFrame(loop);
 }
 loop();
+
