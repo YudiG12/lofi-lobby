@@ -37,6 +37,28 @@
   #place .tools button.confirm::after { content: "click again to respawn"; color: #ff8a6b; }
   #place .tools button[hidden] { display: none; }
   #place .tools button:hover, #place .tools button.on { border-color: #ffc95a; color: #ffc95a; }
+  #show-ui { left: 28px; top: 28px; width: 34px; height: 34px; padding: 0; display: grid; place-items: center; cursor: pointer;
+             opacity: .85; transition: opacity .15s, border-color .15s, color .15s; }
+  #show-ui[hidden] { display: none; }
+  #show-ui[data-key]::before { content: attr(data-key); position: absolute; right: 2px; bottom: 1px; font-size: 7px; line-height: 7px; color: #9a9db0; }
+  #show-ui[data-key]:hover::before { color: inherit; }
+  #show-ui:hover, #show-ui:focus-visible { opacity: 1; border-color: #ffc95a; color: #ffc95a; }
+  /* clean view: hide HUD and floating world labels without stopping the radio */
+  body.ui-hidden #place,
+  body.ui-hidden #hint,
+  body.ui-hidden #github,
+  body.ui-hidden #chat,
+  body.ui-hidden #chat-toggle,
+  body.ui-hidden #mod-menu,
+  body.ui-hidden #coaster-sign,
+  body.ui-hidden .tag,
+  body.ui-hidden .bubble,
+  body.ui-hidden #sit-prompt,
+  body.ui-hidden #wall-prompt,
+  body.ui-hidden #capy-prompt,
+  body.ui-hidden #stone-prompt,
+  body.ui-hidden #cat-prompt,
+  body.ui-hidden #fish-prompt { opacity: 0 !important; pointer-events: none !important; visibility: hidden !important; }
   #hint { left: 28px; top: 244px; padding: 12px 16px; font-size: 11px; color: #C4C6D4; transition: opacity .4s; }
   #hint[hidden] { display: none; }
   #hint.fade { opacity: 0; }
@@ -237,6 +259,7 @@
     canvas { touch-action: none; }
     #hint { display: none; }
     #place { left: 12px; top: calc(12px + env(safe-area-inset-top)); padding: 10px 14px 12px; max-width: calc(100vw - 24px); }
+    #show-ui { left: 12px; top: calc(12px + env(safe-area-inset-top)); width: 36px; height: 36px; }
     #place b { font-size: 16px; }
     #place small { display: block; font-size: 10px; }
     #place .tools { flex-wrap: wrap; }
@@ -290,10 +313,12 @@
     <button id="switch-trainer" type="button" data-key="G" aria-label="switch trainer"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="4"/><path d="M3 21v-1a6 6 0 0 1 9-5.2M16 14l3 3-3 3M22 17h-7"/></svg></button>
     <button id="respawn" type="button" aria-label="back to the spawn"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg></button>
     <button id="fullscreen" type="button" data-key="F" aria-label="full screen" hidden><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3"/></svg></button>
+    <button id="hide-ui" type="button" data-key="H" aria-label="hide interface"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg></button>
     <button id="pause-btn" type="button" aria-label="pause"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5v14M15 5v14"/></svg></button>
     <button id="help" type="button" aria-label="shortcuts">?</button>
   </div>
 </div>
+<button id="show-ui" class="glass" type="button" data-key="H" aria-label="show interface" title="show interface (H)" hidden><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 19c-6.5 0-10-7-10-7a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c6.5 0 10 7 10 7a18.5 18.5 0 0 1-2.16 3.19M1 1l22 22"/><path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/></svg></button>
 <form id="admin-login" class="glass" hidden autocomplete="off"><b>admin login</b>
   <input type="password" placeholder="password" aria-label="admin password" />
   <div><button type="button" data-cancel>cancel</button><button type="submit">log in</button></div>
@@ -307,7 +332,7 @@
 <button id="sit-prompt" type="button" hidden><span class="key">press <kbd>E</kbd> to sit</span><span class="tap">tap to sit</span></button>
 <div id="hint" class="glass" hidden><b>shortcuts</b>
   <dl><dt>WASD / arrows</dt><dd>walk</dd><dt>Shift</dt><dd>run</dd><dt>Enter</dt><dd>chat</dd><dt>N</dt><dd>day / night / auto</dd><dt>R</dt><dd>rain</dd>
-  <dt>C</dt><dd>sit on the ground / get up</dd><dt>E</dt><dd>sit / stand up (near a bench)</dd><dt>E</dt><dd>fish: a focus timer (at the pond's edge)</dd><dt>T</dt><dd>skip a stone (by the pond)</dd><dt>Q</dt><dd>coffee / cigarette (laptop / book too when sitting)</dd><dt>G</dt><dd>switch trainer</dd><dt>B</dt><dd>message wall</dd><dt>F</dt><dd>full screen</dd><dt>M</dt><dd>mute</dd><dt>P</dt><dd>frames per second</dd><dt>Space</dt><dd>pause</dd></dl></div>
+  <dt>C</dt><dd>sit on the ground / get up</dd><dt>E</dt><dd>sit / stand up (near a bench)</dd><dt>E</dt><dd>fish: a focus timer (at the pond's edge)</dd><dt>T</dt><dd>skip a stone (by the pond)</dd><dt>Q</dt><dd>coffee / cigarette (laptop / book too when sitting)</dd><dt>G</dt><dd>switch trainer</dd><dt>B</dt><dd>message wall</dd><dt>F</dt><dd>full screen</dd><dt>H</dt><dd>hide interface</dd><dt>M</dt><dd>mute</dd><dt>P</dt><dd>frames per second</dd><dt>Space</dt><dd>pause</dd></dl></div>
 <!-- the radio's YouTube player: it plays the music, out of sight (its sound controls are in the top card) -->
 <div id="yt-holder" aria-hidden="true"><div id="yt"></div></div>
 <a id="github" class="glass" href="https://github.com/YudiG12/lofi-lobby" target="_blank" rel="noopener" aria-label="contribute to the game on GitHub: it's open source"><svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"/></svg><span>contribute to the game:<br>it's open source!</span></a>
@@ -492,6 +517,23 @@
     if (e.key === "Enter") { enterName.blur(); enter(); }
   });
   document.querySelector("#pause-btn").addEventListener("click", pause);
+  // hide interface: clean view of the town; keeps the radio playing and leaves a subtle corner button to restore
+  const hideUiBtn = document.querySelector("#hide-ui");
+  const showUiBtn = document.querySelector("#show-ui");
+  const setUiHidden = (hidden) => {
+    document.body.classList.toggle("ui-hidden", hidden);
+    showUiBtn.hidden = !hidden;
+    hideUiBtn.classList.toggle("on", hidden);
+  };
+  hideUiBtn.addEventListener("click", () => { setUiHidden(true); hideUiBtn.blur(); });
+  showUiBtn.addEventListener("click", () => { setUiHidden(false); showUiBtn.blur(); });
+  addEventListener("keydown", (e) => {
+    const typing = ["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName) || document.activeElement?.isContentEditable;
+    const modalOpen = !pauseScreen.hidden || !!document.querySelector("#wall:not([hidden]), #admin-login:not([hidden]), #github-login:not([hidden]), .social-card:not([hidden])");
+    if (!typing && !modalOpen && !e.repeat && !e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === "h") {
+      setUiHidden(!document.body.classList.contains("ui-hidden"));
+    }
+  });
   // shortcuts: behind the "?" button; shown once by itself on the first visit
   const hint = document.querySelector("#hint");
   const helpBtn = document.querySelector("#help");
