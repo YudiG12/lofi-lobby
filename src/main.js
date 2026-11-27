@@ -236,7 +236,8 @@ let townBox = new THREE.Box3(
 // ---- Animated water ----
 // Regular Phong + injected shader: ripples that perturb the normal (the glow of
 // the lamps and the moon "dances" on the surface), moving light bands and sparkle.
-const waterUniforms = { uTime: { value: 0 } };
+// uIce: 0 water .. 1 frozen (at Christmas the pond freezes over, fading in like the snow)
+const waterUniforms = { uTime: { value: 0 }, uIce: { value: 0 } };
 const waterMaterial = new THREE.MeshPhongMaterial({
   // night: deep blue, no light of its own; the shine comes only from the lamps (and a hint of moon)
   color: "#0b2d63", // deep blue, less saturated
@@ -249,6 +250,7 @@ const waterMaterial = new THREE.MeshPhongMaterial({
 });
 waterMaterial.onBeforeCompile = (shader) => {
   shader.uniforms.uTime = waterUniforms.uTime;
+  shader.uniforms.uIce = waterUniforms.uIce;
   shader.vertexShader = shader.vertexShader
     .replace("#include <common>", "#include <common>\nvarying vec3 vWorld;")
     .replace(
@@ -260,8 +262,15 @@ waterMaterial.onBeforeCompile = (shader) => {
       "#include <common>",
       `#include <common>
 uniform float uTime;
+uniform float uIce;
 varying vec3 vWorld;
-float wave(vec2 p, vec2 d, float f, float v) { return sin(dot(p, d) * f + uTime * v); }`,
+float wave(vec2 p, vec2 d, float f, float v) { return sin(dot(p, d) * f + uTime * v); }
+// the ice's cracks: long thin lines in two directions, broken up so they don't cross the whole pond
+float iceCrack(vec2 p) {
+  float a = smoothstep(0.045, 0.0, abs(fract(dot(p, vec2(0.11, 0.17))) - 0.5)) * step(0.6, fract(sin(floor(dot(p, vec2(0.17, -0.11)) * 0.6) * 43758.5)));
+  float b = smoothstep(0.04, 0.0, abs(fract(dot(p, vec2(-0.15, 0.09)) + 0.3) - 0.5)) * step(0.65, fract(sin(floor(dot(p, vec2(0.09, 0.15)) * 0.7) * 12543.1)));
+  return max(a, b);
+}`,
     )
     // perturb the normal with waves in several directions
     .replace(
@@ -270,7 +279,9 @@ float wave(vec2 p, vec2 d, float f, float v) { return sin(dot(p, d) * f + uTime 
 vec2 pa = vWorld.xz * 1.6; // wave size: higher = finer
 float dx = wave(pa, vec2(1.0, 0.3), 1.7, 1.6) * 0.5 + wave(pa, vec2(-0.4, 1.0), 2.9, 2.3) * 0.3 + wave(pa, vec2(0.7, -0.8), 5.3, 3.1) * 0.15;
 float dz = wave(pa, vec2(0.2, 1.0), 2.1, 1.4) * 0.5 + wave(pa, vec2(1.0, -0.5), 3.7, 2.7) * 0.3 + wave(pa, vec2(-0.9, -0.6), 6.1, 3.5) * 0.15;
-normal = normalize(normal + vec3(dx, 0.0, dz) * 0.18);`,
+normal = normalize(normal + vec3(dx, 0.0, dz) * 0.18 * (1.0 - uIce)); // still, once frozen
+diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.42, 0.53, 0.65) + iceCrack(vWorld.xz) * 0.22, uIce);
+diffuseColor.a = mix(diffuseColor.a, 0.97, uIce);`,
     )
     // light bands and sparkle added to the final color
     .replace(
@@ -278,7 +289,7 @@ normal = normalize(normal + vec3(dx, 0.0, dz) * 0.18);`,
       `#include <dithering_fragment>
 float band = smoothstep(0.75, 1.0, wave(vWorld.xz, vec2(0.6, 0.8), 0.9, 0.8) * wave(vWorld.xz, vec2(-0.8, 0.5), 1.3, 1.1));
 float sparkle = pow(max(0.0, wave(vWorld.xz, vec2(1.0, 0.2), 7.0, 4.0) * wave(vWorld.xz, vec2(-0.3, 1.0), 6.0, 3.3)), 12.0);
-gl_FragColor.rgb += vec3(0.10, 0.25, 0.6) * band * 0.06 + vec3(0.7, 0.8, 1.0) * sparkle * 0.07;`,
+gl_FragColor.rgb += (vec3(0.10, 0.25, 0.6) * band * 0.06 + vec3(0.7, 0.8, 1.0) * sparkle * 0.07) * (1.0 - uIce);`,
     );
 };
 
@@ -1373,7 +1384,7 @@ function updateRain(dt) {
     if (rainFloor[i] < -100) rainFloor[i] = surfaceAt(x, z)?.y ?? pos.y;
     if (y < rainFloor[i]) {
       const s = surfaceAt(x, z);
-      if (s && Math.random() < (s.water ? 0.9 : 0.5) * rainAmount) splash(x, s.y, z, s.water);
+      if (s && Math.random() < (s.water ? 0.9 : 0.5) * rainAmount) splash(x, s.y, z, s.water && !pondFrozen); // small on the ice
       x = pos.x + (Math.random() * 2 - 1) * radius;
       z = pos.z + (Math.random() * 2 - 1) * radius;
       y = top - Math.random() * 6;
@@ -1765,6 +1776,9 @@ drawChristmasButton();
 setInterval(applyChristmas, 60_000); // the lobby stays open for days: the season starts and ends by itself
 // the capybara dresses as a reindeer, it snows, and the lamp posts get a ribbon
 whenChristmas((on) => capy.setReindeer(on));
+// the pond freezes over: ice instead of water, fishing through a hole, stones sliding on it
+let pondFrozen = false;
+whenChristmas((on) => (pondFrozen = on));
 // it snows when you chose snow, or at Christmas (rain still wins: the flakes stop while it rains)
 function updateSnowing() {
   snow.setOn(weather === "snow" || xmasOn);
@@ -3317,6 +3331,7 @@ const otherGear = (o) =>
   (o.gear ??= createFishingGear({
     scene,
     camera,
+    frozen: () => pondFrozen,
     feetDepth: (mesh) => useFeetDepth(mesh, o.feet, 12),
     shape: (d) => bodyShape(o.tex, o.cfg, d),
   }));
@@ -4002,7 +4017,7 @@ function updateCapy() {
 // ---- Skipping stones (T by the pond) ----
 // You plan the throw (where the stone touches the water), see it at once, and the room sends it to
 // everyone; others animate the same path from your hand (src/stones.js).
-const stones = createStones(scene, { surfaceY: (x, z) => topHeight(x, z), camera });
+const stones = createStones(scene, { surfaceY: (x, z) => topHeight(x, z), camera, frozen: () => pondFrozen });
 const STONE_NEAR = 4.5; // how close to the pond you must be
 const STONE_EVERY_MS = 1200;
 let lastStone = 0;
@@ -4110,6 +4125,7 @@ function updateCats() {
 
 const fishing = createFishing({
   scene,
+  frozen: () => pondFrozen,
   button: document.querySelector("#fish"),
   say: (text) => showBubble(sprite, text),
   feetDepth: (mesh) => useFeetDepth(mesh, myFeet, 12),
@@ -4280,6 +4296,9 @@ function loop() {
   checkSavedPosition();
   savePosition(performance.now());
   waterUniforms.uTime.value += dt;
+  // the pond freezes over (or thaws) in a few seconds
+  const ice = waterUniforms.uIce;
+  if (ice.value !== (pondFrozen ? 1 : 0)) ice.value = pondFrozen ? Math.min(1, ice.value + dt * 0.4) : Math.max(0, ice.value - dt * 0.4);
   // candles: the light and the flames waver a little
   const waver = 0.85 + 0.15 * Math.sin(waterUniforms.uTime.value * 9) * Math.sin(waterUniforms.uTime.value * 5.3);
   benchGlow.intensity = candleLight * waver;

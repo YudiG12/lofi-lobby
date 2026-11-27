@@ -1,11 +1,14 @@
 // Skipping stones on the pond. A stone leaves the thrower's hand in an arc, skips on the water a few
 // times (a ring and a few drops at each touch, each hop shorter and lower) and sinks with a bigger
 // splash. Who throws plans the path (where it touches the water) and the room sends it to everyone,
-// so all players see the same stone; this file only animates it.
+// so all players see the same stone; this file only animates it. When the pond is frozen (Christmas)
+// the same path is drawn on the ice: chips of ice fly at each touch and, instead of sinking, the stone
+// slides on, slows down and lies there a moment.
 import * as THREE from "three";
 
 const FLIGHT_MS = 800; // from the hand to the first touch
 const SINK_MS = 500;
+const REST_MS = 2500; // on the ice: how long it lies there after sliding
 const GRAVITY = 18; // for the drops
 
 // a pixel-art pebble at the trainers' own pixel size, on a plane that faces the camera like they do:
@@ -50,10 +53,11 @@ const ringMaterial = new THREE.ShaderMaterial({
 });
 const ringGeometry = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2);
 
-// drops: tiny squares flying up and falling back
+// drops: tiny squares flying up and falling back (white chips of ice when it's frozen)
 const dropMaterial = new THREE.PointsMaterial({ color: "#dff1ff", size: 0.4, transparent: true, depthWrite: false });
+const chipMaterial = new THREE.PointsMaterial({ color: "#ffffff", size: 0.3, transparent: true, depthWrite: false });
 
-export function createStones(scene, { surfaceY, camera }) {
+export function createStones(scene, { surfaceY, camera, frozen = () => false }) {
   const throws = new Set(); // flying stones
   const rings = new Set(); // { mesh, age, life, size }
   const bursts = new Set(); // { points, vel, age, life }
@@ -71,7 +75,7 @@ export function createStones(scene, { surfaceY, camera }) {
       rings.add({ mesh, age: -k * 0.18, life: big ? 1.6 : 1.0, size: (big ? 6 : 3.8) + k * 1.4 });
     }
   }
-  function drops(x, y, z, count, power) {
+  function drops(x, y, z, count, power, ice = false) {
     const pos = new Float32Array(count * 3),
       vel = [];
     for (let i = 0; i < count; i++) {
@@ -82,7 +86,7 @@ export function createStones(scene, { surfaceY, camera }) {
     }
     const geo = new THREE.BufferGeometry();
     geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
-    const points = new THREE.Points(geo, dropMaterial.clone());
+    const points = new THREE.Points(geo, (ice ? chipMaterial : dropMaterial).clone());
     points.renderOrder = 11;
     points.frustumCulled = false;
     scene.add(points);
@@ -109,7 +113,8 @@ export function createStones(scene, { surfaceY, camera }) {
       t += ms;
       a = { x, y, z };
     });
-    throws.add({ mesh, legs, t: 0, end: t, sinking: 0, spin: 9 + Math.random() * 6, turn: 0, hit: 0 });
+    // frozen or not is decided once, at the throw, so a stone doesn't change its mind halfway
+    throws.add({ mesh, legs, t: 0, end: t, sinking: 0, spin: 9 + Math.random() * 6, turn: 0, hit: 0, ice: frozen() });
   }
 
   function update(dt) {
@@ -122,8 +127,8 @@ export function createStones(scene, { surfaceY, camera }) {
       // every touch the stone has reached: a ring and drops (more on the last one)
       while (s.hit < s.legs.length && s.t >= s.legs[s.hit].t + s.legs[s.hit].ms) {
         const { b, last } = s.legs[s.hit];
-        ripple(b.x, b.y, b.z, last);
-        drops(b.x, b.y, b.z, last ? 14 : 6, last ? 1 : 0.6);
+        if (s.ice) drops(b.x, b.y, b.z, last ? 8 : 4, 0.35, true); // a click on the ice: a few chips, no ring
+        else ripple(b.x, b.y, b.z, last), drops(b.x, b.y, b.z, last ? 14 : 6, last ? 1 : 0.6);
         s.hit++;
       }
       if (s.t < s.end) {
@@ -134,6 +139,29 @@ export function createStones(scene, { surfaceY, camera }) {
           leg.a.y + (leg.b.y - leg.a.y) * f + 4 * leg.height * f * (1 - f), // an arc over the straight line
           leg.a.z + (leg.b.z - leg.a.z) * f,
         );
+      } else if (s.ice) {
+        // on the ice: it slides on the way it was going, slows down, then lies flat a moment
+        if (!s.slide) {
+          const { a, b } = s.legs[s.legs.length - 1];
+          const d = Math.hypot(b.x - a.x, b.z - a.z) || 1;
+          s.slide = { dx: (b.x - a.x) / d, dz: (b.z - a.z) / d, v: 3.2, rest: 0 };
+        }
+        const sl = s.slide;
+        if (sl.v > 0.08) {
+          s.mesh.position.x += sl.dx * sl.v * dt;
+          s.mesh.position.z += sl.dz * sl.v * dt;
+          s.mesh.position.y = surfaceY(s.mesh.position.x, s.mesh.position.z) + 0.1;
+          sl.v *= Math.exp(-dt * 2.4);
+          s.spin *= Math.exp(-dt * 3);
+        } else {
+          s.mesh.material = stoneMaterials[0]; // lying flat, face up
+          s.spin = 0;
+          sl.rest += ms;
+          if (sl.rest >= REST_MS) {
+            scene.remove(s.mesh);
+            throws.delete(s);
+          }
+        }
       } else {
         // sinking: down through the surface (the water covers it), then gone
         s.sinking += ms / SINK_MS;

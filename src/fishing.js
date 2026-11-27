@@ -118,6 +118,15 @@ function pixelTexture(rows, colors) {
 }
 const BOBBER = [".k.", "hrr", "rrr", "www", ".w."];
 const BOBBER_COLORS = { k: "#2b2b33", r: "#e0402a", h: "#ff8a6b", w: "#f2efe6" };
+// a hole cut in the ice for the bobber when the pond is frozen (Christmas): dark water in a white rim
+const HOLE = 12;
+const HOLE_ROWS = Array.from({ length: HOLE }, (_, y) =>
+  Array.from({ length: HOLE }, (_, x) => {
+    const d = Math.hypot(x - 5.5, (y - 5.5) * 1.15);
+    return d < 3.6 ? (y < 4 ? "s" : "w") : d < 4.8 ? "r" : d < 5.6 ? "e" : ".";
+  }).join(""),
+);
+const HOLE_COLORS = { w: "#102a44", s: "#1d3d5c", r: "#f4f9ff", e: "#b9d2e6" };
 const RING = 16;
 const RING_ROWS = Array.from({ length: RING }, (_, y) =>
   Array.from({ length: RING }, (_, x) => (Math.abs(Math.hypot(x - 7.5, y - 7.5) - 6.5) < 0.6 ? "o" : ".")).join(""),
@@ -174,7 +183,7 @@ const clock = (ms) => {
  * @param {(mesh: THREE.Mesh) => void} o.feetDepth gives the rod the same depth as its trainer
  * @param {(dir: string) => {shift: number, drop: number, key: string} | null} o.shape where the trainer's body is on its frame (null while its sheet loads)
  */
-export function createFishingGear({ scene, camera, feetDepth, shape }) {
+export function createFishingGear({ scene, camera, feetDepth, shape, frozen = () => false }) {
   const rods = {};
   const rodTex = rodArt("down").tex;
   const rod = new THREE.Mesh(
@@ -217,8 +226,15 @@ gl_Position.xy = (cell / uRes * 2.0 - 1.0) * gl_Position.w;`,
     new THREE.MeshBasicMaterial({ map: pixelTexture(RING_ROWS, { o: "#cfe6ff" }), transparent: true, opacity: 0, depthWrite: false }),
   );
   ripple.rotation.x = -Math.PI / 2;
+  const hole = new THREE.Mesh(
+    new THREE.PlaneGeometry(1.8, 1.8).rotateX(-Math.PI / 2),
+    new THREE.MeshLambertMaterial({ map: pixelTexture(HOLE_ROWS, HOLE_COLORS), transparent: true, alphaTest: 0.5, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -4 }),
+  );
+  hole.renderOrder = 9; // over the ice, under the bobber's rings
   const parts = [rod, line, bobber, ripple];
   parts.forEach((o) => ((o.visible = false), scene.add(o)));
+  hole.visible = false;
+  scene.add(hole);
   // where the bobber lands: rings that open and fade on the water, like the rain's splashes
   const SPLASH_SIZES = [2.4, 3.4, 4.4],
     SPLASH_GAP = 0.12,
@@ -272,6 +288,8 @@ gl_Position.xy = (cell / uRes * 2.0 - 1.0) * gl_Position.w;`,
    */
   function draw(now, body, dir, p, target, sound) {
     parts.forEach((o) => (o.visible = p !== "idle"));
+    const ice = frozen();
+    hole.visible = p !== "idle" && ice;
     if (p === "idle") return splashes.forEach((m) => (m.visible = false));
     const t = now / 1000;
     const a = (now - castAt) / CAST_MS;
@@ -304,9 +322,10 @@ gl_Position.xy = (cell / uRes * 2.0 - 1.0) * gl_Position.w;`,
       bobber.position.set(tx, ty + 0.06 + Math.sin(t * 1.8) * 0.04 - tug, tz);
     }
     bobber.rotation.copy(body.rotation);
+    hole.position.set(tx, ty + 0.03, tz);
     splashes.forEach((m, i) => {
       const age = ((now - landAt) / 1000 - i * SPLASH_GAP) * SPLASH_SPEED;
-      m.visible = age >= 0 && age < 1;
+      m.visible = age >= 0 && age < 1 && !ice; // no rings across the ice
       if (!m.visible) return;
       m.material.uniforms.uAge.value = age;
       m.position.set(tx, ty + 0.05, tz);
@@ -316,7 +335,8 @@ gl_Position.xy = (cell / uRes * 2.0 - 1.0) * gl_Position.w;`,
     const period = p === "bite" ? 0.7 : 2.6;
     const k = (t % period) / period;
     ripple.position.set(tx, ty + 0.02, tz);
-    ripple.scale.setScalar(1 + k * (p === "bite" ? 4 : 2.5));
+    // in the ice hole the rings stay inside it
+    ripple.scale.setScalar(ice ? 0.5 + k * (p === "bite" ? 0.9 : 0.6) : 1 + k * (p === "bite" ? 4 : 2.5));
     ripple.material.opacity = (1 - k) * (p === "bite" ? 0.6 : 0.3);
 
     // the line's curve, turned into grid cells on screen: one cell per step, no doubled corners
@@ -359,8 +379,8 @@ gl_Position.xy = (cell / uRes * 2.0 - 1.0) * gl_Position.w;`,
     },
     /** Takes everything out of the scene (the trainer left). */
     dispose() {
-      for (const o of [...parts, ...splashes]) scene.remove(o), o.geometry.dispose(), o.material.dispose();
-      for (const t of [rodTex, bobberTex, ripple.material.map, ...Object.values(rods).map((r) => r.tex)]) t.dispose();
+      for (const o of [...parts, ...splashes, hole]) scene.remove(o), o.geometry.dispose(), o.material.dispose();
+      for (const t of [rodTex, bobberTex, ripple.material.map, hole.material.map, ...Object.values(rods).map((r) => r.tex)]) t.dispose();
     },
   };
 }
@@ -377,7 +397,7 @@ gl_Position.xy = (cell / uRes * 2.0 - 1.0) * gl_Position.w;`,
  * @param {(dir: string) => {shift: number, drop: number} | null} o.shape where your trainer's body is on its frame (null while its sheet loads)
  * @param {(target: {x: number, y: number, z: number} | null) => void} [o.onChange] the line went out (where the bobber is) or came back in (null)
  */
-export function createFishing({ scene, button, say, feetDepth, camera, shape, onChange }) {
+export function createFishing({ scene, button, say, feetDepth, camera, shape, onChange, frozen }) {
   let state = load("fishing", { phase: "idle" });
   if (state?.phase !== "out") state = { phase: "idle" };
   let confirmUntil = 0,
@@ -387,7 +407,7 @@ export function createFishing({ scene, button, say, feetDepth, camera, shape, on
   /** @returns {"idle" | "focus" | "bite"} */
   const phase = (now = Date.now()) => (state.phase !== "out" ? "idle" : now < state.end ? "focus" : "bite");
 
-  const gear = createFishingGear({ scene, camera, feetDepth, shape });
+  const gear = createFishingGear({ scene, camera, feetDepth, shape, frozen });
   /**
    * Places your rod, line and bobber for this frame (hidden while idle).
    * @param {number} now Date.now()
