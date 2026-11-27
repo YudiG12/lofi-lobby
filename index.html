@@ -106,6 +106,11 @@
   .tag .contrib:empty { display: none; }
   .tag.admin .who { color: #ffc95a; }
   .tag .who { display: block; text-align: center; color: var(--name, inherit); } /* --name: the colour the player picked */
+  .tag .activity { display: none; margin: 0 auto 1px; font-size: 8px; line-height: 11px; }
+  .tag .activity[data-activity="studying"] { display: block; color: #8ee0a4; }
+  .tag .activity[data-activity="working"] { display: block; color: #82c5ff; }
+  .tag .activity[data-activity="relaxing"] { display: block; color: #c5a6ff; }
+  .tag .activity[data-activity="away"] { display: block; color: #b7bdc8; }
   /* "press E to sit", floating over the nearest free seat */
   #sit-prompt { position: fixed; transform: translate(-50%, -100%); cursor: pointer; z-index: 1; white-space: nowrap;
                 font: inherit; font-size: 12px; line-height: 16px; color: #F2F2F5; padding: 5px 10px; border-radius: 6px;
@@ -195,6 +200,14 @@
      Clicking the cap shows the other colours; picking one folds them away again */
   #my-look { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
   #my-look small { font-size: 10px; margin-left: 4px; }
+  #activity-control { display: flex; align-items: center; gap: 8px; margin-top: 8px; color: #C4C6D4; font-size: 9px; }
+  #activity-status { min-width: 0; width: 190px; padding: 5px 8px; font: inherit; font-size: 9px; color: #F2F2F5;
+                     background: rgba(0,0,0,.4); border: 1px solid rgba(255,255,255,.16); border-radius: 6px; }
+  #activity-status option { color: #F2F2F5; background: #171820; }
+  #activity-status[data-activity="studying"] { color: #8ee0a4; border-color: #8ee0a4; }
+  #activity-status[data-activity="working"] { color: #82c5ff; border-color: #82c5ff; }
+  #activity-status[data-activity="relaxing"] { color: #c5a6ff; border-color: #c5a6ff; }
+  #activity-status[data-activity="away"] { color: #b7bdc8; border-color: #b7bdc8; }
   #my-gender { display: flex; padding: 2px; font: inherit; font-size: 10px; color: #C4C6D4; background: rgba(0,0,0,.4); cursor: pointer;
                border: 1px solid rgba(255,255,255,.16); border-radius: 12px; }
   #my-gender span { padding: 2px 8px; border-radius: 10px; }
@@ -241,6 +254,8 @@
     #place small { display: block; font-size: 10px; }
     #place .tools { flex-wrap: wrap; }
     #place .tools button { width: 36px; height: 36px; }
+    #activity-control { max-width: 100%; }
+    #activity-status { flex: 1; width: auto; }
     #place small { margin-top: 2px; }
     #place #online, #place #fps:not([hidden]) { display: inline-block; } /* the count and the fps side by side */
     /* phones: only the logo, in the corner over the chat button */
@@ -281,6 +296,15 @@
       <button data-action="next" aria-label="next song">⏭</button>
     </span>
   </div>
+  <label id="activity-control" for="activity-status"><span>atividade</span>
+    <select id="activity-status" aria-label="activity status" data-activity="none">
+      <option value="">Sem status</option>
+      <option value="studying">📚 Estudando</option>
+      <option value="working">💻 Trabalhando</option>
+      <option value="relaxing">☕ Relaxando</option>
+      <option value="away">🌙 Ausente</option>
+    </select>
+  </label>
   <div class="tools">
     <button id="day-night" type="button" data-key="N" aria-label="make it day"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
     <button id="rain" type="button" data-key="R" aria-label="make it rain"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 15.5A4.5 4.5 0 0 0 17.5 7a6 6 0 0 0-11.4 2A4 4 0 0 0 6 17"/><path d="M8 19v2M12 17v4M16 19v2"/></svg></button>

@@ -1,6 +1,7 @@
 // Room server: one Durable Object per room, everyone connected over WebSocket.
 // Protocol (JSON):
 //   client -> server: { t: "hello", name, gender, color, cap, x, z, dir } | { t: "pos", x, z, dir, step, run }
+//                     { t: "activity", status: null|"studying"|"working"|"relaxing"|"away" }
 //                     { t: "chat", text } | { t: "name", name } | { t: "gender", gender, cap }
 //                     { t: "color", color }   (name colour: one of NAME_COLORS)
 //                     { t: "sit", seat, n }   (bench seat 0..15, carousel horse 16..23, Ferris wheel gondola 24..31, roller coaster 32..36 while it waits at the station, or -1 to stand; n numbers the request)
@@ -83,6 +84,8 @@
 // (CF_ACCOUNT_ID and CF_API_TOKEN secrets) for public/stats.html.
 
 const MAX_PLAYERS = 100;
+const ACTIVITY_STATUSES = new Set(["studying", "working", "relaxing", "away"]);
+const activityStatus = (value) => (ACTIVITY_STATUSES.has(value) ? value : null);
 // v1 has a single room; any other name is refused so nobody can spin up extra rooms (and extra cost)
 const ROOMS = ["lobby"];
 const MAX_BYTES = 1024;
@@ -136,7 +139,7 @@ const NOTE_ID = /^note:\d{15}-[a-z0-9]{6}$/;
 const AFTER_EVERY_NOTE = "note:999999999999999-zzzzzz"; // a cursor above every note id
 const topKey = (likes, id) => `top:${String(likes).padStart(6, "0")}:${id}`;
 // rate buckets: capacity, refill per second
-const RATES = { pos: [30, 20], chat: [8, 1], sit: [20, 6], like: [30, 0.5], github: [4, 1 / 30], social: [20, 2], other: [10, 1] };
+const RATES = { pos: [30, 20], chat: [8, 1], sit: [20, 6], activity: [6, 2], like: [30, 0.5], github: [4, 1 / 30], social: [20, 2], other: [10, 1] };
 // accounts, profiles, friends and private chat (worker/social.js); a private message spends the chat budget
 const SOCIAL = ["profile", "friend", "friends", "dm-open", "dm-read", "chat-invite", "chat-accept"];
 // contributors: a player proves their GitHub login (OAuth device flow, GITHUB_CLIENT_ID) and the room counts
@@ -559,7 +562,7 @@ export class Room {
     // hibernation: the DO can sleep with connections open; each player's
     // state lives on its own socket (serializeAttachment)
     this.state.acceptWebSocket(server);
-    server.serializeAttachment({ id, leaveToken, connectedAt, name: "trainer", gender: "male", color: "", x: 0, z: 0, dir: "down", step: 0, seat: -1, ip,
+    server.serializeAttachment({ id, leaveToken, connectedAt, name: "trainer", gender: "male", color: "", activity: null, x: 0, z: 0, dir: "down", step: 0, seat: -1, ip,
       country: String(req.cf?.country || "").slice(0, 2), visitor: await visitorOf(ip) });
     await this.ensureHeartbeatAlarm();
     // v: the deploy that is running. A tab that reconnects and sees another one reloads itself.
@@ -592,7 +595,7 @@ export class Room {
 
   // only each player's public fields (never the IP)
   public(p) {
-    return { id: p.id, name: p.name, gender: p.gender, color: p.color || "", cap: p.cap ?? -1, x: p.x, z: p.z, dir: p.dir, step: p.step, seat: p.seat ?? -1, hold: p.hold | 0, ground: !!p.ground, fish: p.fish || null, admin: !!p.admin, prs: p.prs | 0, n: p.acct ?? -1 };
+    return { id: p.id, name: p.name, gender: p.gender, color: p.color || "", activity: activityStatus(p.activity), cap: p.cap ?? -1, x: p.x, z: p.z, dir: p.dir, step: p.step, seat: p.seat ?? -1, hold: p.hold | 0, ground: !!p.ground, fish: p.fish || null, admin: !!p.admin, prs: p.prs | 0, n: p.acct ?? -1 };
   }
   players() {
     return this.openSockets()
@@ -614,7 +617,7 @@ export class Room {
   // rate limit (token bucket): movement and seats per connection, chat and the rest shared by everyone on one IP
   allowed(p, type) {
     const [cap, refill] = RATES[type] || RATES.other;
-    const key = (type === "pos" || type === "sit" ? p.id : p.ip) + "|" + type;
+    const key = (type === "pos" || type === "sit" || type === "activity" ? p.id : p.ip) + "|" + type;
     const now = Date.now() / 1000;
     let k = this.buckets.get(key);
     if (!k) this.buckets.set(key, (k = { tokens: cap, at: now }));
@@ -633,7 +636,7 @@ export class Room {
     const p = ws.deserializeAttachment();
     if (!p) return;
     if (!p.joinedAt && m.t !== "hello") return;
-    const type = m.t === "pos" ? "pos" : m.t === "chat" || m.t === "dm" ? "chat" : m.t === "sit" ? "sit" : m.t === "github-start" ? "github" : SOCIAL.includes(m.t) ? "social" : "other";
+    const type = m.t === "pos" ? "pos" : m.t === "chat" || m.t === "dm" ? "chat" : m.t === "sit" ? "sit" : m.t === "activity" ? "activity" : m.t === "github-start" ? "github" : SOCIAL.includes(m.t) ? "social" : "other";
     // the seat the room really has for this player, tagged with the request it answers
     const seatReply = () => ws.send(JSON.stringify({ t: "seat", id: p.id, seat: p.seat ?? -1, n: Number.isSafeInteger(m.n) ? m.n : 0 }));
     if (!this.allowed(p, type)) {
@@ -672,7 +675,11 @@ export class Room {
       p.color = nameColor(m.color);
       ws.serializeAttachment(p);
       this.broadcast({ t: "color", id: p.id, color: p.color }, ws);
-      await this.saveLook(p);
+    } else if (m.t === "activity") {
+      if (m.status !== null && !ACTIVITY_STATUSES.has(m.status)) return;
+      p.activity = m.status;
+      ws.serializeAttachment(p);
+      this.broadcast({ t: "activity", id: p.id, status: p.activity }, ws);
     } else if (m.t === "name") {
       p.name = this.nameFor(ws, m.name);
       ws.serializeAttachment(p);
