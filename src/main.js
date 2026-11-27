@@ -5,12 +5,13 @@ import { connectRadioToServer, receiveCommand } from "./radio.js";
 import { createBoard, setupWall } from "./board.js";
 import { createStones } from "./stones.js";
 import { addSitFrames, sitFramePos } from "./ground-sit.js";
-import { createCapybara, CAPY_NEAR, CAPY_RADIUS, PHRASES as CAPY_PHRASES } from "./capybara.js";
+import { createCapybara, CAPY_NEAR, CAPY_RADIUS, PHRASES as CAPY_PHRASES, CHRISTMAS_PHRASES, isChristmas } from "./capybara.js";
 import { createOwl } from "./owl.js";
 import { createFishing, createFishingGear, FISH_NEAR, FISH_LEAVE } from "./fishing.js";
 import { createCat, CATS, CAT_NEAR, CAT_SIT_MS, CAT_RIDE_MS, PHRASES as CAT_PHRASES, RIDE_PHRASES as CAT_RIDE_PHRASES } from "./cat.js";
 import { CAROUSEL, carouselSeat, createCarousel, inClearing, isCarouselSeat, onCarousel } from "./carousel.js";
 import { WHEEL, wheelSeat, createFerrisWheel, inWheelClearing, isWheelSeat, onWheel } from "./ferris-wheel.js";
+import { createSnow, createHouseLights, createChristmasTree, createLampRibbons } from "./christmas.js";
 
 // ---- Asset config (change here to use other files) ----
 const TOWN = {
@@ -238,7 +239,8 @@ let townBox = new THREE.Box3(
 // ---- Animated water ----
 // Regular Phong + injected shader: ripples that perturb the normal (the glow of
 // the lamps and the moon "dances" on the surface), moving light bands and sparkle.
-const waterUniforms = { uTime: { value: 0 } };
+// uIce: 0 water .. 1 frozen (at Christmas the pond freezes over, fading in like the snow)
+const waterUniforms = { uTime: { value: 0 }, uIce: { value: 0 } };
 const waterMaterial = new THREE.MeshPhongMaterial({
   // night: deep blue, no light of its own; the shine comes only from the lamps (and a hint of moon)
   color: "#0b2d63", // deep blue, less saturated
@@ -251,6 +253,7 @@ const waterMaterial = new THREE.MeshPhongMaterial({
 });
 waterMaterial.onBeforeCompile = (shader) => {
   shader.uniforms.uTime = waterUniforms.uTime;
+  shader.uniforms.uIce = waterUniforms.uIce;
   shader.vertexShader = shader.vertexShader
     .replace("#include <common>", "#include <common>\nvarying vec3 vWorld;")
     .replace(
@@ -262,8 +265,15 @@ waterMaterial.onBeforeCompile = (shader) => {
       "#include <common>",
       `#include <common>
 uniform float uTime;
+uniform float uIce;
 varying vec3 vWorld;
-float wave(vec2 p, vec2 d, float f, float v) { return sin(dot(p, d) * f + uTime * v); }`,
+float wave(vec2 p, vec2 d, float f, float v) { return sin(dot(p, d) * f + uTime * v); }
+// the ice's cracks: long thin lines in two directions, broken up so they don't cross the whole pond
+float iceCrack(vec2 p) {
+  float a = smoothstep(0.045, 0.0, abs(fract(dot(p, vec2(0.11, 0.17))) - 0.5)) * step(0.6, fract(sin(floor(dot(p, vec2(0.17, -0.11)) * 0.6) * 43758.5)));
+  float b = smoothstep(0.04, 0.0, abs(fract(dot(p, vec2(-0.15, 0.09)) + 0.3) - 0.5)) * step(0.65, fract(sin(floor(dot(p, vec2(0.09, 0.15)) * 0.7) * 12543.1)));
+  return max(a, b);
+}`,
     )
     // perturb the normal with waves in several directions
     .replace(
@@ -272,7 +282,9 @@ float wave(vec2 p, vec2 d, float f, float v) { return sin(dot(p, d) * f + uTime 
 vec2 pa = vWorld.xz * 1.6; // wave size: higher = finer
 float dx = wave(pa, vec2(1.0, 0.3), 1.7, 1.6) * 0.5 + wave(pa, vec2(-0.4, 1.0), 2.9, 2.3) * 0.3 + wave(pa, vec2(0.7, -0.8), 5.3, 3.1) * 0.15;
 float dz = wave(pa, vec2(0.2, 1.0), 2.1, 1.4) * 0.5 + wave(pa, vec2(1.0, -0.5), 3.7, 2.7) * 0.3 + wave(pa, vec2(-0.9, -0.6), 6.1, 3.5) * 0.15;
-normal = normalize(normal + vec3(dx, 0.0, dz) * 0.18);`,
+normal = normalize(normal + vec3(dx, 0.0, dz) * 0.18 * (1.0 - uIce)); // still, once frozen
+diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.42, 0.53, 0.65) + iceCrack(vWorld.xz) * 0.22, uIce);
+diffuseColor.a = mix(diffuseColor.a, 0.97, uIce);`,
     )
     // light bands and sparkle added to the final color
     .replace(
@@ -280,7 +292,7 @@ normal = normalize(normal + vec3(dx, 0.0, dz) * 0.18);`,
       `#include <dithering_fragment>
 float band = smoothstep(0.75, 1.0, wave(vWorld.xz, vec2(0.6, 0.8), 0.9, 0.8) * wave(vWorld.xz, vec2(-0.8, 0.5), 1.3, 1.1));
 float sparkle = pow(max(0.0, wave(vWorld.xz, vec2(1.0, 0.2), 7.0, 4.0) * wave(vWorld.xz, vec2(-0.3, 1.0), 6.0, 3.3)), 12.0);
-gl_FragColor.rgb += vec3(0.10, 0.25, 0.6) * band * 0.06 + vec3(0.7, 0.8, 1.0) * sparkle * 0.07;`,
+gl_FragColor.rgb += (vec3(0.10, 0.25, 0.6) * band * 0.06 + vec3(0.7, 0.8, 1.0) * sparkle * 0.07) * (1.0 - uIce);`,
     );
 };
 
@@ -326,6 +338,8 @@ function prepareTown(fbx) {
     placeCapyWalk();
     placeOwl();
     mergeTown(fbx);
+    for (const o of townDrawn) if (o.material !== waterMaterial) snow.coverMaterial(o.material); // white where it faces up, at Christmas
+    dressTownForChristmas(fbx);
     markLampShadowsStale(); // the town, the lamps and everything around them just took their places
     buildCatNavGrid();
 }
@@ -434,6 +448,39 @@ function bakeGeometry(o, indexed) {
     }
   }
   return g;
+}
+
+// The town's own Christmas decorations, made once it is in place (src/christmas.js); shown by the switch
+let houseLights = null,
+  christmasTree = null;
+const XMAS_TREE_NEAR = new THREE.Vector2(0, 41); // the pine just below the pond, between the carousel and the Ferris wheel
+function dressTownForChristmas(root) {
+  // one box per house: its own mesh (the FBX town), or the unnamed group of parts it is built from (the village)
+  const houses = new Map();
+  for (const o of townMeshes) {
+    if (!/house/i.test(o.name)) continue;
+    const owner = o.parent && o.parent !== root && !o.parent.name ? o.parent : o;
+    if (!houses.has(owner)) houses.set(owner, new THREE.Box3());
+    houses.get(owner).expandByObject(o);
+  }
+  // where a house's front wall is at that height: the first thing a ray going in from the front meets
+  const wallAt = (x, y, z) => {
+    ray.set(new THREE.Vector3(x, y, z), new THREE.Vector3(0, 0, -1));
+    return ray.intersectObjects(townMeshes, false)[0]?.point.z;
+  };
+  houseLights = createHouseLights({ scene, houses: [...houses.values()], roofAt: topHeight, wallAt });
+  whenChristmas((on) => houseLights.setOn(on));
+  // the Christmas tree: the pine nearest that spot (the tallest part of it, in the village's trees)
+  const pines = townMeshes
+    .filter((o) => /pine|tree/i.test(o.name))
+    .map((o) => ({ o, box: new THREE.Box3().setFromObject(o) }))
+    .map((p) => ({ ...p, d: XMAS_TREE_NEAR.distanceTo(new THREE.Vector2((p.box.min.x + p.box.max.x) / 2, (p.box.min.z + p.box.max.z) / 2)) }));
+  const nearest = Math.min(...pines.map((p) => p.d));
+  const pine = pines.filter((p) => p.d < nearest + 1.5).sort((a, b) => b.box.max.y - a.box.max.y)[0];
+  if (pine) {
+    christmasTree = createChristmasTree({ scene, tree: pine.o });
+    whenChristmas((on) => christmasTree.setOn(on));
+  }
 }
 
 // ---- Original village (default on the published site) ----
@@ -1232,11 +1279,17 @@ addEventListener("keydown", (e) => {
 });
 
 
+// Weather: clear, rain or snow (the R key or the cloud button goes through them, all year). Only for
+// you, remembered (like day/night). Nothing goes to the server. At Christmas it snows anyway.
 // Rain: thin streaks in a box that follows the player, splashes where they land (rings on the
-// pond), shiny wet ground and a little fog.
-// Only for you, remembered (like day/night). Nothing goes to the server.
-let isRaining = false;
-try { isRaining = localStorage.getItem("weather") === "rain"; } catch {}
+// pond), shiny wet ground and a little fog. Snow: src/christmas.js.
+const WEATHERS = ["clear", "rain", "snow"];
+let weather = "clear";
+try {
+  const saved = localStorage.getItem("weather");
+  if (WEATHERS.includes(saved)) weather = saved;
+} catch {}
+let isRaining = weather === "rain";
 if (isRaining) {
   rainAmount = 1;
   applyLook(currentLook); // first frame already overcast
@@ -1350,6 +1403,9 @@ function splash(x, y, z, water) {
   splashSize[i] = water ? 2.2 + Math.random() * 1.0 : 0.7 + Math.random() * 0.4;
 }
 
+// Christmas snow (src/christmas.js): flakes that settle where the rain would land, a few lookups a frame
+const snow = createSnow({ scene, count: MOBILE ? 250 : 700, floorAt: (x, z) => surfaceAt(x, z)?.y });
+
 const wetMaterials = [];
 let wetReady = false;
 // Wet look: the town's materials become shiny (Phong) and a bit darker while it rains,
@@ -1376,6 +1432,7 @@ function prepareWet() {
             .replace("#include <common>", "#include <common>\nvarying float vUp;")
             .replace("#include <lights_fragment_end>", "#include <lights_fragment_end>\nreflectedLight.directSpecular *= smoothstep(0.9, 0.98, abs(vUp));");
         };
+        snow.coverMaterial(p); // the wet town can be snowy too
         wetMaterials.push({ m: p, base: m.color.clone() });
         swapped.set(m, p);
       }
@@ -1425,7 +1482,7 @@ function updateRain(dt) {
     if (rainFloor[i] < -100) rainFloor[i] = surfaceAt(x, z)?.y ?? pos.y;
     if (y < rainFloor[i]) {
       const s = surfaceAt(x, z);
-      if (s && Math.random() < (s.water ? 0.9 : 0.5) * rainAmount) splash(x, s.y, z, s.water);
+      if (s && Math.random() < (s.water ? 0.9 : 0.5) * rainAmount) splash(x, s.y, z, s.water && !pondFrozen); // small on the ice
       x = pos.x + (Math.random() * 2 - 1) * radius;
       z = pos.z + (Math.random() * 2 - 1) * radius;
       y = top - Math.random() * 6;
@@ -1450,24 +1507,29 @@ function updateRain(dt) {
   splashGeometry.attributes.size.needsUpdate = true;
 }
 const rainBtn = document.querySelector("#rain");
-function drawRain() {
-  const label = isRaining ? "stop the rain" : "make it rain";
-  rainBtn.classList.toggle("on", isRaining);
-  rainBtn.setAttribute("aria-label", label);
+const RAIN_ICON = rainBtn.innerHTML;
+const SNOW_ICON = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20M4 7l16 10M4 17l16-10M9 4l3 2 3-2M9 20l3-2 3 2"/></svg>';
+// the button shows what the sky is doing (lit when it rains or snows) and says what comes next
+function drawWeather() {
+  rainBtn.innerHTML = weather === "snow" ? SNOW_ICON : RAIN_ICON;
+  rainBtn.classList.toggle("on", weather !== "clear");
+  rainBtn.setAttribute("aria-label", { clear: "make it rain", rain: "make it snow", snow: "clear the sky" }[weather]);
 }
-function toggleRain() {
-  isRaining = !isRaining;
-  try { localStorage.setItem("weather", isRaining ? "rain" : "clear"); } catch {}
-  drawRain();
+function cycleWeather() {
+  weather = WEATHERS[(WEATHERS.indexOf(weather) + 1) % WEATHERS.length];
+  isRaining = weather === "rain";
+  try { localStorage.setItem("weather", weather); } catch {}
+  drawWeather();
+  updateSnowing();
 }
-drawRain();
+drawWeather();
 rainBtn.addEventListener("click", (e) => {
-  toggleRain();
+  cycleWeather();
   e.currentTarget.blur(); // give the keyboard back to the game
 });
 addEventListener("keydown", (e) => {
   const typing = ["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName);
-  if (!typing && !e.repeat && !e.ctrlKey && !e.metaKey && e.key.toLowerCase() === "r") toggleRain();
+  if (!typing && !e.repeat && !e.ctrlKey && !e.metaKey && e.key.toLowerCase() === "r") cycleWeather();
 });
 
 // ---- Fireflies ----
@@ -1772,6 +1834,69 @@ function placeCapyWalk() {
 // The last feeding: it sat from `at` to `until` (room clock, ms); `lost` is all the sitting before that.
 let capyFed = { at: 0, until: 0, lost: 0 };
 const roomNow = () => Date.now() + clockOffset;
+// ---- Christmas ----
+// "auto" decorates the town in the season (1 December to 6 January by the room's clock, so it starts and
+// ends for everyone at once); "on" and "off" are for whoever wants it always or never. Only for you,
+// remembered, like rain and day/night: the X key or the tree button in the top card goes through them.
+// In development, ?xmas makes "auto" think it is the season.
+const XMAS_MODES = ["auto", "on", "off"];
+let xmasMode = "auto";
+try {
+  const saved = localStorage.getItem("christmas");
+  if (XMAS_MODES.includes(saved)) xmasMode = saved;
+} catch {}
+const FORCE_XMAS = import.meta.env.DEV && new URLSearchParams(location.search).has("xmas");
+const christmasNow = () => xmasMode === "on" || (xmasMode === "auto" && (FORCE_XMAS || isChristmas(roomNow())));
+// what dresses up for it: each is told now and whenever it changes
+const xmasDressers = [];
+let xmasOn = christmasNow();
+function whenChristmas(dress) {
+  xmasDressers.push(dress);
+  dress(xmasOn);
+}
+function applyChristmas() {
+  const on = christmasNow();
+  drawChristmasButton();
+  if (on === xmasOn) return;
+  xmasOn = on;
+  xmasDressers.forEach((dress) => dress(on));
+}
+const xmasBtn = document.querySelector("#christmas");
+function drawChristmasButton() {
+  xmasBtn.classList.toggle("on", christmasNow());
+  xmasBtn.setAttribute("aria-label", {
+    auto: "christmas: automatic (1 Dec – 6 Jan)",
+    on: "christmas: always",
+    off: "christmas: off",
+  }[xmasMode]);
+}
+function cycleChristmas() {
+  xmasMode = XMAS_MODES[(XMAS_MODES.indexOf(xmasMode) + 1) % XMAS_MODES.length];
+  try { localStorage.setItem("christmas", xmasMode); } catch {}
+  applyChristmas();
+}
+xmasBtn.addEventListener("click", (e) => {
+  cycleChristmas();
+  e.currentTarget.blur(); // give the keyboard back to the game
+});
+addEventListener("keydown", (e) => {
+  const typing = ["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName) || document.activeElement?.isContentEditable;
+  if (!typing && !e.repeat && !e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === "x") cycleChristmas();
+});
+drawChristmasButton();
+setInterval(applyChristmas, 60_000); // the lobby stays open for days: the season starts and ends by itself
+// the capybara dresses as a reindeer, it snows, and the lamp posts get a ribbon
+whenChristmas((on) => capy.setReindeer(on));
+// the pond freezes over: ice instead of water, fishing through a hole, stones sliding on it
+let pondFrozen = false;
+whenChristmas((on) => (pondFrozen = on));
+// it snows when you chose snow, or at Christmas (rain still wins: the flakes stop while it rains)
+function updateSnowing() {
+  snow.setOn(weather === "snow" || xmasOn);
+}
+whenChristmas(updateSnowing);
+const lampRibbons = createLampRibbons({ posts: lampPosts });
+whenChristmas((on) => lampRibbons.setOn(on));
 // where the room's clock puts it: there and back at one speed, standing still on the clock while it sits
 function walkCapy(t) {
   const eating = t >= capyFed.at && t < capyFed.until;
@@ -1789,7 +1914,8 @@ function walkCapy(t) {
 function capyWasFed(m) {
   if (![m.at, m.until, m.lost].every(Number.isFinite)) return;
   capyFed = { at: m.at, until: m.until, lost: m.lost };
-  if (Number.isInteger(m.phrase)) showBubble(capy.mesh, CAPY_PHRASES[Math.abs(m.phrase) % CAPY_PHRASES.length]);
+  const phrases = xmasOn ? CHRISTMAS_PHRASES : CAPY_PHRASES;
+  if (Number.isInteger(m.phrase)) showBubble(capy.mesh, phrases[Math.abs(m.phrase) % phrases.length]);
 }
 
 // ---- Cats (free-roaming across walkable town, synced by the room clock) ----
@@ -3372,6 +3498,7 @@ const otherGear = (o) =>
   (o.gear ??= createFishingGear({
     scene,
     camera,
+    frozen: () => pondFrozen,
     feetDepth: (mesh) => useFeetDepth(mesh, o.feet, 12),
     shape: (d) => bodyShape(o.tex, o.cfg, d),
   }));
@@ -3427,6 +3554,7 @@ function connect() {
     if (m.t === "you") {
       myId = m.id;
       if (Number.isFinite(m.now)) clockOffset = m.now - Date.now(); // the capybara walks by the room's clock
+      applyChristmas(); // the room's date, not this device's
       myLeaveToken = m.token || "";
       // the room reconnected us to a newer deploy than the one this tab loaded with: reload to get
       // it, but not in the middle of something being written
@@ -4145,7 +4273,7 @@ function updateCapy() {
 // ---- Skipping stones (T by the pond) ----
 // You plan the throw (where the stone touches the water), see it at once, and the room sends it to
 // everyone; others animate the same path from your hand (src/stones.js).
-const stones = createStones(scene, { surfaceY: (x, z) => topHeight(x, z), camera });
+const stones = createStones(scene, { surfaceY: (x, z) => topHeight(x, z), camera, frozen: () => pondFrozen });
 const STONE_NEAR = 4.5; // how close to the pond you must be
 const STONE_EVERY_MS = 1200;
 let lastStone = 0;
@@ -4253,6 +4381,7 @@ function updateCats() {
 
 const fishing = createFishing({
   scene,
+  frozen: () => pondFrozen,
   button: document.querySelector("#fish"),
   say: (text) => showBubble(sprite, text),
   feetDepth: (mesh) => useFeetDepth(mesh, myFeet, 12),
@@ -4426,6 +4555,9 @@ function loop() {
   checkSavedPosition();
   savePosition(performance.now());
   waterUniforms.uTime.value += dt;
+  // the pond freezes over (or thaws) in a few seconds
+  const ice = waterUniforms.uIce;
+  if (ice.value !== (pondFrozen ? 1 : 0)) ice.value = pondFrozen ? Math.min(1, ice.value + dt * 0.4) : Math.max(0, ice.value - dt * 0.4);
   // candles: the light and the flames waver a little
   const waver = 0.85 + 0.15 * Math.sin(waterUniforms.uTime.value * 9) * Math.sin(waterUniforms.uTime.value * 5.3);
   benchGlow.intensity = candleLight * waver;
@@ -4435,6 +4567,10 @@ function loop() {
   });
   updateTimeOfDay(dt);
   updateRain(dt);
+  surfaceBudget = Math.max(surfaceBudget, 20);
+  snow.update(dt, pos, dayAmount, rainAmount);
+  houseLights?.update(performance.now() / 1000, dayAmount);
+  christmasTree?.update(performance.now() / 1000, dayAmount);
   stones.update(dt);
   updateFireflies();
   let dx = 0,

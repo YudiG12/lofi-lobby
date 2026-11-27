@@ -50,6 +50,31 @@ export const PHRASES = [
   "Nossa, entregou no prazo. Tá se sentindo bem?",
 ];
 
+// Christmas (1 December to 6 January, by the room's clock in UTC, so everyone sees the same): the
+// capybara dresses up as a reindeer, with antlers, a red nose and a collar with a bell, and thanks
+// you in the season's spirit instead.
+export const CHRISTMAS_PHRASES = [
+  "Ho ho ho. Isso foi sarcasmo, caso não tenha ficado claro.",
+  "Obrigada pelo capim. O Papai Noel deu carvão pra você, eu sei.",
+  "Essas galhadas são de verdade? Claro que não. Igual o seu espírito natalino.",
+  "Puxei o trenó o ano todo e o pagamento é isso. Justo.",
+  "Feliz Natal. Agora me deixa digerir em paz.",
+  "Que presente lindo. Vou fingir surpresa na ceia.",
+  "Meu nariz brilha mais que o seu futuro. Brincadeira. Ou não.",
+  "Capim de Natal: igual ao normal, mas com mais expectativa.",
+  "Obrigada. Vou embrulhar a minha gratidão e devolver em janeiro.",
+  "Rena substituta, salário de capivara. Valeu pela lembrança.",
+  "Amigo secreto? Já sei que foi você. Pelo capim murcho.",
+  "Natal é sobre dar. Você deu o mínimo. Lindo, mesmo assim.",
+  "Que fofo. Tira foto, posta, ganha like. Eu fico com o capim.",
+  "Deploy na véspera de Natal? Vou fingir que não vi.",
+  "Obrigada! Minha meta de ano novo: comer mais capim seu.",
+];
+export const isChristmas = (ms) => {
+  const d = new Date(ms);
+  return d.getUTCMonth() === 11 || (d.getUTCMonth() === 0 && d.getUTCDate() <= 6);
+};
+
 // 7 frames side by side, 32x24 logical pixels each, drawn at 2x like the trainers:
 // 0 sitting, 1 sitting + blink, 2-3 sitting + chewing (head bobs, mouth opens), 4 asleep (lying down),
 // 5-6 walking on all fours (5 is also standing still). Drawn facing left; the texture is mirrored to face right.
@@ -57,6 +82,9 @@ const W = 32,
   H = 24,
   P = 2,
   FRAMES = 7;
+// empty rows above the 24, so the reindeer's antlers fit over the head (the drawing keeps its 24 rows)
+const TOP = 6;
+const ROWS = H + TOP;
 export const SLEEP_FRAME = 4;
 const WALK_FRAME = 5;
 const C = {
@@ -69,11 +97,22 @@ const C = {
   eye: "#1b1b24",
   shine: "#f4f4f4",
   mouth: "#3a2218",
+  // the reindeer
+  antler: "#a5784a",
+  antlerDark: "#7a5230",
+  nose: "#e23a3a",
+  noseShine: "#ff9a8a",
+  collar: "#c8323c",
+  bell: "#f2c94c",
+  bellDark: "#b8892a",
 };
 
-function drawFrame(c, f) {
-  const grid = Array.from({ length: H }, () => Array(W).fill(null));
-  const fill = (x, y, col) => x >= 0 && x < W && y >= 0 && y < H && (grid[y][x] = col);
+function drawFrame(c, f, reindeer) {
+  const grid = Array.from({ length: ROWS }, () => Array(W).fill(null));
+  const fill = (x, y, col) => x >= 0 && x < W && y + TOP >= 0 && y + TOP < ROWS && (grid[y + TOP][x] = col);
+  // drawn after the outline, so thin parts (the antlers) stay thin instead of merging into a black blob
+  const over = [];
+  const fillOver = (x, y, col) => over.push([x, y + TOP, col]);
   // a tilted ellipse, lighter on top and darker underneath
   const blob = (cx, cy, rx, ry, tilt) => {
     const cs = Math.cos(tilt),
@@ -99,6 +138,7 @@ function drawFrame(c, f) {
     else fill(hx + 5, hy + 2, C.eye), fill(hx + 6, hy + 2, C.eye), fill(hx + 5, hy + 3, C.eye), fill(hx + 6, hy + 3, C.shine);
     fill(hx + 1, hy + 8, C.mouth), fill(hx + 2, hy + 8, C.mouth);
     if (chew) fill(hx + 1, hy + 9, C.mouth), fill(hx - 1, hy + 9, "#7fbf4d"), fill(hx - 2, hy + 10, "#5e9a35");
+    if (reindeer) dressAsReindeer(fill, fillOver, hx, hy);
   };
   if (f === SLEEP_FRAME) {
     // lying flat, legs tucked in, head resting on the ground with the eyes shut
@@ -122,12 +162,13 @@ function drawFrame(c, f) {
   }
   // outline: every empty pixel touching the creature
   const out = grid.map((row) => row.slice());
-  for (let y = 0; y < H; y++)
+  for (let y = 0; y < ROWS; y++)
     for (let x = 0; x < W; x++)
       if (!grid[y][x] && [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([a, b]) => grid[y + b]?.[x + a]))
         out[y][x] = C.outline;
+  for (const [x, y, col] of over) if (x >= 0 && x < W && y >= 0 && y < ROWS) out[y][x] = col;
   const x0 = f * W * P;
-  for (let y = 0; y < H; y++)
+  for (let y = 0; y < ROWS; y++)
     for (let x = 0; x < W; x++)
       if (out[y][x]) {
         c.fillStyle = out[y][x];
@@ -135,20 +176,45 @@ function drawFrame(c, f) {
       }
 }
 
+// antlers (the far one darker, a little behind), a red nose on the snout and a collar with a bell
+function dressAsReindeer(fill, fillOver, hx, hy) {
+  // a beam leaning back (the capybara faces left) with two tines reaching up and forward; no outline,
+  // a dark edge on the beam's back instead
+  const antler = (x, col, edge) => {
+    for (const [dx, dy] of [[0, 1], [0, 2], [1, 3], [1, 4], [2, 5], [2, 6], [3, 7]]) fillOver(x + dx, hy - dy, col), fillOver(x + dx + 1, hy - dy, edge);
+    for (const [dx, dy] of [[-1, 3], [-1, 4], [-2, 5], [0, 5], [0, 6], [-1, 7]]) fillOver(x + dx, hy - dy, col);
+  };
+  antler(hx + 8, C.antlerDark, C.darker); // the far one first, so the near one covers it
+  antler(hx + 5, C.antler, C.antlerDark);
+  // the nose: a round red bulb over the nostril, sticking out a pixel
+  fill(hx - 1, hy + 3, C.nose), fill(hx - 1, hy + 4, C.nose), fill(hx, hy + 3, C.noseShine), fill(hx, hy + 4, C.nose);
+  // the collar under the head, and its bell
+  for (let y = hy + 6; y <= hy + 9; y++) fill(hx + 9, y, C.collar), fill(hx + 10, y, C.collar);
+  fill(hx + 9, hy + 10, C.bell), fill(hx + 10, hy + 10, C.bellDark);
+}
+
+function drawSheet(c, reindeer) {
+  c.clearRect(0, 0, c.canvas.width, c.canvas.height);
+  for (let f = 0; f < FRAMES; f++) drawFrame(c, f, reindeer);
+}
+
 export function createCapybara() {
-  const cv = Object.assign(document.createElement("canvas"), { width: W * P * FRAMES, height: H * P });
+  const cv = Object.assign(document.createElement("canvas"), { width: W * P * FRAMES, height: ROWS * P });
   const c = cv.getContext("2d");
-  for (let f = 0; f < FRAMES; f++) drawFrame(c, f);
+  let reindeer = false;
+  drawSheet(c, reindeer);
   const tex = new THREE.CanvasTexture(cv);
   tex.magFilter = tex.minFilter = THREE.NearestFilter;
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.repeat.set(1 / FRAMES, 1);
+  // same pixel size as a trainer (5 units per 32px); the feet where they were before the rows for the antlers
+  const height = (5 * ROWS) / 32;
   const geo = new THREE.PlaneGeometry(1, 1);
-  geo.translate(0, 0.45, 0); // feet near the origin, like the trainers
+  geo.translate(0, 0.5 - (0.05 * 3.75) / height, 0); // feet near the origin, like the trainers
   const mesh = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ map: tex, alphaTest: 0.5, side: THREE.DoubleSide }));
   mesh.customDepthMaterial = new THREE.MeshDepthMaterial({ map: tex, alphaTest: 0.5, depthPacking: THREE.RGBADepthPacking });
   mesh.castShadow = true;
-  mesh.scale.set(5, 3.75, 1); // same pixel size as a trainer (5 units per 32px)
+  mesh.scale.set(5, height, 1);
 
   let pose = "walk", // "walk" | "eat" (sitting, chewing) | "sit"
     facing = -1; // -1 left (as drawn), 1 right (mirrored)
@@ -158,6 +224,13 @@ export function createCapybara() {
   };
   return {
     mesh,
+    // dressed as a reindeer or not (redrawn only when it changes)
+    setReindeer(on) {
+      if (on === reindeer) return;
+      reindeer = on;
+      drawSheet(c, reindeer);
+      tex.needsUpdate = true;
+    },
     setPose(p) {
       pose = p;
     },

@@ -278,6 +278,7 @@
     <div class="caps collapsed" id="my-caps" role="radiogroup" aria-label="cap colour"></div>
   </div>
   <div class="tools">
+    <button id="christmas" type="button" data-key="X" aria-label="christmas: automatic (1 Dec – 6 Jan)"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l1.2 2.5L16 5l-2 1.8.5 2.7L12 8.2 9.5 9.5 10 6.8 8 5l2.8-.5z"/><path d="M12 10l-5 6h3l-4 5h12l-4-5h3z"/><path d="M12 21v1"/></svg></button>
     <button id="day-night" type="button" data-key="N" aria-label="make it day"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
     <button id="rain" type="button" data-key="R" aria-label="make it rain"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 15.5A4.5 4.5 0 0 0 17.5 7a6 6 0 0 0-11.4 2A4 4 0 0 0 6 17"/><path d="M8 19v2M12 17v4M16 19v2"/></svg></button>
     <button id="hold" type="button" data-key="Q" aria-label="hold a laptop" hidden><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 9h11v6a4 4 0 0 1-4 4H9a4 4 0 0 1-4-4zM16 11h1.5a2.5 2.5 0 0 1 0 5H16M8 3v2M12 3v2"/></svg></button>
@@ -301,8 +302,8 @@
 </div>
 <button id="sit-prompt" type="button" hidden><span class="key">press <kbd>E</kbd> to sit</span><span class="tap">tap to sit</span></button>
 <div id="hint" class="glass" hidden><b>shortcuts</b>
-  <dl><dt>WASD / arrows</dt><dd>walk</dd><dt>Shift</dt><dd>run</dd><dt>Enter</dt><dd>chat</dd><dt>N</dt><dd>day / night / auto</dd><dt>R</dt><dd>rain</dd>
-  <dt>C</dt><dd>sit on the ground / get up</dd><dt>E</dt><dd>sit / stand up (near a bench)</dd><dt>E</dt><dd>fish: a focus timer (at the pond's edge)</dd><dt>T</dt><dd>skip a stone (by the pond)</dd><dt>Q</dt><dd>coffee / cigarette (laptop / book too when sitting)</dd><dt>G</dt><dd>switch trainer</dd><dt>B</dt><dd>message wall</dd><dt>F</dt><dd>full screen</dd><dt>M</dt><dd>mute</dd><dt>P</dt><dd>frames per second</dd><dt>Space</dt><dd>pause</dd></dl></div>
+  <dl><dt>WASD / arrows</dt><dd>walk</dd><dt>Shift</dt><dd>run</dd><dt>Enter</dt><dd>chat</dd><dt>N</dt><dd>day / night / auto</dd><dt>R</dt><dd>weather: clear / rain / snow</dd>
+  <dt>C</dt><dd>sit on the ground / get up</dd><dt>E</dt><dd>sit / stand up (near a bench)</dd><dt>E</dt><dd>fish: a focus timer (at the pond's edge)</dd><dt>T</dt><dd>skip a stone (by the pond)</dd><dt>Q</dt><dd>coffee / cigarette (laptop / book too when sitting)</dd><dt>G</dt><dd>switch trainer</dd><dt>B</dt><dd>message wall</dd><dt>F</dt><dd>full screen</dd><dt>M</dt><dd>mute</dd><dt>X</dt><dd>christmas: automatic / always / off</dd><dt>P</dt><dd>frames per second</dd><dt>Space</dt><dd>pause</dd></dl></div>
 <div id="radio" class="glass">
   <div class="tv"><div id="yt"></div></div>
   <div><small>now playing <button id="mute" type="button" title="mute (M)" aria-label="mute"></button><input id="volume" type="range" min="0" max="100" step="5" title="volume" aria-label="volume" /></small><b id="title">—</b>
