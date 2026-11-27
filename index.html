@@ -274,6 +274,20 @@
     #chat input { font-size: 16px; } /* 16px+ keeps iOS from zooming in */
   }
 </style>
+<style>
+  #tavern-prompt, #tavern-greeting { position:fixed; transform:translate(-50%,-100%); z-index:2; border:1px solid #b28755; border-radius:6px; font:inherit; color:#fff0d2; background:#291b23f2; padding:8px 10px; }
+  #tavern-prompt { cursor:pointer; text-transform:uppercase; white-space:nowrap; }
+  #tavern-prompt kbd { border:1px solid #ffc95a; color:#ffc95a; border-radius:3px; padding:0 4px; }
+  #tavern-prompt .tap { display:none; }
+  @media(pointer:coarse) { #tavern-prompt .key {display:none} #tavern-prompt .tap {display:inline} }
+  #tavern-greeting { pointer-events:none; text-align:center; max-width:min(260px,48vw); line-height:1.45; font-size:11px; }
+  #tavern-menu { position:fixed; z-index:12; left:50%; top:54%; transform:translate(-50%,-50%); width:min(305px,calc(100vw - 36px)); border:1px solid #c08f58; border-radius:12px; background:#2b2029; color:#fff0d2; box-sizing:border-box; padding:20px; text-align:center; box-shadow:0 12px 40px #120c10aa; }
+  #tavern-menu h2 {margin:0 0 14px;font-size:15px;}
+  #tavern-menu button { font:inherit; cursor:pointer; padding:9px; border-radius:5px; }
+  #tavern-drink { background:#f3c370;color:#382028;border:1px solid #f3c370; }
+  #tavern-close {background:transparent;color:#fff0d2;border:1px solid #957653;}
+  #tavern-prompt[hidden], #tavern-greeting[hidden], #tavern-menu[hidden] {display:none}
+</style>
 </head>
 <body>
 <div id="place" class="glass"><b>Lofi Lobby</b><small id="online" title="show fps (P)">1 online</small><small id="fps" hidden></small>
@@ -542,6 +556,13 @@
     else play();
   });
 </script>
+<button id="tavern-prompt" type="button" hidden><span class="key">press <kbd>E</kbd> to <span class="tavern-action"></span></span><span class="tap"></span></button>
+<div id="tavern-greeting" hidden></div>
+<section id="tavern-menu" role="dialog" aria-labelledby="tavern-menu-title" hidden>
+  <h2 id="tavern-menu-title">Winter Tavern</h2>
+  <button id="tavern-drink" type="button">Take hot cocoa</button>
+  <button id="tavern-close" type="button">Close</button>
+</section>
 <script type="module" src="/src/main.js"></script>
 </body>
 </html>

@@ -3,7 +3,7 @@
 //   client -> server: { t: "hello", name, gender, color, cap, x, z, dir } | { t: "pos", x, z, dir, step, run }
 //                     { t: "chat", text } | { t: "name", name } | { t: "gender", gender, cap }
 //                     { t: "color", color }   (name colour: one of NAME_COLORS)
-//                     { t: "sit", seat, n }   (bench seat 0..15, carousel horse 16..23, Ferris wheel gondola 24..31, roller coaster 32..36 while it waits at the station, or -1 to stand; n numbers the request)
+//                     { t: "sit", seat, n }   (bench seat 0..15, carousel horse 16..23, Ferris wheel gondola 24..31, roller coaster 32..36 while it waits at the station, tavern seat 37..48, or -1 to stand; n numbers the request)
 //                     { t: "capy" }   (feed the capybara)
 //                     { t: "stone", pts: [[x, z], ...] }   (a stone skipped on the pond: where it touched the water, 1 to 6)
 //                     { t: "ground", on }   (sit on the ground, or get up)
@@ -86,7 +86,7 @@ const MAX_BYTES = 1024;
 const COORD_LIMIT = 500;
 const ADMIN_ATTEMPTS = 20; // per IP, then locked for ADMIN_LOCK_MS (the "other" rate limit already caps tries at ~1/s)
 const ADMIN_LOCK_MS = 60_000;
-const MAX_SEATS = 37; // bench seats 0..15 (bench * 2 + side), carousel horses 16..23, Ferris wheel gondolas 24..31, roller coaster 32..36; the client knows where each is
+const MAX_SEATS = 49; // bench seats 0..15 (bench * 2 + side), carousel horses 16..23, Ferris wheel gondolas 24..31, roller coaster 32..36, tavern chairs and stools 37..48; the client knows where each is
 // The roller coaster runs in cycles by the room's clock (src/roller-coaster.js): it waits at the station
 // for BOARD_MS, then rides for RIDE_MS. Its seats can be taken only while it waits (plus a little for the trip).
 const COASTER_SEATS = [32, 37];
