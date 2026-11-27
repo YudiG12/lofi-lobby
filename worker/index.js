@@ -36,6 +36,9 @@
 //                     { t: "cat-ride", id, playerId, at, until, phrase }   (the room picked a player for that cat to
 //                                                               sit on their head from at to until; playerId null ends it early.
 //                                                               Only the server starts rides. Also sent on join, without phrase)
+//                     { t: "owl", id, playerId, at, until }   (the room sent that owl to sit on a player's head from at to
+//                                                               until; playerId null ends it early. Only the server sends it,
+//                                                               also on join. Between visits the owls perch by the room clock)
 //                     { t: "github-code", code, url, every, until }   (type code at url; ask again every `every` seconds)
 //                     { t: "github-ok", session, login, prs } | { t: "github-fail", msg } | { t: "github-out" }
 //                     { t: "account", ... } | { t: "acct", id, n } | { t: "profile", ... } | { t: "friends", ... } | { t: "dm", ... }
@@ -130,6 +133,10 @@ const CAT_REST_MS = 3000;
 const CAT_RIDE_MS = 18_000;
 const CAT_RIDE_EVERY_MS = 90_000;
 const CAT_RIDE_CHANCE = 0.65;
+// owls: the same lottery, each waiting less since there are fewer of them than cats
+const OWL_IDS = ["brown", "snowy"];
+const OWL_VISIT_MS = 15_000;
+const OWL_VISIT_EVERY_MS = (CAT_RIDE_EVERY_MS * OWL_IDS.length) / CAT_IDS.length;
 const LIKES_PER_IP = 3; // on one note: a house can share an IP, a like farm can't hide behind fresh wall keys
 const LIKES_MAX = 2000; // likers kept per note (one storage value)
 const NOTE_ID = /^note:\d{15}-[a-z0-9]{6}$/;
@@ -572,6 +579,13 @@ export class Room {
     if (cats && typeof cats === "object") {
       for (const id of CAT_IDS) {
         if (cats[id]) server.send(JSON.stringify({ t: "cat", id, ...cats[id] }));
+      }
+    }
+    const visits = await this.state.storage.get("owl-visits");
+    if (visits && typeof visits === "object") {
+      for (const id of OWL_IDS) {
+        const v = visits[id];
+        if (v?.playerId && v.until > Date.now()) server.send(JSON.stringify({ t: "owl", id, playerId: v.playerId, at: v.at, until: v.until }));
       }
     }
     const rides = await this.state.storage.get("cat-rides");
@@ -1083,6 +1097,7 @@ export class Room {
     }
     for (const ws of stale) this.leave(ws, 1000, "heartbeat timeout");
     await this.maybeStartCatRide(Date.now());
+    await this.maybeStartOwlVisit(Date.now());
     if (this.openSockets().length > 0) await this.state.storage.setAlarm(Date.now() + HEARTBEAT_CHECK_MS);
   }
   // Server-only cat-on-head lottery: picks a random online player on the heartbeat alarm,
@@ -1092,11 +1107,7 @@ export class Room {
     if (!players.length) return;
     const rides = (await this.state.storage.get("cat-rides")) || {};
     const cats = (await this.state.storage.get("cats")) || {};
-    const occupied = new Set(
-      Object.values(rides)
-        .filter((r) => r?.playerId && r.until > now)
-        .map((r) => r.playerId),
-    );
+    const occupied = await this.headsTaken(now, rides);
     const available = players.filter((p) => !occupied.has(p.id));
     if (!available.length) return;
     let changed = false;
@@ -1113,6 +1124,50 @@ export class Room {
       break;
     }
     if (changed) await this.state.storage.put("cat-rides", rides);
+  }
+  // players with a cat or an owl on their head: one animal per head
+  async headsTaken(now, rides, visits) {
+    rides ??= (await this.state.storage.get("cat-rides")) || {};
+    visits ??= (await this.state.storage.get("owl-visits")) || {};
+    return new Set(
+      [...Object.values(rides), ...Object.values(visits)]
+        .filter((r) => r?.playerId && r.until > now)
+        .map((r) => r.playerId),
+    );
+  }
+  // the owls' turn of the same lottery: at most one owl lands on a head per tick
+  async maybeStartOwlVisit(now) {
+    const players = this.players();
+    if (!players.length) return;
+    const visits = (await this.state.storage.get("owl-visits")) || {};
+    const occupied = await this.headsTaken(now, undefined, visits);
+    const available = players.filter((p) => !occupied.has(p.id));
+    if (!available.length) return;
+    for (const id of OWL_IDS) {
+      const v = visits[id];
+      if (v && now < v.until + OWL_VISIT_EVERY_MS) continue;
+      if (Math.random() > CAT_RIDE_CHANCE) continue;
+      const pick = available[Math.floor(Math.random() * available.length)];
+      visits[id] = { playerId: pick.id, at: now, until: now + OWL_VISIT_MS };
+      this.broadcast({ t: "owl", id, ...visits[id] });
+      await this.state.storage.put("owl-visits", visits);
+      return;
+    }
+  }
+  async clearOwlVisitFor(playerId) {
+    const visits = await this.state.storage.get("owl-visits");
+    if (!visits || typeof visits !== "object") return;
+    const now = Date.now();
+    let changed = false;
+    for (const id of OWL_IDS) {
+      const v = visits[id];
+      if (v?.playerId === playerId && v.until > now) {
+        visits[id] = { playerId: null, at: v.at, until: now };
+        changed = true;
+        this.broadcast({ t: "owl", id, playerId: null, at: now, until: now });
+      }
+    }
+    if (changed) await this.state.storage.put("owl-visits", visits);
   }
   async clearCatRideFor(playerId) {
     const rides = await this.state.storage.get("cat-rides");
@@ -1174,6 +1229,7 @@ export class Room {
       if (p.joinedAt) {
         this.broadcast({ t: "left", id: p.id }, ws);
         this.clearCatRideFor(p.id).catch(() => {});
+        this.clearOwlVisitFor(p.id).catch(() => {});
         if (p.acct != null) this.presence(p.acct, false).catch(() => {});
       }
     } else {
