@@ -1,3 +1,5 @@
+import { loadHouse } from "./house-interiors.js";
+import { CIGARETTE, DOOR_RANGE, HOUSE_DOORS, HOUSE_SEAT, houseRoom } from "./house-layouts.js";
 import * as THREE from "three";
 import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader.js";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
@@ -218,6 +220,12 @@ renderer.outputColorSpace = THREE.SRGBColorSpace;
 document.body.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
+let houseId = 0;
+let interior = null;
+let houseRequest = null;
+let serverHasHouses = false;
+let doorMap = null;
+let streetReturn = null;
 scene.background = new THREE.Color("#070a18");
 scene.fog = new THREE.Fog("#070a18", 50, 140);
 
@@ -334,6 +342,7 @@ function prepareTown(fbx) {
     fbx.position.z -= c.z;
     fbx.position.y -= box2.min.y;
     townBox = new THREE.Box3().setFromObject(fbx);
+    doorMap = fbx.name === "OriginalTown" ? "fallback" : "town";
     clearFairGround(fbx);
     scene.add(fbx);
     townMeshes = [];
@@ -807,6 +816,12 @@ const BENCH_SPOTS = [
 ];
 // Where a seat is, and which way the sitter looks (null if that bench doesn't exist)
 function seatSpot(id) {
+  if (houseId) {
+    const seat = houseRoom(houseId).seats[id - HOUSE_SEAT];
+    if (!seat) return null;
+    const [x, y, z, dir] = seat;
+    return { x, y, z, dir };
+  }
   // a carousel horse: where it is right now, by the room's clock
   if (isCarouselSeat(id)) return fairPlaced ? carouselSeat(id - CAROUSEL.firstSeat, roomNow(), carousel.root.position.y) : null;
   // a Ferris wheel gondola: the same, up and down
@@ -1633,6 +1648,7 @@ const ray = new THREE.Raycaster();
 const DOWN = new THREE.Vector3(0, -1, 0);
 // Height of the highest surface at that point (ground, or top of house/tree/fence)
 function topHeight(x, z) {
+  if (interior) return 0;
   if (!townMeshes.length) return 0;
   ray.set(new THREE.Vector3(x, 200, z), DOWN);
   // ignore the pond edge stones: they are walls, not floor
@@ -1643,6 +1659,7 @@ function topHeight(x, z) {
 }
 // Ground height: lowest surface (ignores roofs above)
 function groundHeight(x, z) {
+  if (interior) return 0;
   if (!townMeshes.length) return 0;
   ray.set(new THREE.Vector3(x, 200, z), DOWN);
   const hits = ray.intersectObjects(townMeshes, false);
@@ -2349,6 +2366,7 @@ const BODY_RADIUS = 0.9; // character "width"
 const MAX_STEP = 1.2; // height difference it can climb
 const POST_RADIUS = 1.1;
 function isFree(x, z, currentY) {
+  if (interior) return interior.free(x, z);
   if (
     x < townBox.min.x ||
     x > townBox.max.x ||
@@ -2696,6 +2714,7 @@ const capyFeet = useFeetDepth(capy.mesh);
 const owlFeet = useFeetDepth(owl.mesh);
 const _toCam = new THREE.Vector3();
 const occlusionRay = new THREE.Ray();
+const interiorDepthRay = new THREE.Raycaster();
 const _hit = new THREE.Vector3();
 // reference point for a trainer standing at (x, y, z): the feet, pulled a bit toward the camera
 function setFeet(feet, x, y, z) {
@@ -2712,6 +2731,12 @@ function setFeet(feet, x, y, z) {
   for (const box of benchBoxes) {
     if (box.containsPoint(feet)) continue; // sitting on it (side benches)
     if (occlusionRay.intersectBox(box, _hit)) margin = Math.min(margin, Math.max(0, feet.distanceTo(_hit) - 0.1));
+  }
+  if (interior) {
+    interiorDepthRay.set(feet, _toCam);
+    const hit = interiorDepthRay.intersectObjects(interior.meshes, false)[0];
+    feet.addScaledVector(_toCam, hit ? Math.min(margin, Math.max(0, hit.distance - 0.1)) : margin);
+    return;
   }
   // (the same for the candles on the grass, which are small and low)
   for (const [thing, halfWidth] of [[board, 5], [candles, 1.6]]) {
@@ -2804,7 +2829,8 @@ let dir = "down",
   tAnim = 0;
 // come back where you left: the position is remembered in this browser
 try {
-  const saved = JSON.parse(localStorage.getItem("position") || "null");
+  const saved = JSON.parse(sessionStorage.getItem("house-return") || localStorage.getItem("position") || "null");
+  sessionStorage.removeItem("house-return");
   if (saved && Number.isFinite(saved.x) && Number.isFinite(saved.z)) {
     pos.set(saved.x, 0, saved.z);
     if (["down", "up", "left", "right"].includes(saved.dir)) dir = saved.dir;
@@ -2830,7 +2856,7 @@ function checkSavedPosition() {
 let lastSaved = 0,
   lastSavedState = "";
 function savePosition(now) {
-  if (mySeat >= 0 || now - lastSaved < 1000) return;
+  if (houseId || mySeat >= 0 || now - lastSaved < 1000) return;
   lastSaved = now;
   const state = JSON.stringify({ x: +pos.x.toFixed(2), z: +pos.z.toFixed(2), dir });
   if (state === lastSavedState) return;
@@ -3006,6 +3032,7 @@ let holdIcon = 0;
 // Q on a bench goes through everything; standing, it goes coffee, cigarette, empty hands
 const FOOT_CYCLE = [0, ...ON_FOOT];
 function nextHold() {
+  if (houseId) return mySeat >= 0 ? (myHold + 1) % CIGARETTE : myHold === COFFEE ? 0 : COFFEE;
   if (mySeat >= 0) return (myHold + 1) % HELD.length;
   const i = FOOT_CYCLE.indexOf(myHold);
   return i < 0 ? COFFEE : FOOT_CYCLE[(i + 1) % FOOT_CYCLE.length]; // a laptop or a book in hand gives way to the coffee
@@ -3020,7 +3047,7 @@ function updateHoldButton() {
 let lastHold = 0;
 function cycleHold() {
   const now = performance.now();
-  if (gamePaused || now - lastHold < 350) return; // stays under the server's rate limit
+  if (gamePaused || houseRequest?.sent || now - lastHold < 350) return; // stays under the server's rate limit
   lastHold = now;
   myHold = nextHold();
   try { localStorage.setItem("hold", myHold); } catch {}
@@ -3081,6 +3108,10 @@ function nearestFreeSeat() {
     const d = Math.hypot(s.x - pos.x, s.z - pos.z);
     if (d < bestD && !seatTaken(id)) (best = id), (bestD = d);
   };
+  if (houseId) {
+    houseRoom(houseId).seats.forEach((_, index) => consider(HOUSE_SEAT + index));
+    return best;
+  }
   for (let id = 0; id < benches.length * SEATS_PER_BENCH; id++) consider(id);
   for (let i = 0; i < CAROUSEL.seats; i++) consider(CAROUSEL.firstSeat + i);
   for (let i = 0; i < WHEEL.seats; i++) consider(WHEEL.firstSeat + i);
@@ -3219,7 +3250,6 @@ addEventListener("keydown", (e) => {
   const typing = ["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName);
   const k = e.key.toLowerCase();
   if (!typing && !e.repeat && !e.ctrlKey && !e.metaKey && k === "q") cycleHold();
-  if (!typing && !e.repeat && !e.ctrlKey && !e.metaKey && k === "e") (mySeat >= 0 || (!nearBoard() && !nearCapy() && !nearCat())) && toggleSit();
   // a quick tap on a move key can end before the next frame: stand up right away
   if (!typing && !gamePaused && mySeat >= 0 && !strappedIn() && MOVE_KEYS[k]) {
     dir = MOVE_KEYS[k];
@@ -3238,6 +3268,7 @@ document.querySelector("#respawn").addEventListener("click", (e) => {
   }
   clearTimeout(respawnTimer);
   btn.classList.remove("confirm");
+  if (houseId || houseRequest) return;
   if (mySeat >= 0) standUp(); // free the seat first, or the room keeps you on the bench
   pos.set(0, 0, 0);
   lastSaved = 0;
@@ -3503,6 +3534,7 @@ function connect() {
     const m = JSON.parse(ev.data);
     if (m.t === "you") {
       myId = m.id;
+      serverHasHouses = m.houses === true;
       if (Number.isFinite(m.now)) clockOffset = m.now - Date.now(); // the capybara walks by the room's clock
       myLeaveToken = m.token || "";
       // the room reconnected us to a newer deploy than the one this tab loaded with: reload to get
@@ -3514,6 +3546,7 @@ function connect() {
       }
       deployed ||= m.v;
     }
+    else if (m.t === "house") receiveHouse(m);
     else if (m.t === "state") m.players.forEach(createOther);
     else if (m.t === "joined") createOther(m.player);
     else if (m.t === "left") removeOther(m.id);
@@ -3648,6 +3681,19 @@ function connect() {
     pingTimer = 0;
     myLeaveToken = "";
     [...others.keys()].forEach(removeOther);
+    clearTimeout(houseRequest?.timer);
+    houseRequest = null;
+    serverHasHouses = false;
+    if (houseId) {
+      houseId = 0;
+      interior = null;
+      mySeat = -1;
+      onGround = false;
+      if (streetReturn) restoreStreetPosition(streetReturn.x, streetReturn.z);
+      slide.x = slide.z = 0;
+      lastState = "";
+      clearStreetReturn();
+    }
     if (!kicked && !pageUnloading) reconnectTimer = setTimeout(connect, 2000); // reconnect
   };
 }
@@ -3686,8 +3732,8 @@ if (MULTIPLAYER) {
 
 let lastSend = 0,
   lastState = "";
-function sendPosition(now, step, running) {
-  if (!ws || ws.readyState !== 1 || now - lastSend < 66) return; // ~15x/s
+function sendPosition(now, step, running, force = false) {
+  if (houseRequest?.sent || !ws || ws.readyState !== 1 || (!force && now - lastSend < 66)) return; // ~15x/s
   const state = `${pos.x.toFixed(2)},${pos.z.toFixed(2)},${dir},${step},${running}`;
   if (state === lastState) return;
   lastSend = now;
@@ -3827,7 +3873,12 @@ function addToHistory(name, text, id, admin, color, prs = 0, n = -1) {
   if (atBottom || name === NAME) elMsgs.scrollTop = elMsgs.scrollHeight;
 }
 
+function isOutdoorBubble(owner) {
+  return owner === capy.mesh || cats.some((cat) => cat.mesh === owner);
+}
+
 function showBubble(owner, text, mention = false) {
+  if (houseId && isOutdoorBubble(owner)) return;
   let b = bubbles.get(owner);
   if (!b) {
     b = {
@@ -3942,7 +3993,7 @@ const _v = new THREE.Vector3();
 // "press E to sit" over the nearest free seat, while you're close enough to take it
 const sitPrompt = document.querySelector("#sit-prompt");
 sitPrompt.addEventListener("click", (e) => {
-  toggleSit();
+  doE();
   e.currentTarget.blur(); // give the keyboard back to the game
 });
 // The roller coaster's countdown over its station, for whoever is near it or riding: the seconds left
@@ -3954,7 +4005,7 @@ function updateCoasterSign() {
   const near = Math.hypot(pos.x - COASTER_SIGN_AT.x, pos.z - COASTER_SIGN_AT.z) < COASTER_SIGN_NEAR || isCoasterSeat(mySeat);
   const now = roomNow();
   const board = coasterBoardLeft(now);
-  coasterSign.hidden = !fairPlaced || gamePaused || !near;
+  coasterSign.hidden = !!houseId || !fairPlaced || gamePaused || !near;
   if (coasterSign.hidden) return;
   const html = board ? `all aboard! leaves in <b>${board}s</b>` : `back at the station in <b>${coasterBackIn(now) || 1}s</b>`;
   if (coasterSign.innerHTML !== html) coasterSign.innerHTML = html;
@@ -3964,17 +4015,32 @@ function updateCoasterSign() {
   coasterSign.style.left = `${(_v.x * 0.5 + 0.5) * innerWidth}px`;
   coasterSign.style.top = `${(-_v.y * 0.5 + 0.5) * innerHeight}px`;
 }
-function updateSitPrompt(seat) {
-  const s = seat >= 0 && !gamePaused && !typing() && !nearBoard() && !nearCapy() && !nearCat() ? seatSpot(seat) : null;
-  sitPrompt.hidden = !s;
-  if (!s) return;
-  _v.set(s.x, s.y + 5.2, s.z).project(camera); // above a standing trainer's name tag
+function updateSitPrompt(action, seat) {
+  const door = action === "enter-house" || action === "exit-house" ? nearbyHouseDoor() : null;
+  const spot = action === "sit" ? seatSpot(seat) : action === "stand" && houseId ? seatSpot(mySeat) : null;
+  sitPrompt.hidden = typing() || (!door && !spot);
+  if (sitPrompt.hidden) return;
+  const label = door ? houseId ? "leave" : "enter" : action === "stand" ? "stand up" : "sit";
+  if (sitPrompt.dataset.label !== label) {
+    sitPrompt.dataset.label = label;
+    sitPrompt.innerHTML = `<span class="key">press <kbd>E</kbd> to ${label}</span><span class="tap">tap to ${label}</span>`;
+  }
+  if (door) _v.set(door.x, topHeight(door.x, door.z) + 4, door.z);
+  else _v.set(spot.x, spot.y + 5.2, spot.z);
+  _v.project(camera);
+  sitPrompt.hidden = _v.z > 1;
   sitPrompt.style.left = `${(_v.x * 0.5 + 0.5) * innerWidth}px`;
   sitPrompt.style.top = `${(-_v.y * 0.5 + 0.5) * innerHeight}px`;
 }
+
 function updateBubbles() {
   const now = performance.now();
   for (const [owner, b] of bubbles) {
+    if (houseId && isOutdoorBubble(owner)) {
+      b.el.remove();
+      bubbles.delete(owner);
+      continue;
+    }
     if (!owner.parent || now > b.until) {
       b.el.style.opacity = 0;
       if (!owner.parent || now > b.until + 400) {
@@ -4201,7 +4267,7 @@ const wallPrompt = Object.assign(document.createElement("button"), { id: "wall-p
 wallPrompt.innerHTML = MOBILE ? "tap to read the wall" : "<kbd>E</kbd> read the wall";
 wallPrompt.addEventListener("click", () => wall.show());
 document.body.append(wallPrompt);
-const nearBoard = () => Math.hypot(pos.x - board.position.x, pos.z - board.position.z - 1) < wall.NEAR;
+const nearBoard = () => !houseId && Math.hypot(pos.x - board.position.x, pos.z - board.position.z - 1) < wall.NEAR;
 addEventListener("keydown", (e) => {
   if (typing() || e.repeat || gamePaused || e.metaKey || e.ctrlKey || e.altKey) return;
   const k = e.key.toLowerCase();
@@ -4239,7 +4305,7 @@ catPrompt.addEventListener("click", (e) => {
 document.body.append(catPrompt);
 // Pick at most one closest animal in interaction range so prompts and E never collide.
 function closestAnimal() {
-  if (mySeat >= 0 || nearBoard()) return null;
+  if (houseId || mySeat >= 0 || nearBoard()) return null;
   let best = null;
   let bestDist = Infinity;
   const capyDist = Math.hypot(pos.x - capy.mesh.position.x, pos.z - capy.mesh.position.z);
@@ -4289,7 +4355,7 @@ function pondDistance(x, z) {
     dz = Math.max(pondBox.min.z - z, 0, z - pondBox.max.z);
   return Math.hypot(dx, dz);
 }
-const nearPond = () => !gamePaused && pondDistance(pos.x, pos.z) < STONE_NEAR;
+const nearPond = () => !houseId && !gamePaused && pondDistance(pos.x, pos.z) < STONE_NEAR;
 // Toward the middle of the pond: the first touch a little past the water's edge, then up to four
 // skips, each shorter, bending a little, while they stay on the water. The last touch is where it sinks.
 function planThrow(x, z) {
@@ -4410,6 +4476,7 @@ function waterY(x, z) {
  * @returns {{x: number, z: number, d: number, face: string, seat: number} | null} d: distance to the pond's box
  */
 function fishSpot() {
+  if (houseId) return null;
   if (!pondBox) return null;
   const s = mySeat >= 0 ? seatSpot(mySeat) : null;
   const x = s ? s.x : pos.x,
@@ -4449,10 +4516,12 @@ let eNow = null;
  * @returns {"fish" | "stand" | "wall" | "capy" | "cat" | "cast" | "sit" | null}
  */
 function eAction(seat = nearestFreeSeat()) {
-  if (gamePaused || wall.isOpen()) return null;
+  if (gamePaused || wall.isOpen() || houseRequest) return null;
+  if (houseId) return mySeat >= 0 ? "stand" : nearbyHouseDoor() ? "exit-house" : seat >= 0 ? "sit" : null;
   const p = fishing.phase();
   if (p === "focus" || p === "bite") return "fish";
   if (mySeat >= 0) return "stand";
+  if (!onGround && !fishing.spot() && nearbyHouseDoor()) return "enter-house";
   if (nearBoard()) return "wall";
   const animal = closestAnimal();
   if (animal) return animal.kind;
@@ -4462,12 +4531,118 @@ function eAction(seat = nearestFreeSeat()) {
 }
 /** Runs an action from eAction (E, a prompt or the fish button). */
 function doE(action = eAction()) {
-  if (action === "fish") fishing.press();
+  if (action === "enter-house" || action === "exit-house") changeHouse();
+  else if (action === "fish") fishing.press();
   else if (action === "cast") fishSpot() && fishing.choose(castHere);
   else if (action === "wall") wall.show();
   else if (action === "capy") feedCapy();
   else if (action === "cat") feedCat(nearCat());
   else if (action === "stand" || action === "sit") toggleSit();
+}
+function nearbyHouseDoor() {
+  if (!doorMap) return null;
+  const doors = houseId
+    ? [{ id: 0, point: houseRoom(houseId).entry }]
+    : HOUSE_DOORS.map((door) => ({ id: door.id, point: door[doorMap] }));
+  const door = doors.find(({ point: [x, z] }) => Math.hypot(pos.x - x, pos.z - z) <= DOOR_RANGE);
+  return door ? { id: door.id, x: door.point[0], z: door.point[1] } : null;
+}
+function clearStreetReturn() {
+  streetReturn = null;
+  try { sessionStorage.removeItem("house-return"); } catch {}
+}
+function restoreStreetPosition(x, z) {
+  // Check clearance at pavement height, even under a roof that crosses the camera's view.
+  const place = (px, pz) => {
+    const y = groundHeight(px, pz);
+    if (!isFree(px, pz, y)) return false;
+    pos.set(px, y, pz);
+    return true;
+  };
+  if (place(x, z)) return;
+  for (let r = 0.5; r <= 6; r += 0.5) {
+    for (let i = 0; i < 16; i++) {
+      const angle = i * Math.PI / 8;
+      if (place(x + Math.cos(angle) * r, z + Math.sin(angle) * r)) return;
+    }
+  }
+  pos.set(0, groundHeight(0, 0), 0);
+}
+async function changeHouse() {
+  const door = nearbyHouseDoor();
+  const socket = ws;
+  if (!door || houseRequest || typing()) return;
+  if (socket?.readyState !== 1 || !serverHasHouses) {
+    addToHistory("system", "House access requires a connection to the current lobby server.");
+    return;
+  }
+  const request = { door, socket, sent: false, model: null };
+  houseRequest = request;
+  try {
+    if (door.id) request.model = await loadHouse(door.id);
+    if (houseRequest !== request) return;
+    if (socket !== ws || socket.readyState !== 1 || nearbyHouseDoor()?.id !== door.id || mySeat >= 0 || onGround) {
+      houseRequest = null;
+      return;
+    }
+    sendPosition(performance.now(), 0, false, true);
+    if (door.id) request.street = { x: pos.x, z: pos.z, dir };
+    request.sent = true;
+    socket.send(JSON.stringify({ t: "house", house: door.id, map: doorMap }));
+    request.timer = setTimeout(() => {
+      if (houseRequest !== request) return;
+      addToHistory("system", "The house did not respond. Reconnecting to the lobby.");
+      socket.close(1000, "house transition timed out");
+    }, 5000);
+  } catch {
+    if (houseRequest !== request) return;
+    houseRequest = null;
+    addToHistory("system", "This house could not be opened.");
+  }
+}
+function receiveHouse(message) {
+  const request = houseRequest;
+  clearTimeout(request?.timer);
+  houseRequest = null;
+  if (!request) return;
+  if (!message.ok) {
+    addToHistory("system", "The door could not be opened. Move closer and try again.");
+    return;
+  }
+  const player = message.player;
+  if (player.house) {
+    streetReturn = request.street;
+    try { sessionStorage.setItem("house-return", JSON.stringify(streetReturn)); } catch {}
+  } else {
+    clearStreetReturn();
+  }
+  [...others.keys()].forEach(removeOther);
+  houseId = player.house;
+  interior = request.model;
+  myHold = player.hold;
+  mySeat = -1;
+  onGround = false;
+  if (houseId) pos.set(player.x, 0, player.z);
+  else restoreStreetPosition(player.x, player.z);
+  slide.x = slide.z = 0;
+  lastState = "";
+  renderer.domElement.animate([{ opacity: 0 }, { opacity: 1 }], 200);
+  message.players.forEach(createOther);
+}
+function renderPlayerArea() {
+  if (!interior) return renderer.render(scene, camera);
+  const { room } = interior;
+  const trainers = [sprite, shadow, myHeld];
+  for (const other of others.values()) {
+    trainers.push(other.mesh);
+    if (other.held) trainers.push(other.held);
+  }
+  room.add(...trainers);
+  try {
+    renderer.render(room, camera);
+  } finally {
+    scene.add(...trainers);
+  }
 }
 addEventListener("keydown", (e) => {
   if (typing() || e.repeat || e.metaKey || e.ctrlKey || e.altKey) return;
@@ -4593,7 +4768,7 @@ function loop() {
     // facing follows the stronger axis
     dir = Math.abs(dx) > Math.abs(dz) ? (dx > 0 ? "right" : "left") : dz > 0 ? "down" : "up";
   }
-  if (gamePaused || wall.isOpen()) {
+  if (gamePaused || wall.isOpen() || houseRequest?.sent) {
     dx = 0;
     dz = 0;
   }
@@ -4665,10 +4840,10 @@ function loop() {
   sprite.castShadow = !riding;
   const movers = [...others.values()].filter((o) => !isRideSeat(o.seat)).map((o) => o.mesh);
   updateLampShadows([...(riding ? [] : [sprite]), capy.mesh, owl.mesh, ...cats.map((c) => c.mesh), ...movers]);
-  renderer.render(scene, camera);
+  renderPlayerArea();
   updateNameTags();
   updateBubbles();
-  updateSitPrompt(eNow === "sit" ? freeSeat : -1);
+  updateSitPrompt(eNow, freeSeat);
   updateCoasterSign();
   updateWallPrompt();
   updateStonePrompt();
