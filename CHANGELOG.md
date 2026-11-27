@@ -45,6 +45,7 @@
 - Progressive mute for chat spam (rate exceeded, or the same text 4+ times in a row): warning, then 15 s, 1 min, 5 min, 30 min.
 
 ### Changed
+- **Lighter nights**: the cats and the owl no longer make the lamps redraw their shadows. With five cats roaming all night, about 3 lamps redrew their 6 shadow passes every frame (+25–30 ms of GPU a frame on an integrated card, ~580 draw calls instead of ~210). They keep the moon's (sun's) shadow and just cast none in the lamps' light.
 - A bad word in the chat or on the wall now reads `lobba` instead of `***` (and the result still stays within the 140 / 2,000-character limit).
 - Lighter shadows: the lamp posts' shadow maps are 512 instead of 1024 and the moon's (sun's by day) 1024 instead of 2048, the same on every device. The town looks the same by night and by day, and the game takes about 245 MB less of GPU memory (about 355 MB down to 110 MB).
 - Lamp shadows are redrawn only when they can change: once the town is in place, when the lamps come on at dusk, and when a trainer or the capybara moves within a lamp's reach (for the slow capybara, about 10 times a second). By day (lamps off) the 24 extra shadow passes per frame are skipped altogether, and at night they run only now and then: about 4,300 draw calls per frame down to 1,850 by day and 2,200 at night on average. They look the same, and a trainer or the capybara walking under a lamp still casts a moving shadow for everyone.

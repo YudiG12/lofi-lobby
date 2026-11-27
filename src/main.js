@@ -1001,6 +1001,16 @@ const lampGlows = lampPosts.flatMap((p) => p.children.filter((c) => c.isSprite))
 // animation frame, or stopped (so the shadow settles exactly under it): every frame or so for a
 // walking trainer, about 10 times a second for the capybara, which strolls by the pond all night.
 for (const l of lampLights) (l.shadow.autoUpdate = false), (l.userData.shadowStale = true);
+// The cats and the owl stay out of the lamps' shadows: five cats roam the whole town all night and the
+// owl flies from lamp cap to lamp cap, so with them about 3 lamps redrew their 6 passes every frame
+// (+25-30 ms of GPU a frame on an integrated card). They keep the moon's (sun's) shadow; in a lamp's
+// shadow pass they draw nothing (a distance material that discards every pixel), so no shadow of
+// theirs is left behind where they were.
+const NO_LAMP_SHADOW = new THREE.MeshDistanceMaterial({ alphaTest: 2 });
+function outOfLampShadows(mesh) {
+  if (mesh.customDistanceMaterial !== NO_LAMP_SHADOW) mesh.customDistanceMaterial?.dispose();
+  mesh.customDistanceMaterial = NO_LAMP_SHADOW;
+}
 function markLampShadowsStale() {
   for (const l of lampLights) l.userData.shadowStale = true;
 }
@@ -1701,6 +1711,7 @@ function placeLampPost(p) {
 
 // ---- Owl (on the message wall's roof; flies to the two nearest lamp posts and back) ----
 const owl = createOwl();
+outOfLampShadows(owl.mesh);
 scene.add(owl.mesh);
 // perches: the top of the wall's roof and the caps of the two lamp posts closest to the wall
 function placeOwl() {
@@ -1816,6 +1827,7 @@ function makeCatEntry(cfg) {
   };
 }
 const cats = CATS.map(makeCatEntry);
+cats.forEach((c) => outOfLampShadows(c.mesh));
 const CAT_NAV_STEP = 2;
 const CAT_LEG_MS = 26000;
 const CAT_MIN_SIT_MS = 4500;
@@ -4529,7 +4541,7 @@ function loop() {
   // someone going round would make them redraw their 6 shadow passes every frame, all night
   sprite.castShadow = !riding;
   const movers = [...others.values()].filter((o) => !isRideSeat(o.seat)).map((o) => o.mesh);
-  updateLampShadows([...(riding ? [] : [sprite]), capy.mesh, owl.mesh, ...cats.map((c) => c.mesh), ...movers]);
+  updateLampShadows([...(riding ? [] : [sprite]), capy.mesh, ...movers]); // not the cats or the owl (outOfLampShadows)
   renderer.render(scene, camera);
   updateNameTags();
   updateBubbles();
