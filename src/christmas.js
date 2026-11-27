@@ -316,3 +316,52 @@ export function createChristmasTree({ scene, tree }) {
     },
   };
 }
+
+// ---- Ribbons on the lamp posts ----
+// A red ribbon wound around each pole like a candy cane, and a bow under the lantern's arm. Real
+// geometry (lit by the lamp), but it casts no shadow, so the lamps' shadow maps don't change.
+const RIBBON = new THREE.MeshLambertMaterial({ color: "#d0283a" });
+export function createLampRibbons({ posts, pole = { radius: 0.36, from: 1, to: 6.6 } }) {
+  const turns = 3.5;
+  const curve = new THREE.CatmullRomCurve3(
+    Array.from({ length: 64 }, (_, i) => {
+      const t = i / 63,
+        a = t * turns * Math.PI * 2;
+      return new THREE.Vector3(Math.cos(a) * pole.radius, pole.from + t * (pole.to - pole.from), Math.sin(a) * pole.radius);
+    }),
+  );
+  const spiral = new THREE.TubeGeometry(curve, 160, 0.07, 6, false);
+  // the bow: two loops (flattened boxes, tilted) and the knot, facing the camera (+z)
+  const loop = new THREE.BoxGeometry(0.5, 0.32, 0.12);
+  const knot = new THREE.BoxGeometry(0.18, 0.2, 0.16);
+  const tail = new THREE.BoxGeometry(0.12, 0.45, 0.06);
+  const ribbons = posts.map((post) => {
+    const g = new THREE.Group();
+    g.add(new THREE.Mesh(spiral, RIBBON));
+    const bow = new THREE.Group();
+    bow.position.set(0, 6.95, pole.radius + 0.05); // just under the arm (7.4)
+    const l = new THREE.Mesh(loop, RIBBON);
+    l.position.x = -0.26;
+    l.rotation.z = 0.35;
+    const r = new THREE.Mesh(loop, RIBBON);
+    r.position.x = 0.26;
+    r.rotation.z = -0.35;
+    const k = new THREE.Mesh(knot, RIBBON);
+    const t1 = new THREE.Mesh(tail, RIBBON);
+    t1.position.set(-0.1, -0.3, 0);
+    t1.rotation.z = 0.25;
+    const t2 = new THREE.Mesh(tail, RIBBON);
+    t2.position.set(0.1, -0.3, 0);
+    t2.rotation.z = -0.25;
+    bow.add(l, r, k, t1, t2);
+    g.add(bow);
+    g.visible = false;
+    post.add(g);
+    return g;
+  });
+  return {
+    setOn(on) {
+      for (const g of ribbons) g.visible = on;
+    },
+  };
+}

@@ -7,7 +7,7 @@ import { createStones } from "./stones.js";
 import { addSitFrames, sitFramePos } from "./ground-sit.js";
 import { createCapybara, CAPY_NEAR, CAPY_RADIUS, PHRASES as CAPY_PHRASES, CHRISTMAS_PHRASES, isChristmas } from "./capybara.js";
 import { createFishing, createFishingGear, FISH_NEAR, FISH_LEAVE } from "./fishing.js";
-import { createSnow, createHouseLights, createChristmasTree } from "./christmas.js";
+import { createSnow, createHouseLights, createChristmasTree, createLampRibbons } from "./christmas.js";
 
 // ---- Asset config (change here to use other files) ----
 const TOWN = {
@@ -1764,9 +1764,11 @@ addEventListener("keydown", (e) => {
 });
 drawChristmasButton();
 setInterval(applyChristmas, 60_000); // the lobby stays open for days: the season starts and ends by itself
-// the capybara dresses as a reindeer, and it snows
+// the capybara dresses as a reindeer, it snows, and the lamp posts get a ribbon
 whenChristmas((on) => capy.setReindeer(on));
 whenChristmas((on) => snow.setOn(on));
+const lampRibbons = createLampRibbons({ posts: lampPosts });
+whenChristmas((on) => lampRibbons.setOn(on));
 // where the room's clock puts it: there and back at one speed, standing still on the clock while it sits
 function walkCapy(t) {
   const eating = t >= capyFed.at && t < capyFed.until;
@@ -3765,6 +3767,7 @@ function loop() {
   requestAnimationFrame(loop);
 }
 loop();
+
 
 
 
