@@ -169,6 +169,9 @@
   #my-gender span { padding: 2px 8px; border-radius: 10px; }
   #my-gender span.on { color: #1b1406; background: #ffc95a; }
   #my-gender:hover { border-color: #ffc95a; }
+  #edit-look { display: flex; align-items: center; gap: 4px; padding: 3px 8px; font: inherit; font-size: 10px; color: #C4C6D4; cursor: pointer;
+               background: rgba(0,0,0,.4); border: 1px solid rgba(255,255,255,.16); border-radius: 12px; }
+  #edit-look:hover { border-color: #ffc95a; color: #ffc95a; }
   #my-caps.collapsed button:not(.on) { display: none; }
   #my-caps.collapsed button.on { outline: 0; }
   /* a cap colour is drawn as a little cap (dome and brim), so it is never taken for a name colour (a dot) */
@@ -190,6 +193,19 @@
   #trainer-preview { width: 80px; height: 80px; image-rendering: pixelated; background: rgba(255,255,255,.05);
                      border: 1px solid rgba(255,255,255,.14); border-radius: 8px; }
   #enter .look-pick { display: flex; flex-direction: column; gap: 10px; }
+  #enter .look-parts { display: grid; grid-template-columns: auto 1fr; gap: 8px 10px; align-items: center; }
+  #enter .look-parts small { margin: 0; }
+  .swatches { display: flex; gap: 5px; flex-wrap: wrap; }
+  .swatches button, #enter .swatches button { width: 16px; height: 16px; padding: 0; border-radius: 4px; border: 0; cursor: pointer;
+                                               background: var(--c); box-shadow: inset 0 -3px 0 rgba(0,0,0,.25); }
+  /* the first swatch: the trainer's own colours, drawn as a slash */
+  .swatches button.own, #enter .swatches button.own { background: linear-gradient(135deg, transparent 44%, #F2F2F5 44% 56%, transparent 56%), rgba(255,255,255,.08);
+                                                       box-shadow: inset 0 0 0 1px rgba(255,255,255,.3); }
+  .swatches button.on, #enter .swatches button.on { outline: 2px solid #F2F2F5; outline-offset: 2px; }
+  .swatches button:hover, #enter .swatches button:hover { outline: 2px solid rgba(255,255,255,.5); outline-offset: 2px; }
+  .extras { display: flex; gap: 6px; }
+  .extras button, #enter .extras button { font-size: 11px; padding: 4px 9px; border-radius: 6px; display: flex; gap: 5px; align-items: center; }
+  .extras button.on, #enter .extras button.on { border-color: #ffc95a; color: #ffc95a; }
   #enter button { font: inherit; font-size: 18px; color: #F2F2F5; background: rgba(10,10,14,.75); border: 1px solid rgba(255,255,255,.2);
                    border-radius: 8px; padding: 16px 28px; cursor: pointer; }
   #enter button:hover { border-color: #ffc95a; color: #ffc95a; }
@@ -244,6 +260,8 @@
     <button id="my-gender" type="button" role="switch" aria-label="trainer"><span data-g="male">male</span><span data-g="female">female</span></button>
     <small>cap</small>
     <div class="caps collapsed" id="my-caps" role="radiogroup" aria-label="cap colour"></div>
+    <!-- the rest of the look (skin, hair, clothes, extras) is on the pause screen: this opens it -->
+    <button id="edit-look" type="button" title="change your look (Space)" aria-label="change your look"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>look</button>
   </div>
   <div class="tools">
     <button id="day-night" type="button" data-key="N" aria-label="make it day"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
@@ -265,7 +283,7 @@
 <button id="sit-prompt" type="button" hidden><span class="key">press <kbd>E</kbd> to sit</span><span class="tap">tap to sit</span></button>
 <div id="hint" class="glass" hidden><b>shortcuts</b>
   <dl><dt>WASD / arrows</dt><dd>walk</dd><dt>Shift</dt><dd>run</dd><dt>Enter</dt><dd>chat</dd><dt>N</dt><dd>day / night / auto</dd><dt>R</dt><dd>rain</dd>
-  <dt>C</dt><dd>sit on the ground / get up</dd><dt>E</dt><dd>sit / stand up (near a bench)</dd><dt>E</dt><dd>fish: a focus timer (at the pond's edge)</dd><dt>T</dt><dd>skip a stone (by the pond)</dd><dt>Q</dt><dd>coffee / cigarette (laptop / book too when sitting)</dd><dt>G</dt><dd>switch trainer</dd><dt>B</dt><dd>message wall</dd><dt>F</dt><dd>full screen</dd><dt>M</dt><dd>mute</dd><dt>Space</dt><dd>pause</dd></dl></div>
+  <dt>C</dt><dd>sit on the ground / get up</dd><dt>E</dt><dd>sit / stand up (near a bench)</dd><dt>E</dt><dd>fish: a focus timer (at the pond's edge)</dd><dt>T</dt><dd>skip a stone (by the pond)</dd><dt>Q</dt><dd>coffee / cigarette (laptop / book too when sitting)</dd><dt>G</dt><dd>switch trainer</dd><dt>B</dt><dd>message wall</dd><dt>F</dt><dd>full screen</dd><dt>M</dt><dd>mute</dd><dt>Space</dt><dd>pause / change your look</dd></dl></div>
 <div id="radio" class="glass">
   <div class="tv"><div id="yt"></div></div>
   <div><small>now playing <button id="mute" type="button" title="mute (M)" aria-label="mute"></button><input id="volume" type="range" min="0" max="100" step="5" title="volume" aria-label="volume" /></small><b id="title">—</b>
@@ -297,7 +315,15 @@
     <div class="look">
       <canvas id="trainer-preview" width="32" height="32" aria-hidden="true"></canvas>
       <div class="look-pick"><small>cap colour</small>
-        <div class="caps" id="cap-colors" role="radiogroup" aria-label="cap colour"></div></div>
+        <div class="caps" id="cap-colors" role="radiogroup" aria-label="cap colour"></div>
+        <!-- skin, hair, top and bottom colours (the first keeps the trainer's own) and the accessories -->
+        <div class="look-parts">
+          <small>skin</small><div class="swatches" data-part="skin" role="radiogroup" aria-label="skin tone"></div>
+          <small>hair</small><div class="swatches" data-part="hair" role="radiogroup" aria-label="hair colour"></div>
+          <small>top</small><div class="swatches" data-part="top" role="radiogroup" aria-label="top colour"></div>
+          <small>bottom</small><div class="swatches" data-part="bottom" role="radiogroup" aria-label="bottom colour"></div>
+          <small>extras</small><div class="extras" id="accessories"></div>
+        </div></div>
     </div>
     <button id="btn-enter">enter the room ▶</button>
   </div>
@@ -400,6 +426,40 @@
       return b;
     }));
   };
+  // skin, hair, top and bottom colours and the accessories (the choices come from the game, window.LOOKS)
+  const ACC_ICONS = {
+    headphones: '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M4 15v-3a8 8 0 0 1 16 0v3"/><rect x="3" y="14" width="4" height="7" rx="1.5"/><rect x="17" y="14" width="4" height="7" rx="1.5"/></svg>',
+    glasses: '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><circle cx="6.5" cy="14" r="4"/><circle cx="17.5" cy="14" r="4"/><path d="M10.5 14h3"/></svg>',
+  };
+  const drawLook = () => {
+    const L = window.LOOKS, look = window.myLook?.();
+    if (!L || !look) return;
+    const lists = { skin: L.SKINS, hair: L.HAIRS, top: L.TOPS, bottom: L.BOTTOMS };
+    for (const box of document.querySelectorAll(".swatches[data-part]")) {
+      const part = box.dataset.part;
+      const options = [{ name: "own", own: true }, ...lists[part]];
+      box.replaceChildren(...options.map((c, k) => {
+        const i = k - 1; // -1: the trainer's own
+        const b = Object.assign(document.createElement("button"), { type: "button", title: c.own ? `own ${part}` : `${c.name} ${part}` });
+        b.setAttribute("role", "radio");
+        b.setAttribute("aria-label", b.title);
+        b.setAttribute("aria-checked", i === look[part]);
+        b.classList.toggle("own", !!c.own);
+        b.classList.toggle("on", i === look[part]);
+        if (!c.own) b.style.setProperty("--c", c.swatch);
+        b.addEventListener("click", () => { window.applyTrainerLook?.({ [part]: i }); drawLook(); });
+        return b;
+      }));
+    }
+    document.querySelector("#accessories").replaceChildren(...L.ACCESSORIES.map((a) => {
+      const on = !!(look.acc & a.bit);
+      const b = Object.assign(document.createElement("button"), { type: "button", innerHTML: `${ACC_ICONS[a.name] || ""}${a.name}` });
+      b.setAttribute("aria-pressed", on);
+      b.classList.toggle("on", on);
+      b.addEventListener("click", () => { window.applyTrainerLook?.({ acc: window.myLook().acc ^ a.bit }); drawLook(); });
+      return b;
+    }));
+  };
   // the preview: the trainer's front frame, redrawn whenever the game finishes a new look
   const preview = document.querySelector("#trainer-preview").getContext("2d");
   const drawPreview = () => {
@@ -417,8 +477,8 @@
     drawCaps();
   });
   // the game module loads after this script: draw once it has set window.CAPS
-  if (window.CAPS) drawCaps(), drawPreview();
-  else addEventListener("load", () => (drawCaps(), drawPreview()), { once: true });
+  if (window.CAPS) drawCaps(), drawLook(), drawPreview();
+  else addEventListener("load", () => (drawCaps(), drawLook(), drawPreview()), { once: true });
   genderButtons.forEach((b) => b.addEventListener("click", () => {
     mark(b.dataset.gender);
     window.applyGender?.(b.dataset.gender);
@@ -457,6 +517,8 @@
     if (e.key === "Enter") { enterName.blur(); enter(); }
   });
   document.querySelector("#pause-btn").addEventListener("click", pause);
+  // the top card's "look" button: the pause screen has every part of the look
+  document.querySelector("#edit-look").addEventListener("click", (e) => { e.currentTarget.blur(); pause(); });
   // shortcuts: behind the "?" button; shown once by itself on the first visit
   const hint = document.querySelector("#hint");
   const helpBtn = document.querySelector("#help");

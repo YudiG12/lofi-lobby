@@ -1,7 +1,7 @@
 // Room server: one Durable Object per room, everyone connected over WebSocket.
 // Protocol (JSON):
-//   client -> server: { t: "hello", name, gender, color, cap, x, z, dir } | { t: "pos", x, z, dir, step, run }
-//                     { t: "chat", text } | { t: "name", name } | { t: "gender", gender, cap }
+//   client -> server: { t: "hello", name, gender, color, cap, look, x, z, dir } | { t: "pos", x, z, dir, step, run }
+//                     { t: "chat", text } | { t: "name", name } | { t: "gender", gender, cap, look }
 //                     { t: "color", color }   (name colour: one of NAME_COLORS)
 //                     { t: "sit", seat, n }   (bench seat 0..15 or -1 to stand; n numbers the request)
 //                     { t: "capy" }   (feed the capybara)
@@ -17,7 +17,7 @@
 //                                                     token: only this connection knows it, for /api/leave) | { t: "state", players: [...] }
 //                     { t: "joined", player } | { t: "left", id } | { t: "pos", ... }
 //                     { t: "chat", id, name, color, text, at } | { t: "name", id, name } | { t: "color", id, color }
-//                     { t: "gender", id, gender, cap } | { t: "radio", command } | { t: "error", msg }
+//                     { t: "gender", id, gender, cap, look } | { t: "radio", command } | { t: "error", msg }
 //                     { t: "stone", id, pts }   (that player skipped a stone; the clients animate it)
 //                     { t: "ground", id, on }   (that player sat on the ground or got up)
 //                     { t: "fish", id, fish }   (that player's line: [x, z] of the bobber, or null when it is in)
@@ -162,6 +162,17 @@ const nameColor = (c) => (NAME_COLORS.includes(c) ? c : "");
 // which of the 5 cap colours a trainer wears (0 red, 1 blue, 2 green, 3 pink, 4 white), or -1 when the
 // client said none: each trainer then keeps its own (the male's red cap, the female's white beanie)
 const cap = (c) => (Number.isInteger(c) && c >= 0 && c < 5 ? c : -1);
+// the rest of a trainer's look (src/look.js): which hair, top, bottom and skin colour (-1 = the sheet's
+// own) and which accessories (bits: 1 headphones, 2 glasses). Only these five small numbers are kept.
+const LOOK_COUNTS = { hair: 7, top: 7, bottom: 6, skin: 6 };
+const lookPart = (n, count) => (Number.isInteger(n) && n >= 0 && n < count ? n : -1);
+const look = (l) => ({
+  hair: lookPart(l?.hair, LOOK_COUNTS.hair),
+  top: lookPart(l?.top, LOOK_COUNTS.top),
+  bottom: lookPart(l?.bottom, LOOK_COUNTS.bottom),
+  skin: lookPart(l?.skin, LOOK_COUNTS.skin),
+  acc: Number.isInteger(l?.acc) ? l.acc & 3 : 0,
+});
 
 // constant-time compare (timing doesn't leak how many characters match)
 function equal(a, b) {
@@ -524,7 +535,7 @@ export class Room {
 
   // only each player's public fields (never the IP)
   public(p) {
-    return { id: p.id, name: p.name, gender: p.gender, color: p.color || "", cap: p.cap ?? -1, x: p.x, z: p.z, dir: p.dir, step: p.step, seat: p.seat ?? -1, hold: p.hold | 0, ground: !!p.ground, fish: p.fish || null, admin: !!p.admin };
+    return { id: p.id, name: p.name, gender: p.gender, color: p.color || "", cap: p.cap ?? -1, look: look(p.look), x: p.x, z: p.z, dir: p.dir, step: p.step, seat: p.seat ?? -1, hold: p.hold | 0, ground: !!p.ground, fish: p.fish || null, admin: !!p.admin };
   }
   players() {
     return this.openSockets()
@@ -585,6 +596,7 @@ export class Room {
       p.gender = gender(m.gender);
       p.color = nameColor(m.color);
       p.cap = cap(m.cap);
+      p.look = look(m.look);
       // where the player already is (a reconnect, or a saved spot), so others see them there at once
       p.x = number(m.x);
       p.z = number(m.z);
@@ -597,8 +609,9 @@ export class Room {
     } else if (m.t === "gender") {
       p.gender = gender(m.gender);
       p.cap = cap(m.cap);
+      p.look = look(m.look);
       ws.serializeAttachment(p);
-      this.broadcast({ t: "gender", id: p.id, gender: p.gender, cap: p.cap }, ws);
+      this.broadcast({ t: "gender", id: p.id, gender: p.gender, cap: p.cap, look: p.look }, ws);
     } else if (m.t === "color") {
       p.color = nameColor(m.color);
       ws.serializeAttachment(p);

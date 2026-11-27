@@ -4,6 +4,7 @@ import { connectRadioToServer, receiveCommand } from "./radio.js";
 import { createBoard, setupWall } from "./board.js";
 import { createStones } from "./stones.js";
 import { addSitFrames, sitFramePos } from "./ground-sit.js";
+import { dressSheet, lookOf, lookKey, HAIRS, TOPS, BOTTOMS, SKINS, ACCESSORIES } from "./look.js";
 import { createCapybara, CAPY_NEAR, CAPY_RADIUS, PHRASES as CAPY_PHRASES } from "./capybara.js";
 import { createFishing, createFishingGear, FISH_NEAR, FISH_LEAVE } from "./fishing.js";
 
@@ -44,6 +45,13 @@ try {
 const myCap = () => CAP ?? SHEET_CAP[GENDER];
 window.CAPS = CAPS; // the start screen draws its swatches from these
 window.myCap = () => myCap();
+// hair, top, bottom and skin colours and accessories (src/look.js); -1 keeps the sheet's own
+let LOOK = lookOf(null);
+try {
+  LOOK = lookOf(JSON.parse(localStorage.getItem("look") || "null"));
+} catch {}
+window.LOOKS = { HAIRS, TOPS, BOTTOMS, SKINS, ACCESSORIES }; // the start screen's choices
+window.myLook = () => ({ ...LOOK });
 // my trainer's front frame, for the start screen's preview
 window.trainerFrame = () => {
   const img = sheetTex?.image;
@@ -1700,6 +1708,7 @@ function createCharacterTexture(gender) {
 let sheetTex = createCharacterTexture(GENDER);
 
 // Switch my character's gender (new texture on the 3 materials)
+let lookTimer = 0;
 function applyGender(gender) {
   GENDER = gender === "female" ? "female" : "male";
   try {
@@ -1716,8 +1725,13 @@ function applyGender(gender) {
     sprite.customDistanceMaterial,
   ].forEach((m) => (m.needsUpdate = true));
   old.dispose();
-  if (typeof ws !== "undefined" && ws?.readyState === 1)
-    ws.send(JSON.stringify({ t: "gender", gender: GENDER, cap: myCap() }));
+  // told a moment after the last change: clicking through colours sends one message, not one each
+  // (every other player redraws this trainer's sheet when it arrives)
+  clearTimeout(lookTimer);
+  lookTimer = setTimeout(() => {
+    if (typeof ws !== "undefined" && ws?.readyState === 1)
+      ws.send(JSON.stringify({ t: "gender", gender: GENDER, cap: myCap(), look: LOOK }));
+  }, 400);
 }
 window.applyGender = applyGender; // used by the start screen
 // Switch my cap colour (0-2): redraws my sheet and tells the room
@@ -1725,6 +1739,14 @@ window.applyCap = (cap) => {
   CAP = capOf(cap) ?? 0;
   try {
     localStorage.setItem("cap", CAP);
+  } catch {}
+  applyGender(GENDER);
+};
+// Change part of my look ({ hair }, { acc }...): redraws my sheet and tells the room
+window.applyTrainerLook = (part) => {
+  LOOK = lookOf({ ...LOOK, ...part });
+  try {
+    localStorage.setItem("look", JSON.stringify(LOOK));
   } catch {}
   applyGender(GENDER);
 };
@@ -1900,8 +1922,18 @@ const shadow = new THREE.Mesh(
 shadow.rotation.x = -Math.PI / 2;
 scene.add(shadow);
 
+// every walking and running frame of a sheet, with the way it faces
+function sheetFrames(gender) {
+  const frames = [];
+  for (const cfg of [CROP[gender], RUN_CROP[gender]])
+    for (const dir of Object.keys(cfg.rows))
+      for (let step = 0; step < cfg.steps; step++) frames.push({ ...framePos(cfg, dir, step), dir });
+  return frames;
+}
+
 // Replace the sheet's background color (pixel 0,0 of the first frame) with transparent
-function removeBackground(t, cfg = CHARACTER.cfg, gender = GENDER, cap = myCap()) {
+// (and puts on the cap colour and the rest of the look)
+function removeBackground(t, cfg = CHARACTER.cfg, gender = GENDER, cap = myCap(), look = LOOK) {
   const img = t.image;
   const cv = Object.assign(document.createElement("canvas"), {
     width: img.width,
@@ -1922,6 +1954,7 @@ function removeBackground(t, cfg = CHARACTER.cfg, gender = GENDER, cap = myCap()
       d.data[i + 3] = 0;
   }
   recolorCap(d.data, cv.width, gender, cap);
+  dressSheet(d.data, cv.width, gender, look, sheetFrames(gender));
   ctx.putImageData(d, 0, 0);
   // the sitting row makes the image taller, and a texture already on the GPU can't change size:
   // dispose of it so the next frame uploads a new one with the new image
@@ -2547,28 +2580,52 @@ function setFrameTex(tex, cfg, d, step) {
   tex.offset.set(x / img.width, 1 - (y + h) / img.height);
 }
 
+// Other players' sheets, cleaned and dressed once per look: everyone wearing the same one shares the
+// canvas and its single upload to the GPU (textures with the same source are uploaded once), instead
+// of a full sheet each. Kept while someone wears it.
+const otherSheets = new Map(); // gender|cap|look -> { source: Promise<THREE.Source>, users }
+function otherSheet(g, cap, look) {
+  const key = `${g}|${cap}|${lookKey(look)}`;
+  let e = otherSheets.get(key);
+  if (!e) {
+    const source = new Promise((ok, fail) =>
+      texLoader.load(SHEETS[g], (t) => (removeBackground(t, CROP[g], g, cap, look), ok(new THREE.Source(t.image))), undefined, fail),
+    );
+    e = { source, users: 0 };
+    source.catch(() => otherSheets.delete(key));
+    otherSheets.set(key, e);
+  }
+  e.users++;
+  return { key, source: e.source };
+}
+function releaseOtherSheet(key) {
+  const e = otherSheets.get(key);
+  if (e && --e.users <= 0) otherSheets.delete(key);
+}
+
 function createOther(p) {
   if (others.has(p.id)) removeOther(p.id);
   const g = p.gender === "female" ? "female" : "male";
   const cap = capOf(p.cap) ?? SHEET_CAP[g]; // none sent: the cap that trainer is drawn with (red cap, white beanie)
+  const look = lookOf(p.look);
   const available = sheetAvailable(g);
-  const tex = available
-    ? texLoader.load(
-        SHEETS[g],
-        () => {
-          removeBackground(tex, CROP[g], g, cap);
-          setFrameTex(tex, CROP[g], o.dir, o.step);
-        },
-        undefined,
-        () => {
-          failedSheets.add(g);
-          o.cfg = GRID;
-          tex.dispose(); // a different size from the sheet: a new texture on the GPU
-          tex.image = generateOriginalTrainer(g, cap);
-          tex.needsUpdate = true;
-        },
-      )
-    : new THREE.CanvasTexture(generateOriginalTrainer(g, cap));
+  const tex = available ? new THREE.Texture() : new THREE.CanvasTexture(generateOriginalTrainer(g, cap));
+  const sheet = available ? otherSheet(g, cap, look) : null;
+  sheet?.source.then(
+    (source) => {
+      if (others.get(p.id) !== o) return; // gone (or changed look) meanwhile
+      tex.source = source;
+      tex.needsUpdate = true;
+      setFrameTex(tex, CROP[g], o.dir, o.step);
+    },
+    () => {
+      failedSheets.add(g);
+      if (others.get(p.id) !== o) return;
+      o.cfg = GRID;
+      tex.image = generateOriginalTrainer(g, cap);
+      tex.needsUpdate = true;
+    },
+  );
   tex.magFilter = tex.minFilter = THREE.NearestFilter;
   tex.colorSpace = THREE.SRGBColorSpace;
   const mesh = new THREE.Mesh(
@@ -2607,6 +2664,7 @@ function createOther(p) {
     gender: g,
     color: p.color,
     admin: !!p.admin,
+    sheetKey: sheet?.key,
   };
   mesh.position.copy(o.target);
   others.set(p.id, o);
@@ -2631,6 +2689,7 @@ function removeOther(id) {
   if (o.held) scene.remove(o.held), o.held.material.dispose();
   o.gear?.dispose();
   o.tex.dispose();
+  if (o.sheetKey) releaseOtherSheet(o.sheetKey);
   others.delete(id);
   updateCount();
 }
@@ -2656,7 +2715,7 @@ function connect() {
     pingTimer = setInterval(() => {
       if (sock.readyState === 1) sock.send("ping");
     }, PING_EVERY_MS);
-    sock.send(JSON.stringify({ t: "hello", v: 1, name: NAME, gender: GENDER, color: COLOR, cap: myCap(), x: pos.x, z: pos.z, dir }));
+    sock.send(JSON.stringify({ t: "hello", v: 1, name: NAME, gender: GENDER, color: COLOR, cap: myCap(), look: LOOK, x: pos.x, z: pos.z, dir }));
     if (mySeat >= 0) sendSeat(); // reconnected while sitting
     if (myHold) sendHold();
     if (onGround) sendGround(); // reconnected while sitting on the ground
@@ -2729,7 +2788,7 @@ function connect() {
       const o = others.get(m.id);
       if (o) o.color = m.color;
     } else if (m.t === "gender") {
-      // recreate the character with the other gender's look, keeping the position
+      // recreate the character with its new trainer, cap or look, keeping where it is and what it does
       const o = others.get(m.id);
       if (o) {
         const p = {
@@ -2739,10 +2798,13 @@ function connect() {
           dir: o.dir,
           step: o.step,
           seat: o.seat,
+          hold: o.hold,
+          ground: o.ground,
           name: o.name,
           color: o.color,
           gender: m.gender,
           cap: m.cap,
+          look: m.look,
           admin: o.admin,
         };
         removeOther(m.id);
