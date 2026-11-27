@@ -121,6 +121,13 @@
   #sit-prompt kbd { font: inherit; color: #ffc95a; padding: 0 4px; border: 1px solid #ffc95a; border-radius: 3px; }
   #sit-prompt .tap { display: none; }
   @media (pointer: coarse) { #sit-prompt .key { display: none; } #sit-prompt .tap { display: inline; } } /* no keyboard: tap it */
+  /* the roller coaster's countdown, over its station: how long to board, or until the train is back */
+  #coaster-sign { position: fixed; transform: translate(-50%, -100%); z-index: 1; white-space: nowrap; pointer-events: none;
+                  font-size: 12px; line-height: 16px; color: #F2F2F5; padding: 5px 10px; border-radius: 6px;
+                  background: rgba(10,11,16,.84); border: 1px solid rgba(255,255,255,.16); }
+  #coaster-sign[hidden] { display: none; }
+  #coaster-sign b { font-weight: 400; color: #ffc95a; }
+  #coaster-sign.go b { color: #7dff8a; }
   /* mentions: "@name" in bold in that player's colour; a message that names you is highlighted (only for you) */
   #msgs .m b.at, .bubble b.at { font-weight: 400; color: var(--name, #ffc95a); }
   #msgs .m.mention { margin: 0 -8px; padding: 6px 8px 6px 6px; border-left: 2px solid #ffc95a; border-radius: 4px; background: rgba(255,201,90,.14); }
@@ -294,6 +301,7 @@
   <input type="password" placeholder="password" aria-label="admin password" />
   <div><button type="button" data-cancel>cancel</button><button type="submit">log in</button></div>
 </form>
+<div id="coaster-sign" hidden></div>
 <div id="github-login" class="glass" hidden><b>github login</b>
   <p>open github and type this code. the room only learns your login, to count your merged pull requests.</p>
   <code></code>

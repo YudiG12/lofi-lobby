@@ -7,7 +7,7 @@ import * as THREE from "three";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 
 export const WHEEL = {
-  x: 19, // center, on the flat grass the pines leave
+  x: 20.8, // center, on the flat grass the pines leave, with room to walk by on both sides
   z: 39,
   clear: { x0: 10, x1: 28, z0: 28, z1: 50 }, // a pine whose center falls in here is taken out
   seats: 8,
@@ -15,8 +15,10 @@ export const WHEEL = {
   radius: 6, // from the axle to where a gondola hangs
   axle: 7.8, // axle height over the ground: the lowest gondola clears the platform
   turnMs: 60000, // one turn: slower than the carousel, it is a long way up
-  // the footprint nobody walks into: the legs and the gondolas going by at the bottom
-  halfWidth: 7.4,
+  // the footprint nobody walks into: the legs and the gondolas going by at the bottom. Wider on the
+  // west, where the ticket booth stands; on the east the gondolas are already overhead
+  west: 6.6,
+  east: 5,
   halfDepth: 2,
 };
 const TAU = Math.PI * 2;
@@ -31,7 +33,7 @@ export const inWheelClearing = (x, z) => {
   return x > c.x0 && x < c.x1 && z > c.z0 && z < c.z1;
 };
 /** @returns {boolean} the point is under the wheel, or within `r` of it */
-export const onWheel = (x, z, r = 0) => Math.abs(x - WHEEL.x) < WHEEL.halfWidth + r && Math.abs(z - WHEEL.z) < WHEEL.halfDepth + r;
+export const onWheel = (x, z, r = 0) => x > WHEEL.x - WHEEL.west - r && x < WHEEL.x + WHEEL.east + r && Math.abs(z - WHEEL.z) < WHEEL.halfDepth + r;
 /** @returns {boolean} that seat id is one of the gondolas */
 export const isWheelSeat = (id) => id >= WHEEL.firstSeat && id < WHEEL.firstSeat + WHEEL.seats;
 

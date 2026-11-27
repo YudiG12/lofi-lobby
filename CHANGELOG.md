@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- **Roller coaster**: from a little station below the pond, between the carousel and the Ferris wheel, a little Christmas train of 5 cars climbs the east side, drops over the water, runs along the north of the pond, spirals down on the west side and brakes back into the station. It leaves every 42 seconds: while it waits at the station (12 s), walk up and press **E** to take one of its 5 seats (a sign over the station counts down the seconds left); you are strapped in for the ride and get off by the station when it is back. Everyone sees the same train in the same place. Bulbs along the track glow at night.
 - **Contributor badge**: whoever had a pull request merged in the game gets a pixel-art ball and their PR count over their name and in the chat, next to where the admin has the gold badge. The ball is red at 1–10 PRs, blue at 11–20, black at 21–50 and a purple Master Ball at 51 or more. Type **/github** in the chat, open GitHub and type the code shown: the room learns your GitHub login (nothing else, and no password or token is kept) and counts your merged pull requests. The browser remembers it; **/github out** forgets it. A deploy of your own needs the Client ID of a GitHub OAuth App with Device Flow on, in `GITHUB_CLIENT_ID` (`wrangler.toml`). The counts are read again from GitHub every 6 hours and right after each deploy.
 - **Frames per second**: press **P** (or tap the player count, on phones) to show the game's frames per second beside it, in yellow below 45 and red below 25; hovering it shows the time a frame takes, the slowest frame of the last half second and the draw calls. Only for you, and remembered.
 - **Ferris wheel**: right of the pond, across the water from the carousel, a Ferris wheel turns slowly with 8 colourful gondolas and bulbs along its rims. Walk up and press **E** when a gondola is at the bottom to ride it all the way up (the camera goes with you); any move key gets you off, onto the grass in front of it. Everyone sees the same wheel and you in the same gondola. Four new lamp posts light the rides at night.
@@ -57,6 +58,7 @@
 - A single room, `lobby`: `?room=` is gone and the server refuses other room names, so nobody can open extra rooms to run up the bill.
 
 ### Fixed
+- **Room to walk between the pond and the Ferris wheel**: the wheel stood so close to the pond's corner that nobody could pass. It moved a little to the right and blocks less of the grass, so you can walk by on both sides of it.
 - The game no longer fails to start when you come back to a fishing line whose fish got away while the tab was closed.
 - **Stones thrown while your tab was hidden** no longer all fly at once when you come back: a stone someone throws while you are on another tab is skipped.
 - A player whose cap colour is not known shows the cap their trainer is drawn with (red for the male, white for the female) instead of always red.

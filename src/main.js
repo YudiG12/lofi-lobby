@@ -11,6 +11,7 @@ import { createFishing, createFishingGear, FISH_NEAR, FISH_LEAVE } from "./fishi
 import { createCat, CATS, CAT_NEAR, CAT_SIT_MS, CAT_RIDE_MS, CAT_FEED_RIDE_CHANCE, PHRASES as CAT_PHRASES, RIDE_PHRASES as CAT_RIDE_PHRASES } from "./cat.js";
 import { CAROUSEL, carouselSeat, createCarousel, inClearing, isCarouselSeat, onCarousel } from "./carousel.js";
 import { WHEEL, wheelSeat, createFerrisWheel, inWheelClearing, isWheelSeat, onWheel } from "./ferris-wheel.js";
+import { COASTER, coasterSeat, coasterCycle, coasterRiding, coasterBoardLeft, coasterBackIn, createCoaster, inCoasterClearing, isCoasterSeat, onCoaster } from "./roller-coaster.js";
 
 // ---- Asset config (change here to use other files) ----
 const TOWN = {
@@ -341,22 +342,28 @@ function clearFairGround(root) {
   root.traverse((o) => {
     if (!o.isMesh || !/tree/i.test(o.name)) return;
     new THREE.Box3().setFromObject(o).getCenter(at);
-    if (inClearing(at.x, at.z) || inWheelClearing(at.x, at.z)) pines.push(o);
+    if (inClearing(at.x, at.z) || inWheelClearing(at.x, at.z) || inCoasterClearing(at.x, at.z)) pines.push(o);
   });
   for (const o of pines) o.removeFromParent();
 }
 const carousel = createCarousel();
 const wheel = createFerrisWheel();
+const coaster = createCoaster();
 let fairPlaced = false;
 function placeFair() {
   carousel.root.position.y = groundHeight(CAROUSEL.x, CAROUSEL.z);
   wheel.root.position.y = groundHeight(WHEEL.x, WHEEL.z);
+  coaster.root.position.y = groundHeight((COASTER.station.x0 + COASTER.station.x1) / 2, COASTER.station.z0 - 1);
   for (const p of fairPosts) p.position.y = groundHeight(p.position.x, p.position.z);
-  if (!fairPlaced) scene.add(carousel.root, wheel.root);
+  if (!fairPlaced) scene.add(carousel.root, wheel.root, coaster.root);
   fairPlaced = true;
 }
 // the seats on a ride: their spot comes from the clock, they need no message while it turns
-const isRideSeat = (id) => isCarouselSeat(id) || isWheelSeat(id);
+const isRideSeat = (id) => isCarouselSeat(id) || isWheelSeat(id) || isCoasterSeat(id);
+// on the roller coaster while it is out on the track: no getting off until it is back at the station
+const strappedIn = () => isCoasterSeat(mySeat) && coasterRiding(roomNow());
+// solid ground of the rides, for everything that walks (you, the others' placement searches, the cats)
+const onRide = (x, z, r) => onCarousel(x, z, r) || onWheel(x, z, r) || onCoaster(x, z, r);
 
 // ---- Drawing the town in few draw calls ----
 // The town comes as ~1,300 meshes sharing one or a few materials, and each one would be a draw call
@@ -775,6 +782,8 @@ function seatSpot(id) {
   if (isCarouselSeat(id)) return fairPlaced ? carouselSeat(id - CAROUSEL.firstSeat, roomNow(), carousel.root.position.y) : null;
   // a Ferris wheel gondola: the same, up and down
   if (isWheelSeat(id)) return fairPlaced ? wheelSeat(id - WHEEL.firstSeat, roomNow(), wheel.root.position.y) : null;
+  // a seat in the roller coaster's sleigh: at the station, or wherever it is on the track
+  if (isCoasterSeat(id)) return fairPlaced ? coasterSeat(id - COASTER.firstSeat, roomNow(), coaster.root.position.y) : null;
   if (id >= benches.length * SEATS_PER_BENCH) return null;
   const b = benches[id >> 1];
   if (!b) return null;
@@ -1614,7 +1623,7 @@ function groundHeight(x, z) {
 // A point is "open" if the ground is flat within radius r (nothing tall nearby)
 function isOpen(x, z, r) {
   // a lamp post doesn't sit right next to a mailbox/sign/fence or in the pond
-  if (insideSolid(x, z, r + 1.5) || inPond(x, z) || onCarousel(x, z, r + 1.5) || onWheel(x, z, r + 1.5)) return false;
+  if (insideSolid(x, z, r + 1.5) || inPond(x, z) || onRide(x, z, r + 1.5)) return false;
   const y = groundHeight(x, z);
   for (let a = 0; a < 8; a++) {
     const ang = (a / 8) * Math.PI * 2;
@@ -1856,7 +1865,7 @@ function buildCatNavGrid() {
     )
       return false;
     if (insideSolid(x, z, BODY_RADIUS * 0.9, BODY_RADIUS * 1.7)) return false;
-    if (onCarousel(x, z, BODY_RADIUS) || onWheel(x, z, BODY_RADIUS)) return false; // cats walk around the rides, not through them
+    if (onRide(x, z, BODY_RADIUS)) return false; // cats walk around the rides, not through them
     if (
       inPond(x, z) ||
       inPond(x - BODY_RADIUS, z) ||
@@ -2337,8 +2346,7 @@ function isFree(x, z, currentY) {
   )
     return false;
   if (insideSolid(x, z, BODY_RADIUS * 0.8, BODY_RADIUS * 1.6)) return false;
-  if (onCarousel(x, z, BODY_RADIUS * 0.5)) return false; // round, so not a box: you can walk all around it
-  if (onWheel(x, z, BODY_RADIUS * 0.5)) return false;
+  if (onRide(x, z, BODY_RADIUS * 0.5)) return false; // the carousel is round, so not a box: you can walk all around it
   // pond: straight box (with the body width), not following the irregular stones
   if (
     inPond(x - BODY_RADIUS, z) ||
@@ -3059,6 +3067,7 @@ function nearestFreeSeat() {
   for (let id = 0; id < benches.length * SEATS_PER_BENCH; id++) consider(id);
   for (let i = 0; i < CAROUSEL.seats; i++) consider(CAROUSEL.firstSeat + i);
   for (let i = 0; i < WHEEL.seats; i++) consider(WHEEL.firstSeat + i);
+  for (let i = 0; i < COASTER.seats; i++) consider(COASTER.firstSeat + i); // only while it is at the station (board)
   return best;
 }
 function sit(id) {
@@ -3066,6 +3075,7 @@ function sit(id) {
   if (!s) return;
   setGround(false);
   mySeat = id;
+  if (isCoasterSeat(id)) myRide = coasterCycle(roomNow()); // the ride you board: off when the next cycle begins
   const [ox, oz] = [pos.x, pos.z];
   pos.set(s.x, s.y, s.z);
   glideFrom(ox, oz);
@@ -3077,6 +3087,7 @@ function sit(id) {
 function standUp(notify = true, way = null) {
   if (isCarouselSeat(mySeat)) return getOffCarousel(notify);
   if (isWheelSeat(mySeat)) return getOffWheel(notify);
+  if (isCoasterSeat(mySeat)) return getOffCoaster(notify);
   const s = seatSpot(mySeat);
   const side = mySeat & 1 ? 1 : -1;
   mySeat = -1;
@@ -3125,6 +3136,34 @@ function getOffCarousel(notify) {
   }
   if (notify) sendSeat();
 }
+// Off the roller coaster's sleigh: onto the grass north of the station, by your seat, then further along
+let myRide = -1; // the coaster cycle you boarded in
+function getOffCoaster(notify) {
+  const s = seatSpot(mySeat);
+  mySeat = -1;
+  if (s) {
+    const z = COASTER.exitZ;
+    const S = COASTER.station;
+    const x0 = Math.max(S.x0, Math.min(S.x1, s.x));
+    search: for (let d = 0; d <= 8; d += 0.5)
+      for (const x of [x0 + d, x0 - d]) {
+        const ground = groundHeight(x, z);
+        if (isFree(x, z, ground)) {
+          const [ox, oz] = [pos.x, pos.z];
+          pos.set(x, ground, z);
+          glideFrom(ox, oz);
+          break search;
+        }
+      }
+  }
+  if (notify) sendSeat();
+}
+// The ride is over once its cycle is: everyone gets off at the station, so the next riders can board.
+// Checked every frame, and every second too, since a tab in the background draws no frames
+function leaveFinishedRide() {
+  if (isCoasterSeat(mySeat) && coasterCycle(roomNow()) > myRide) standUp();
+}
+setInterval(leaveFinishedRide, 1000);
 // Off a gondola: onto the grass in front of the wheel, below where it is (from up high too: the
 // glide brings you down), then further along
 function getOffWheel(notify) {
@@ -3132,7 +3171,7 @@ function getOffWheel(notify) {
   mySeat = -1;
   if (s) {
     const z = WHEEL.z + WHEEL.halfDepth + 1.4;
-    const x0 = Math.max(WHEEL.x - WHEEL.halfWidth, Math.min(WHEEL.x + WHEEL.halfWidth, s.x));
+    const x0 = Math.max(WHEEL.x - WHEEL.west, Math.min(WHEEL.x + WHEEL.east, s.x));
     search: for (let d = 0; d <= 6; d += 0.5)
       for (const x of [x0 + d, x0 - d]) {
         const ground = groundHeight(x, z);
@@ -3154,6 +3193,7 @@ const toggleSit = () => {
   const now = performance.now();
   if (gamePaused || now - lastToggle < SIT_COOLDOWN) return;
   lastToggle = now;
+  if (strappedIn()) return; // strapped in until the sleigh is back
   if (mySeat >= 0) return standUp();
   const id = nearestFreeSeat();
   if (id >= 0) sit(id);
@@ -3164,7 +3204,7 @@ addEventListener("keydown", (e) => {
   if (!typing && !e.repeat && !e.ctrlKey && !e.metaKey && k === "q") cycleHold();
   if (!typing && !e.repeat && !e.ctrlKey && !e.metaKey && k === "e") (mySeat >= 0 || (!nearBoard() && !nearCapy() && !nearCat())) && toggleSit();
   // a quick tap on a move key can end before the next frame: stand up right away
-  if (!typing && !gamePaused && mySeat >= 0 && MOVE_KEYS[k]) {
+  if (!typing && !gamePaused && mySeat >= 0 && !strappedIn() && MOVE_KEYS[k]) {
     dir = MOVE_KEYS[k];
     standUp(true, FACING[dir]);
   }
@@ -3865,6 +3905,25 @@ sitPrompt.addEventListener("click", (e) => {
   toggleSit();
   e.currentTarget.blur(); // give the keyboard back to the game
 });
+// The roller coaster's countdown over its station, for whoever is near it or riding: the seconds left
+// to board while the train waits, then the seconds until it is back
+const coasterSign = document.querySelector("#coaster-sign");
+const COASTER_SIGN_NEAR = 18;
+const COASTER_SIGN_AT = { x: (COASTER.station.x0 + COASTER.station.x1) / 2, z: COASTER.station.z1 };
+function updateCoasterSign() {
+  const near = Math.hypot(pos.x - COASTER_SIGN_AT.x, pos.z - COASTER_SIGN_AT.z) < COASTER_SIGN_NEAR || isCoasterSeat(mySeat);
+  const now = roomNow();
+  const board = coasterBoardLeft(now);
+  coasterSign.hidden = !fairPlaced || gamePaused || !near;
+  if (coasterSign.hidden) return;
+  const html = board ? `all aboard! leaves in <b>${board}s</b>` : `back at the station in <b>${coasterBackIn(now) || 1}s</b>`;
+  if (coasterSign.innerHTML !== html) coasterSign.innerHTML = html;
+  coasterSign.classList.toggle("go", !!board);
+  _v.set(COASTER_SIGN_AT.x, coaster.root.position.y + 7.4, COASTER_SIGN_AT.z).project(camera); // over the garland
+  coasterSign.hidden = _v.z > 1; // behind the camera
+  coasterSign.style.left = `${(_v.x * 0.5 + 0.5) * innerWidth}px`;
+  coasterSign.style.top = `${(-_v.y * 0.5 + 0.5) * innerHeight}px`;
+}
 function updateSitPrompt(seat) {
   const s = seat >= 0 && !gamePaused && !typing() && !nearBoard() && !nearCapy() && !nearCat() ? seatSpot(seat) : null;
   sitPrompt.hidden = !s;
@@ -4501,6 +4560,8 @@ function loop() {
     dz = 0;
   }
   const run = keys.shift || stick.mag > 0.9;
+  leaveFinishedRide();
+  if (strappedIn()) (dx = 0), (dz = 0); // the move keys do nothing while the sleigh is out
   if (mySeat >= 0 && (dx || dz)) standUp(true, [dx, dz]); // any move key gets you up, off that way
   const riding = isRideSeat(mySeat);
   if (riding) {
@@ -4560,6 +4621,7 @@ function loop() {
 
   carousel.update(roomNow(), dayAmount);
   wheel.update(roomNow(), dayAmount);
+  coaster.update(roomNow(), dayAmount);
   // Riders cast no shadow and are no lamp's concern: the lamps by the pond reach the rides, and
   // someone going round would make them redraw their 6 shadow passes every frame, all night
   sprite.castShadow = !riding;
@@ -4569,6 +4631,7 @@ function loop() {
   updateNameTags();
   updateBubbles();
   updateSitPrompt(eNow === "sit" ? freeSeat : -1);
+  updateCoasterSign();
   updateWallPrompt();
   updateStonePrompt();
   requestAnimationFrame(loop);
