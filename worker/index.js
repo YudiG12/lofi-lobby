@@ -3,7 +3,7 @@
 //   client -> server: { t: "hello", name, gender, color, cap, x, z, dir } | { t: "pos", x, z, dir, step, run }
 //                     { t: "chat", text } | { t: "name", name } | { t: "gender", gender, cap }
 //                     { t: "color", color }   (name colour: one of NAME_COLORS)
-//                     { t: "sit", seat, n }   (bench seat 0..15, carousel horse 16..23, Ferris wheel gondola 24..31, roller coaster 32..36 while it waits at the station, or -1 to stand; n numbers the request)
+//                     { t: "sit", seat, n }   (bench seat 0..15, carousel horse 16..23, Ferris wheel gondola 24..31, roller coaster 32..46 while its train waits at the station, or -1 to stand; n numbers the request)
 //                     { t: "capy" }   (feed the capybara)
 //                     { t: "stone", pts: [[x, z], ...] }   (a stone skipped on the pond: where it touched the water, 1 to 6)
 //                     { t: "ground", on }   (sit on the ground, or get up)
@@ -89,14 +89,20 @@ const MAX_BYTES = 1024;
 const COORD_LIMIT = 500;
 const ADMIN_ATTEMPTS = 20; // per IP, then locked for ADMIN_LOCK_MS (the "other" rate limit already caps tries at ~1/s)
 const ADMIN_LOCK_MS = 60_000;
-const MAX_SEATS = 37; // bench seats 0..15 (bench * 2 + side), carousel horses 16..23, Ferris wheel gondolas 24..31, roller coaster 32..36; the client knows where each is
-// The roller coaster runs in cycles by the room's clock (src/roller-coaster.js): it waits at the station
-// for BOARD_MS, then rides for RIDE_MS. Its seats can be taken only while it waits (plus a little for the trip).
-const COASTER_SEATS = [32, 37];
-const COASTER_BOARD_MS = 12_000;
-const COASTER_CYCLE_MS = COASTER_BOARD_MS + 30_000;
+const MAX_SEATS = 47; // bench seats 0..15 (bench * 2 + side), carousel horses 16..23, Ferris wheel gondolas 24..31, roller coaster 32..46 (3 trains of 5); the client knows where each is
+// The roller coaster's 3 trains run in cycles by the room's clock (src/roller-coaster.js), a third of a
+// cycle apart: each waits at the station for BOARD_MS, then rides. A train's 5 seats can be taken only
+// while it waits (plus a little for the trip).
+const COASTER_SEATS = [32, 47];
+const COASTER_CARS = 5;
+const COASTER_TRAINS = 3;
+const COASTER_BOARD_MS = 7_000;
+const COASTER_CYCLE_MS = COASTER_BOARD_MS + 22_000; // the ride: COASTER.rideMs in src/roller-coaster.js
 const COASTER_LATE_MS = 1_500;
-const coasterBoarding = (now) => now % COASTER_CYCLE_MS < COASTER_BOARD_MS + COASTER_LATE_MS;
+const coasterBoarding = (now, seat) => {
+  const offset = (Math.floor((seat - COASTER_SEATS[0]) / COASTER_CARS) * COASTER_CYCLE_MS) / COASTER_TRAINS;
+  return ((((now - offset) % COASTER_CYCLE_MS) + COASTER_CYCLE_MS) % COASTER_CYCLE_MS) < COASTER_BOARD_MS + COASTER_LATE_MS;
+};
 const MAX_PER_IP = 3; // tabs/devices behind one IP
 const KICK_MS = 10 * 60_000; // kick = a short ban, so the client's auto-reconnect doesn't undo it
 const BAN_MS = 7 * 24 * 60 * 60_000;
@@ -696,7 +702,7 @@ export class Room {
         return;
       }
       // nobody gets into the roller coaster's sleigh while it is out on the track
-      if (seat >= COASTER_SEATS[0] && seat < COASTER_SEATS[1] && seat !== p.seat && !coasterBoarding(Date.now())) {
+      if (seat >= COASTER_SEATS[0] && seat < COASTER_SEATS[1] && seat !== p.seat && !coasterBoarding(Date.now(), seat)) {
         seatReply();
         return;
       }
