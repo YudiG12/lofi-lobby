@@ -62,7 +62,7 @@ export function createSnow({ scene, count, floorAt }) {
         .replace("#include <beginnormal_vertex>", "#include <beginnormal_vertex>\nvSnowUp = normalize((modelMatrix * vec4(objectNormal, 0.0)).xyz).y;");
       sh.fragmentShader = sh.fragmentShader
         .replace("#include <common>", "#include <common>\nuniform float uSnow;\nvarying float vSnowUp;")
-        .replace("#include <map_fragment>", "#include <map_fragment>\ndiffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.9, 0.93, 0.98), uSnow * smoothstep(0.3, 0.7, vSnowUp));");
+        .replace("#include <map_fragment>", "#include <map_fragment>\ndiffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.68, 0.72, 0.8), uSnow * smoothstep(0.3, 0.7, vSnowUp));");
     };
     m.customProgramCacheKey = () => (beforeKey ? beforeKey() : "") + "|snow";
     m.needsUpdate = true;
@@ -79,11 +79,12 @@ export function createSnow({ scene, count, floorAt }) {
     update(dt, center, day, rain) {
       const target = on ? 1 : 0;
       if (amount !== target) amount += Math.sign(target - amount) * Math.min(dt * 0.4, Math.abs(target - amount));
-      cover.uSnow.value = 0.85 * amount;
+      // a soft, slightly grey-blue white, and not all the way: the town shouldn't glare
+      cover.uSnow.value = 0.5 * amount;
       const falling = amount * (1 - rain);
       points.visible = falling > 0.01;
       if (!points.visible) return;
-      uniforms.uOpacity.value = 0.85 * falling;
+      uniforms.uOpacity.value = 0.7 * falling;
       uniforms.uColor.value.setRGB(0.82 + 0.18 * day, 0.86 + 0.14 * day, 0.95 + 0.05 * day);
       const top = center.y + BOX.height;
       const t = performance.now() / 1000;
@@ -169,7 +170,7 @@ export function createHouseLights({ scene, houses, roofAt, wallAt }) {
       void main() {
         vec2 p = abs(gl_PointCoord - 0.5);
         float bulb = step(max(p.x, p.y), 0.09);
-        float halo = smoothstep(0.5, 0.0, length(gl_PointCoord - 0.5)) * 0.45;
+        float halo = smoothstep(0.5, 0.0, length(gl_PointCoord - 0.5)) * 0.22;
         float a = (bulb + halo) * vOn;
         if (a < 0.01) discard;
         gl_FragColor = vec4(mix(vColor, vec3(1.0), bulb * 0.35) * a, a);
@@ -292,7 +293,7 @@ export function createChristmasTree({ scene, tree }) {
   const glowCv = Object.assign(document.createElement("canvas"), { width: 64, height: 64 });
   const gc = glowCv.getContext("2d");
   const grad = gc.createRadialGradient(32, 32, 0, 32, 32, 32);
-  grad.addColorStop(0, "rgba(255,220,120,0.9)");
+  grad.addColorStop(0, "rgba(255,220,120,0.55)");
   grad.addColorStop(1, "rgba(255,220,120,0)");
   gc.fillStyle = grad;
   gc.fillRect(0, 0, 64, 64);
@@ -313,7 +314,7 @@ export function createChristmasTree({ scene, tree }) {
       uniforms.uGlow.value = 1 - 0.5 * day;
       const pulse = 1 + 0.06 * Math.sin(t * 2.2);
       star.scale.set(2 * pulse, 2 * pulse, 1);
-      const g = (4.2 + 0.5 * Math.sin(t * 2.2)) * (1 - 0.45 * day);
+      const g = (3 + 0.4 * Math.sin(t * 2.2)) * (1 - 0.5 * day);
       glow.scale.set(g, g, 1);
     },
   };
