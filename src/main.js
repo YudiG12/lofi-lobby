@@ -2152,6 +2152,8 @@ elName.addEventListener("click", () => {
   inp.addEventListener("blur", () => inp.isConnected && close(true));
 });
 const others = new Map(); // id -> { mesh, tex, cfg, target, dir, step, name }
+let refreshMentionList = () => {};
+let onOtherLeft = () => {};
 let myId = null;
 let myLeaveToken = "";
 let ws = null;
@@ -2229,6 +2231,7 @@ function createOther(p) {
   mesh.position.copy(o.target);
   others.set(p.id, o);
   updateCount();
+  refreshMentionList();
   return o;
 }
 function removeOther(id) {
@@ -2239,6 +2242,7 @@ function removeOther(id) {
   o.tex.dispose();
   others.delete(id);
   updateCount();
+  onOtherLeft(id);
 }
 function updateCount() {
   const el = document.querySelector("#place small");
@@ -2289,11 +2293,11 @@ function connect() {
     else if (m.t === "state") m.players.forEach(createOther);
     else if (m.t === "joined") createOther(m.player);
     else if (m.t === "left") removeOther(m.id);
-    else if (m.t === "chat") receiveChat(m.id, m.name, m.text, m.admin, m.color);
+    else if (m.t === "chat") receiveChat(m.id, m.name, m.text, m.admin, m.color, m.mention);
     else if (m.t === "history") {
       // what was said before we arrived (also on reconnect, so start clean)
       elMsgs.replaceChildren();
-      m.messages.forEach((c) => addToHistory(c.name, c.text, c.id, c.admin, c.color));
+      m.messages.forEach((c) => addToHistory(c.name, c.text, c.id, c.admin, c.color, c.mention));
       elMsgs.scrollTop = elMsgs.scrollHeight;
     }
     else if (m.t === "radio") receiveCommand(m.command);
@@ -2315,6 +2319,7 @@ function connect() {
       if (m.id === myId) meAdmin = true;
       const o = others.get(m.id);
       if (o) o.admin = true;
+      refreshMentionList();
     }
     else if (m.t === "admin-ok") {
       // the server accepted the password typed after /admin: keep it and reload to show the controls
@@ -2328,9 +2333,11 @@ function connect() {
     else if (m.t === "name") {
       const o = others.get(m.id);
       if (o) o.name = m.name;
+      refreshMentionList();
     } else if (m.t === "color") {
       const o = others.get(m.id);
       if (o) o.color = m.color;
+      refreshMentionList();
     } else if (m.t === "gender") {
       // recreate the character with the other gender's look, keeping the position
       const o = others.get(m.id);
@@ -2462,11 +2469,136 @@ function updateOthers(dt) {
 // ---- Chat + bubble above the head ----
 const elMsgs = document.querySelector("#msgs");
 const elInput = document.querySelector("#msg");
+const elMentionList = document.querySelector("#mention-list");
 const bubbles = new Map(); // owner (mesh) -> { el, until }
 // any text field (chat or the admin login): game keys and the Enter shortcut stay out of it
 const typing = () => ["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName);
 
-function addToHistory(name, text, id, admin, color) {
+const normalizeSearch = (s) =>
+  String(s ?? "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+
+function findMentionRange(text, name) {
+  if (!text || !name) return null;
+  const tag = "@" + name;
+  let from = 0;
+  while (from <= text.length - tag.length) {
+    const idx = text.indexOf(tag, from);
+    if (idx < 0) return null;
+    const end = idx + tag.length;
+    const beforeOk = idx === 0 || /\s/.test(text[idx - 1]);
+    const afterOk = end === text.length || /[\s.,!?;:)\]]/.test(text[end]);
+    if (beforeOk && afterOk) return { start: idx, end };
+    from = idx + 1;
+  }
+  return null;
+}
+
+let activeMention = null; // { id, name }
+let mentionMatches = [];
+let mentionIndex = 0;
+let mentionTrigger = null; // { start, end }
+
+function syncActiveMention() {
+  if (activeMention && !findMentionRange(elInput.value, activeMention.name)) {
+    activeMention = null;
+  }
+}
+
+function closeMentionList() {
+  mentionMatches = [];
+  mentionTrigger = null;
+  mentionIndex = 0;
+  elMentionList.hidden = true;
+  elMentionList.replaceChildren();
+}
+
+function setActiveMentionOption(idx) {
+  if (!mentionMatches.length) return;
+  mentionIndex = (idx + mentionMatches.length) % mentionMatches.length;
+  const items = elMentionList.children;
+  for (let i = 0; i < items.length; i++) {
+    const on = i === mentionIndex;
+    items[i].classList.toggle("active", on);
+    items[i].setAttribute("aria-selected", String(on));
+    if (on) items[i].scrollIntoView({ block: "nearest" });
+  }
+}
+
+function selectMention(idx) {
+  const p = mentionMatches[idx];
+  if (!p || !mentionTrigger) return;
+  const val = elInput.value;
+  const before = val.slice(0, mentionTrigger.start);
+  const after = val.slice(mentionTrigger.end);
+  const tag = `@${p.name}`;
+  if (before.length + tag.length > 140) {
+    closeMentionList();
+    return;
+  }
+  const spacer = after.startsWith(" ") ? "" : " ";
+  const next = (before + tag + spacer + after).slice(0, 140);
+  const caret = Math.min(before.length + tag.length + spacer.length, next.length);
+  elInput.value = next;
+  elInput.setSelectionRange(caret, caret);
+  activeMention = { id: p.id, name: p.name };
+  closeMentionList();
+}
+
+function updateMentionList() {
+  syncActiveMention();
+  if (activeMention) return closeMentionList();
+  const val = elInput.value;
+  const caret = elInput.selectionStart ?? val.length;
+  const before = val.slice(0, caret);
+  const atIdx = before.lastIndexOf("@");
+  if (atIdx < 0 || (atIdx > 0 && !/\s/.test(before[atIdx - 1]))) return closeMentionList();
+  const query = before.slice(atIdx + 1);
+  if (!query.length || query.length > 16 || /^\s/.test(query)) return closeMentionList();
+  const qNorm = normalizeSearch(query);
+  const matches = [];
+  for (const [id, o] of others) {
+    const name = o.name || "trainer";
+    const nNorm = normalizeSearch(name);
+    if (nNorm.includes(qNorm)) {
+      matches.push({ id, name, color: o.color, admin: !!o.admin, prefix: nNorm.startsWith(qNorm) });
+    }
+  }
+  if (!matches.length) return closeMentionList();
+  matches.sort((a, b) => (a.prefix !== b.prefix ? (a.prefix ? -1 : 1) : a.name.localeCompare(b.name)));
+  mentionMatches = matches;
+  mentionTrigger = { start: atIdx, end: caret };
+  mentionIndex = 0;
+  elMentionList.replaceChildren(
+    ...matches.map((p, i) => {
+      const btn = Object.assign(document.createElement("button"), { type: "button" });
+      btn.setAttribute("role", "option");
+      btn.setAttribute("aria-selected", String(i === 0));
+      if (i === 0) btn.className = "active";
+      paintName(btn, p.admin ? "" : p.color);
+      const dot = Object.assign(document.createElement("span"), { className: "dot" });
+      btn.append(dot, document.createTextNode(p.name));
+      btn.addEventListener("pointerdown", (e) => {
+        e.preventDefault();
+        selectMention(i);
+      });
+      return btn;
+    }),
+  );
+  elMentionList.hidden = false;
+}
+
+refreshMentionList = () => {
+  if (!elMentionList.hidden) updateMentionList();
+};
+onOtherLeft = (id) => {
+  if (activeMention?.id === id) activeMention = null;
+  if (!elMentionList.hidden) updateMentionList();
+};
+
+function addToHistory(name, text, id, admin, color, mention) {
   const d = document.createElement("div");
   d.className = admin ? "m admin" : "m";
   const s = document.createElement("small");
@@ -2477,7 +2609,27 @@ function addToHistory(name, text, id, admin, color) {
     s.addEventListener("click", (e) => openModMenu(e, id, name));
   }
   const t = document.createElement("span");
-  t.textContent = text; // textContent: no HTML from the chat
+  const hasMention = !!(mention && typeof mention.name === "string");
+  const range = hasMention ? findMentionRange(text, mention.name) : null;
+  if (range) {
+    const isMentionedMe = typeof mention.id === "string" && mention.id === myId;
+    const hex = mention.admin
+      ? "#ffc95a"
+      : (NAME_COLORS[mention.color] || (isMentionedMe ? NAME_COLORS[COLOR] : "") || "#ffc95a");
+    const label = text.slice(range.start + 1, range.end);
+    let tagEl;
+    if (isMentionedMe) {
+      d.classList.add("mentioned");
+      d.style.setProperty("--mention", hex);
+      tagEl = Object.assign(document.createElement("mark"), { className: "mention", textContent: label });
+    } else {
+      tagEl = Object.assign(document.createElement("span"), { className: "mention-other", textContent: label });
+      tagEl.style.setProperty("--mention", hex);
+    }
+    t.append(document.createTextNode(text.slice(0, range.start)), tagEl, document.createTextNode(text.slice(range.end)));
+  } else {
+    t.textContent = text; // textContent: no HTML from the chat
+  }
   d.append(s, t);
   // follow new messages only if already at the bottom (don't yank someone reading old ones)
   const atBottom = elMsgs.scrollHeight - elMsgs.scrollTop - elMsgs.clientHeight < 40;
@@ -2618,17 +2770,25 @@ function updateBubbles() {
   }
 }
 
-function receiveChat(id, name, text, admin, color) {
-  addToHistory(name, text, id, admin, color);
+function receiveChat(id, name, text, admin, color, mention) {
+  addToHistory(name, text, id, admin, color, mention);
   const owner = id === myId || id === "me" ? sprite : others.get(id)?.mesh;
-  if (owner) showBubble(owner, text);
+  if (owner) {
+    const range = mention && typeof mention.name === "string" ? findMentionRange(text, mention.name) : null;
+    const bubbleText = range ? text.slice(0, range.start) + text.slice(range.start + 1) : text;
+    showBubble(owner, bubbleText);
+  }
 }
 
 // tapping send must not steal focus from the box (it would close the phone keyboard)
 document.querySelector("#send").addEventListener("pointerdown", (e) => e.preventDefault());
 document.querySelector("#chat form").addEventListener("submit", (e) => {
   e.preventDefault();
+  syncActiveMention();
+  closeMentionList();
   const text = elInput.value.trim().slice(0, 140);
+  const mentionId = activeMention && findMentionRange(text, activeMention.name) ? activeMention.id : null;
+  activeMention = null;
   elInput.value = "";
   if (/^\/admin$/i.test(text)) return openAdminLogin();
   if (/^\/logout$/i.test(text)) {
@@ -2649,8 +2809,33 @@ document.querySelector("#chat form").addEventListener("submit", (e) => {
     return;
   }
   if (MULTIPLAYER && ws?.readyState === 1)
-    ws.send(JSON.stringify({ t: "chat", text }));
+    ws.send(JSON.stringify({ t: "chat", text, ...(mentionId && { mention: mentionId }) }));
   else receiveChat("me", NAME, text, false, COLOR); // offline: show only to me
+});
+elInput.addEventListener("input", updateMentionList);
+elInput.addEventListener("click", updateMentionList);
+elInput.addEventListener("blur", closeMentionList);
+elInput.addEventListener("keydown", (e) => {
+  if (!elMentionList.hidden) {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      return setActiveMentionOption(mentionIndex + 1);
+    }
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      return setActiveMentionOption(mentionIndex - 1);
+    }
+    if (e.key === "Enter" || e.key === "Tab") {
+      e.preventDefault();
+      return selectMention(mentionIndex);
+    }
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      return closeMentionList();
+    }
+  }
+  if (e.key === "ArrowLeft" || e.key === "ArrowRight") queueMicrotask(updateMentionList);
 });
 // Enter opens the chat; Esc leaves it
 addEventListener("keydown", (e) => {

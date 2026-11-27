@@ -1,7 +1,7 @@
 // Room server: one Durable Object per room, everyone connected over WebSocket.
 // Protocol (JSON):
 //   client -> server: { t: "hello", name, gender, color, cap, x, z, dir } | { t: "pos", x, z, dir, step, run }
-//                     { t: "chat", text } | { t: "name", name } | { t: "gender", gender, cap }
+//                     { t: "chat", text, mention? } | { t: "name", name } | { t: "gender", gender, cap }
 //                     { t: "color", color }   (name colour: one of NAME_COLORS)
 //                     { t: "sit", seat, n }   (bench seat 0..15 or -1 to stand; n numbers the request)
 //                     { t: "capy" }   (feed the capybara)
@@ -13,14 +13,14 @@
 //   server -> client: { t: "you", id, v, now, token } (now: the room's clock, for what everyone must see at the same moment;
 //                                                     token: only this connection knows it, for /api/leave) | { t: "state", players: [...] }
 //                     { t: "joined", player } | { t: "left", id } | { t: "pos", ... }
-//                     { t: "chat", id, name, color, text, at } | { t: "name", id, name } | { t: "color", id, color }
+//                     { t: "chat", id, name, color, text, at, mention? } | { t: "name", id, name } | { t: "color", id, color }
 //                     { t: "gender", id, gender, cap } | { t: "radio", command } | { t: "error", msg }
 //                     { t: "hold", item }   (what you hold: 0 nothing, 1 laptop, 2 coffee, 3 book; the client decides when it shows)
 //                     { t: "seat", id, seat, n }   (who sits where; n only on a correction to the sender)
 //                     { t: "capy", at, until, lost, phrase }   (the capybara was fed: it sits from at to until, room clock;
 //                                                               lost = all its sitting before; phrase picks what it says.
 //                                                               Also sent on join, without phrase)
-//                     { t: "history", messages: [{ id, name, text, at }] } (on join)
+//                     { t: "history", messages: [{ id, name, text, at, mention? }] } (on join)
 //                     { t: "notice", msg } | { t: "rename", name } (your name was refused)
 //                     { t: "who", id, tag, names, sameTag } (admin only)
 //                     { t: "kicked", msg } (the server closes you; don't reconnect)
@@ -119,6 +119,22 @@ const cleanText = (s, max) =>
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, max);
+// Locate @name on word boundaries so only real mentions are highlighted.
+function findMentionRange(text, name) {
+  if (!text || !name) return null;
+  const tag = "@" + name;
+  let from = 0;
+  while (from <= text.length - tag.length) {
+    const idx = text.indexOf(tag, from);
+    if (idx < 0) return null;
+    const end = idx + tag.length;
+    const beforeOk = idx === 0 || /\s/.test(text[idx - 1]);
+    const afterOk = end === text.length || /[\s.,!?;:)\]]/.test(text[end]);
+    if (beforeOk && afterOk) return { start: idx, end };
+    from = idx + 1;
+  }
+  return null;
+}
 // like cleanText, but keeps line breaks (at most 2 in a row, NOTE_LINES in all)
 const cleanNote = (s) => {
   let lines = 0;
@@ -670,7 +686,24 @@ export class Room {
       if (s.repeats > REPEAT_LIMIT) return this.strike(ws, p.ip);
       s.lastText = text;
       s.lastAt = now;
-      const msg = { id: p.id, name: p.name, text, at: now, ...(p.color && { color: p.color }), ...(p.admin && { admin: true }) };
+      let mention = null;
+      if (typeof m.mention === "string") {
+        const targetId = cleanText(m.mention, 16);
+        if (targetId && targetId !== p.id) {
+          const target = this.openSockets()
+            .map((w) => w.deserializeAttachment())
+            .find((q) => q && q.joinedAt && q.id === targetId);
+          if (target && findMentionRange(text, target.name)) {
+            mention = {
+              id: target.id,
+              name: target.name,
+              ...(target.color && { color: target.color }),
+              ...(target.admin && { admin: true }),
+            };
+          }
+        }
+      }
+      const msg = { id: p.id, name: p.name, text, at: now, ...(p.color && { color: p.color }), ...(p.admin && { admin: true }), ...(mention && { mention }) };
       this.broadcast({ t: "chat", ...msg });
       this.stat("chat", p);
       await this.saveHistory([...(await this.history()), msg]);
