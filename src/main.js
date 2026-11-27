@@ -1,11 +1,13 @@
 import * as THREE from "three";
 import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader.js";
+import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { connectRadioToServer, receiveCommand } from "./radio.js";
 import { createBoard, setupWall } from "./board.js";
 import { createStones } from "./stones.js";
 import { addSitFrames, sitFramePos } from "./ground-sit.js";
 import { createCapybara, CAPY_NEAR, CAPY_RADIUS, PHRASES as CAPY_PHRASES } from "./capybara.js";
 import { createFishing, createFishingGear, FISH_NEAR, FISH_LEAVE } from "./fishing.js";
+import { createCat, CATS, CAT_NEAR, CAT_SIT_MS, CAT_RIDE_MS, PHRASES as CAT_PHRASES, RIDE_PHRASES as CAT_RIDE_PHRASES } from "./cat.js";
 
 // ---- Asset config (change here to use other files) ----
 const TOWN = {
@@ -317,7 +319,87 @@ function prepareTown(fbx) {
     board.position.y = groundHeight(board.position.x, board.position.z);
     placeCapybara();
     placeCapyWalk();
+    mergeTown(fbx);
     markLampShadowsStale(); // the town, the lamps and everything around them just took their places
+    buildCatNavGrid();
+}
+
+// ---- Drawing the town in few draw calls ----
+// The town comes as ~1,300 meshes sharing one or a few materials, and each one would be a draw call
+// in every pass: the camera, the moon/sun's shadow and each of the 6 faces of each lamp's shadow.
+// Their geometry is baked into one mesh per material, shadow setting and stretch of town. The
+// originals stay where they are, hidden: collision, ground height, the water and the pond edge keep
+// raycasting them (a ray ignores visibility), so all of that works exactly as before.
+const TOWN_CHUNK = 25; // side of a stretch of town: the camera and each lamp still skip the ones they can't see
+const DRAWN_ATTRIBUTES = /^(position|normal|uv|color)$/;
+let townDrawn = []; // what is actually drawn: the merged meshes and whatever could not be merged
+function mergeTown(root) {
+  root.updateMatrixWorld(true);
+  const groups = new Map();
+  const center = new THREE.Vector3();
+  townDrawn = [];
+  root.traverse((o) => {
+    if (!o.isMesh || !o.visible) return;
+    const g = o.geometry;
+    if (Array.isArray(o.material) || !g.attributes.position || Object.keys(g.morphAttributes).length) {
+      townDrawn.push(o);
+      return;
+    }
+    new THREE.Box3().setFromObject(o).getCenter(center);
+    // geometries only merge with the same attributes, so they are part of the key
+    const attrs = Object.entries(g.attributes)
+      .filter(([n]) => DRAWN_ATTRIBUTES.test(n))
+      .map(([n, a]) => `${n}:${a.itemSize}:${a.array.constructor.name}:${a.normalized}`)
+      .sort()
+      .join();
+    const key = [o.material.uuid, o.castShadow, o.receiveShadow, o.renderOrder, attrs,
+      Math.floor(center.x / TOWN_CHUNK), Math.floor(center.z / TOWN_CHUNK)].join("|");
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(o);
+  });
+  for (const meshes of groups.values()) {
+    const indexed = meshes.every((o) => o.geometry.index);
+    const geos = meshes.map((o) => bakeGeometry(o, indexed));
+    const merged = mergeGeometries(geos);
+    geos.forEach((g) => g.dispose());
+    if (!merged) {
+      townDrawn.push(...meshes);
+      continue;
+    }
+    const first = meshes[0];
+    const mesh = new THREE.Mesh(merged, first.material);
+    mesh.name = "TownMerged";
+    mesh.castShadow = first.castShadow;
+    mesh.receiveShadow = first.receiveShadow;
+    mesh.renderOrder = first.renderOrder;
+    mesh.matrixAutoUpdate = false; // the geometry is already in world space
+    scene.add(mesh);
+    townDrawn.push(mesh);
+    for (const o of meshes) o.visible = false;
+  }
+}
+// A copy of the mesh's geometry in world space, with only what drawing needs.
+function bakeGeometry(o, indexed) {
+  let g = o.geometry.clone();
+  for (const n of Object.keys(g.attributes)) if (!DRAWN_ATTRIBUTES.test(n)) g.deleteAttribute(n);
+  g.clearGroups();
+  if (!indexed && g.index) g = g.toNonIndexed();
+  g.applyMatrix4(o.matrixWorld);
+  // a mirrored mesh (negative scale) is drawn with its faces turned the other way; baked, its
+  // triangles must be turned around instead, or lights and shadows would see their backs
+  if (o.matrixWorld.determinant() < 0) {
+    if (g.index) {
+      const ix = g.index.array;
+      for (let i = 0; i < ix.length; i += 3) [ix[i + 1], ix[i + 2]] = [ix[i + 2], ix[i + 1]];
+    } else {
+      for (const a of Object.values(g.attributes)) {
+        const s = a.itemSize, v = a.array;
+        for (let t = 0; t < a.count; t += 3)
+          for (let k = 0; k < s; k++) [v[(t + 1) * s + k], v[(t + 2) * s + k]] = [v[(t + 2) * s + k], v[(t + 1) * s + k]];
+      }
+    }
+  }
+  return g;
 }
 
 // ---- Original village (default on the published site) ----
@@ -429,22 +511,16 @@ function loadOriginalTown() {
   prepareTown(createOriginalTown());
 }
 
+const townMaterial = new THREE.MeshLambertMaterial({ map: atlas, alphaTest: 0.5, side: THREE.DoubleSide });
 new FBXLoader(manager).load(
   TOWN.fbx,
   (fbx) => {
     fbx.traverse((o) => {
       if (!o.isMesh) return;
       o.castShadow = o.receiveShadow = true;
-      const mats = Array.isArray(o.material) ? o.material : [o.material];
-      o.material = mats.map(
-        (m) =>
-          new THREE.MeshLambertMaterial({
-            map: atlas,
-            alphaTest: 0.5,
-            side: THREE.DoubleSide,
-          }),
-      );
-      if (o.material.length === 1) o.material = o.material[0];
+      // every part of the town uses the same atlas: one material for all (the whole mesh, so
+      // no groups needed), which also lets them be drawn together (mergeTown)
+      o.material = townMaterial;
       // water surface: translucent blue, slightly shiny, and blocks movement
       // the water name may be on the mesh or on a parent group (e.g. MainTownPondWater)
       let waterName = "";
@@ -1057,20 +1133,6 @@ addEventListener("keydown", (e) => {
   if (!typing && !e.repeat && !e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === "n") toggleDayNight();
 });
 
-let updateCycleDebug = () => {};
-if (import.meta.env.DEV) {
-  import("./cycle-debug.js").then(({ setupCycleDebug }) => {
-    updateCycleDebug = setupCycleDebug({
-      getTimeMode: () => timeMode,
-      getCyclePhase: cyclePhase,
-      getCycleDurationMs: () => cycleDurationMs,
-      setCycleDuration,
-      getLook: () => currentLook,
-      getRainAmount: () => rainAmount,
-      getLampIntensity: () => lampLights[0]?.intensity ?? 0,
-    });
-  });
-}
 
 // Rain: thin streaks in a box that follows the player, splashes where they land (rings on the
 // pond), shiny wet ground and a little fog.
@@ -1195,10 +1257,10 @@ let wetReady = false;
 // Wet look: the town's materials become shiny (Phong) and a bit darker while it rains,
 // so the ground catches the lamps and the sky like a wet street. No extra meshes.
 function prepareWet() {
-  if (wetReady || !townMeshes.length) return;
+  if (wetReady || !townDrawn.length) return;
   wetReady = true;
   const swapped = new Map();
-  for (const o of townMeshes) {
+  for (const o of townDrawn) {
     const swap = (m) => {
       if (!m || m === waterMaterial || !m.isMeshLambertMaterial) return m;
       if (!swapped.has(m)) {
@@ -1619,6 +1681,519 @@ function capyWasFed(m) {
   if (Number.isInteger(m.phrase)) showBubble(capy.mesh, CAPY_PHRASES[Math.abs(m.phrase) % CAPY_PHRASES.length]);
 }
 
+// ---- Cats (free-roaming across walkable town, synced by the room clock) ----
+function makeCatEntry(cfg) {
+  const sprite = createCat(cfg.palette);
+  sprite.mesh.position.set(0, 0, 5);
+  scene.add(sprite.mesh);
+  return {
+    ...cfg,
+    sprite,
+    mesh: sprite.mesh,
+    feet: useFeetDepth(sprite.mesh),
+    fed: { at: 0, until: 0, lost: 0 },
+    leg: null,
+    pose: "sit",
+    dir: "down",
+    ride: null,
+    rideAnim: null,
+    hopOff: null,
+    afterRide: null,
+    lastRideAt: null,
+    ridingMesh: null,
+    ridingFeet: null,
+  };
+}
+const cats = CATS.map(makeCatEntry);
+const CAT_NAV_STEP = 2;
+const CAT_LEG_MS = 26000;
+const CAT_MIN_SIT_MS = 4500;
+const CAT_DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+let catNav = { nodes: [], buildMs: 0 };
+
+function buildCatNavGrid() {
+  const t0 = performance.now();
+  const nodes = [];
+  if (!townMeshes.length) {
+    catNav = { nodes, buildMs: performance.now() - t0 };
+    return;
+  }
+  const groundCache = new Map();
+  const sampleGround = (x, z) => {
+    const key = `${Math.round(x * 2)},${Math.round(z * 2)}`;
+    let hit = groundCache.get(key);
+    if (hit) return hit;
+    ray.set(new THREE.Vector3(x, 200, z), DOWN);
+    const hits = ray.intersectObjects(townMeshes, false);
+    const water = hits.length > 0 && (waterMeshes.has(hits[0].object) || edgeMeshes.has(hits[0].object));
+    const floorHits = hits.filter((h) => !edgeMeshes.has(h.object));
+    hit = {
+      hasHit: hits.length > 0 && floorHits.length > 0,
+      water,
+      topY: floorHits.length ? floorHits[0].point.y : 0,
+      groundY: hits.length ? hits[hits.length - 1].point.y : 0,
+    };
+    groundCache.set(key, hit);
+    return hit;
+  };
+  const pointFree = (x, z, refY = null) => {
+    if (
+      x < townBox.min.x + 1.5 ||
+      x > townBox.max.x - 1.5 ||
+      z < townBox.min.z + 1.5 ||
+      z > townBox.max.z - 1.5
+    )
+      return false;
+    if (insideSolid(x, z, BODY_RADIUS * 0.9, BODY_RADIUS * 1.7)) return false;
+    if (
+      inPond(x, z) ||
+      inPond(x - BODY_RADIUS, z) ||
+      inPond(x + BODY_RADIUS, z) ||
+      inPond(x, z - BODY_RADIUS) ||
+      inPond(x, z + BODY_RADIUS)
+    )
+      return false;
+    if (Math.abs(x - board.position.x) < 3.8 + BODY_RADIUS * 0.6 && Math.abs(z - board.position.z) < 0.5 + BODY_RADIUS * 0.6)
+      return false;
+    for (const p of lampPosts)
+      if (Math.hypot(p.position.x - x, p.position.z - z) < POST_RADIUS + BODY_RADIUS * 0.6) return false;
+    const center = sampleGround(x, z);
+    if (!center.hasHit || center.water) return false;
+    const base = refY ?? center.groundY;
+    const pts = [[0, 0], [BODY_RADIUS, 0], [-BODY_RADIUS, 0], [0, BODY_RADIUS], [0, -BODY_RADIUS]];
+    return pts.every(([ox, oz]) => {
+      const s = ox === 0 && oz === 0 ? center : sampleGround(x + ox, z + oz);
+      return s.hasHit && !s.water && s.topY - base <= MAX_STEP && Math.abs(s.topY - center.groundY) <= MAX_STEP;
+    });
+  };
+  let startX = 0,
+    startZ = 0,
+    found = pointFree(0, 0);
+  if (!found) {
+    search: for (let r = CAT_NAV_STEP; r <= 20; r += CAT_NAV_STEP) {
+      for (let gx = -r; gx <= r; gx += CAT_NAV_STEP) {
+        for (let gz = -r; gz <= r; gz += CAT_NAV_STEP) {
+          if (pointFree(gx, gz)) {
+            startX = gx;
+            startZ = gz;
+            found = true;
+            break search;
+          }
+        }
+      }
+    }
+  }
+  if (found) {
+    const byCell = new Map();
+    const cellKey = (x, z) => `${Math.round(x / CAT_NAV_STEP)},${Math.round(z / CAT_NAV_STEP)}`;
+    const addNode = (x, z) => {
+      const y = sampleGround(x, z).groundY;
+      const idx = nodes.length;
+      nodes.push({ x, z, y, adj: [] });
+      byCell.set(cellKey(x, z), idx);
+      return idx;
+    };
+    const startIdx = addNode(startX, startZ);
+    const queue = [startIdx];
+    for (let head = 0; head < queue.length; head++) {
+      const u = queue[head];
+      const nu = nodes[u];
+      for (let d = 0; d < CAT_DIRS.length; d++) {
+        const [dx, dz] = CAT_DIRS[d];
+        const nx = nu.x + dx * CAT_NAV_STEP;
+        const nz = nu.z + dz * CAT_NAV_STEP;
+        const key = cellKey(nx, nz);
+        let v = byCell.get(key);
+        const mx = (nu.x + nx) * 0.5;
+        const mz = (nu.z + nz) * 0.5;
+        if (!pointFree(nx, nz, nu.y) || !pointFree(mx, mz, nu.y)) continue;
+        const ny = sampleGround(nx, nz).groundY;
+        if (Math.abs(ny - nu.y) > MAX_STEP) continue;
+        if (v === undefined) {
+          v = addNode(nx, nz);
+          queue.push(v);
+        }
+        nu.adj.push([v, d]);
+      }
+    }
+  }
+  catNav = { nodes, buildMs: performance.now() - t0 };
+  const fallbackY = groundHeight(0, 5);
+  for (const cat of cats) {
+    cat.leg = null;
+    if (!nodes.length) cat.mesh.position.set(0, fallbackY, 5);
+  }
+}
+
+function catHash(a, b) {
+  let h = Math.imul(a ^ 0x9e3779b9, 0x85ebca6b) ^ Math.imul(b ^ 0xc2b2ae35, 0x27d4eb2f);
+  h ^= h >>> 16;
+  h = Math.imul(h, 0x7feb352d);
+  h ^= h >>> 15;
+  h = Math.imul(h, 0x846ca68b);
+  h ^= h >>> 16;
+  return h >>> 0;
+}
+
+function findCatPath(startIdx, endIdx) {
+  const nodes = catNav.nodes;
+  if (startIdx === endIdx) return [nodes[startIdx]];
+  const n = nodes.length;
+  const parent = new Int32Array(n).fill(-1);
+  const parentDir = new Int8Array(n).fill(-1);
+  const queue = new Int32Array(n);
+  let head = 0,
+    tail = 0;
+  parent[startIdx] = startIdx;
+  queue[tail++] = startIdx;
+  while (head < tail) {
+    const u = queue[head++];
+    if (u === endIdx) break;
+    const adj = nodes[u].adj;
+    const pref = parentDir[u];
+    // Expand the straight-ahead neighbor first so paths make clean L-turns across plazas.
+    for (let pass = pref >= 0 ? 0 : 1; pass < 2; pass++) {
+      for (let i = 0; i < adj.length; i++) {
+        const [v, d] = adj[i];
+        if ((pass === 0) !== (d === pref) || parent[v] !== -1) continue;
+        parent[v] = u;
+        parentDir[v] = d;
+        queue[tail++] = v;
+        if (v === endIdx) {
+          head = tail;
+          break;
+        }
+      }
+      if (head === tail) break;
+    }
+  }
+  if (parent[endIdx] === -1) return [nodes[startIdx]];
+  const path = [];
+  for (let cur = endIdx; ; cur = parent[cur]) {
+    path.push(nodes[cur]);
+    if (cur === startIdx) break;
+  }
+  path.reverse();
+  return path;
+}
+
+function getCatLeg(cat, slot) {
+  if (cat.leg && cat.leg.slot === slot) return cat.leg;
+  const nodes = catNav.nodes;
+  const startIdx = cat.afterRide?.nextSlot === slot ? cat.afterRide.nodeIdx : catHash(cat.seed, slot) % nodes.length;
+  const endIdx = catHash(cat.seed, slot + 1) % nodes.length;
+  const path = findCatPath(startIdx, endIdx);
+  const cumDist = [0];
+  let totalDist = 0;
+  for (let i = 1; i < path.length; i++) {
+    totalDist += Math.hypot(path[i].x - path[i - 1].x, path[i].z - path[i - 1].z);
+    cumDist.push(totalDist);
+  }
+  const walkMs = totalDist > 0 ? Math.min(CAT_LEG_MS - CAT_MIN_SIT_MS, (totalDist / cat.speed) * 1000) : 0;
+  return (cat.leg = { slot, path, cumDist, totalDist, walkMs });
+}
+
+const CAT_HEAD_OFFSET_Y = 3.85;
+const CAT_GROUND_SCALE = 3.5;
+const CAT_PERCH_SCALE = 2.8;
+const CAT_HOP_MS = 450;
+const CAT_APPROACH_MAX_MS = 2800;
+const CAT_APPROACH_SPEED = 8.5;
+
+function nearestCatNode(x, z) {
+  const nodes = catNav.nodes;
+  let bestIdx = 0;
+  let bestD = Infinity;
+  for (let i = 0; i < nodes.length; i++) {
+    const d = Math.hypot(nodes[i].x - x, nodes[i].z - z);
+    if (d < bestD) {
+      bestD = d;
+      bestIdx = i;
+    }
+  }
+  return bestIdx;
+}
+
+function resolveRideTarget(playerId) {
+  if (!playerId) return null;
+  if (playerId === myId || playerId === "me") {
+    return {
+      mesh: sprite,
+      feet: myFeet,
+      baseY: pos.y,
+      grounded: onGround,
+      dir: mySeat >= 0 ? (seatSpot(mySeat)?.dir || dir) : dir,
+      name: NAME,
+    };
+  }
+  const o = others.get(playerId);
+  if (!o) return null;
+  return {
+    mesh: o.mesh,
+    feet: o.feet,
+    baseY: o.mesh.position.y + (o.mesh.userData.lift || 0),
+    grounded: !!o.ground,
+    dir: o.seat >= 0 ? (seatSpot(o.seat)?.dir || o.dir) : o.dir,
+    name: o.name || "trainer",
+  };
+}
+
+const headCatLift = (mesh) => (cats.some((c) => c.ridingMesh === mesh) ? 2.2 : 0);
+
+function catSlotAt(cat, t) {
+  const eating = t >= cat.fed.at && t < cat.fed.until;
+  const activeMs = (t < cat.fed.at ? t : eating ? cat.fed.at : t - (cat.fed.until - cat.fed.at)) - cat.fed.lost;
+  return Math.floor(activeMs / CAT_LEG_MS);
+}
+
+function measurePath(path) {
+  const cumDist = [0];
+  let totalDist = 0;
+  for (let i = 1; i < path.length; i++) {
+    totalDist += Math.hypot(path[i].x - path[i - 1].x, path[i].z - path[i - 1].z);
+    cumDist.push(totalDist);
+  }
+  return { cumDist, totalDist };
+}
+
+function samplePathPoint(path, cumDist, totalDist, dist) {
+  let seg = 1;
+  while (seg < cumDist.length - 1 && cumDist[seg] < dist) seg++;
+  const a = path[seg - 1];
+  const b = path[seg];
+  const segLen = cumDist[seg] - cumDist[seg - 1];
+  const frac = segLen > 0 ? (dist - cumDist[seg - 1]) / segLen : 0;
+  const dx = b.x - a.x;
+  const dz = b.z - a.z;
+  return {
+    x: a.x + dx * frac,
+    y: a.y + (b.y - a.y) * frac,
+    z: a.z + dz * frac,
+    dir: Math.abs(dx) >= Math.abs(dz) ? (dx >= 0 ? "right" : "left") : dz >= 0 ? "down" : "up",
+  };
+}
+
+function finishLanding(cat, t, landIdx) {
+  const nodes = catNav.nodes;
+  if (nodes.length) {
+    const land = nodes[landIdx];
+    cat.mesh.position.set(land.x, land.y, land.z);
+    const slot = catSlotAt(cat, t);
+    cat.afterRide = { landSlot: slot, nextSlot: slot + 1, nodeIdx: landIdx };
+  }
+  cat.leg = null;
+  cat.ride = null;
+  cat.rideAnim = null;
+  cat.hopOff = null;
+  cat.ridingMesh = null;
+  cat.ridingFeet = null;
+  cat.mesh.scale.setScalar(CAT_GROUND_SCALE);
+  cat.mesh.renderOrder = 10;
+}
+
+function startHopOff(cat, t) {
+  const nodes = catNav.nodes;
+  const m = cat.mesh.position;
+  const landIdx = nodes.length ? nearestCatNode(m.x, m.z) : 0;
+  if (m.y > groundHeight(m.x, m.z) + 0.4 || cat.ridingMesh) {
+    cat.hopOff = { at: t, until: t + CAT_HOP_MS, from: m.clone(), landIdx };
+  } else {
+    finishLanding(cat, t, landIdx);
+  }
+  cat.ride = null;
+  cat.rideAnim = null;
+}
+
+function walkCat(cat, t) {
+  const m = cat.mesh.position;
+  const nodes = catNav.nodes;
+
+  if (cat.hopOff) {
+    const u = Math.min(1, Math.max(0, (t - cat.hopOff.at) / Math.max(1, cat.hopOff.until - cat.hopOff.at)));
+    if (u >= 1) {
+      finishLanding(cat, t, cat.hopOff.landIdx);
+    } else {
+      const land = nodes[cat.hopOff.landIdx] || { x: cat.hopOff.from.x, y: groundHeight(cat.hopOff.from.x, cat.hopOff.from.z), z: cat.hopOff.from.z };
+      m.set(
+        THREE.MathUtils.lerp(cat.hopOff.from.x, land.x, u),
+        THREE.MathUtils.lerp(cat.hopOff.from.y, land.y, u) + 2.6 * 4 * u * (1 - u),
+        THREE.MathUtils.lerp(cat.hopOff.from.z, land.z, u),
+      );
+      cat.mesh.scale.setScalar(THREE.MathUtils.lerp(CAT_PERCH_SCALE, CAT_GROUND_SCALE, u));
+      cat.mesh.renderOrder = 12;
+      cat.ridingMesh = null;
+      cat.ridingFeet = null;
+      cat.pose = "sit";
+      cat.sprite.setPose("sit");
+      return;
+    }
+  }
+
+  if (cat.ride) {
+    const target = resolveRideTarget(cat.ride.playerId);
+    if (!target) {
+      startHopOff(cat, t);
+      return;
+    }
+    const rideDuration = Math.max(1, cat.ride.until - cat.ride.at);
+    if (!cat.rideAnim || cat.rideAnim.at !== cat.ride.at) {
+      const startPos = m.clone();
+      const approachPath = nodes.length
+        ? findCatPath(nearestCatNode(startPos.x, startPos.z), nearestCatNode(target.mesh.position.x, target.mesh.position.z))
+        : [{ x: startPos.x, y: startPos.y, z: startPos.z }];
+      const { cumDist, totalDist } = measurePath(approachPath);
+      const rawApproach = totalDist > 0 ? Math.min(CAT_APPROACH_MAX_MS, (totalDist / CAT_APPROACH_SPEED) * 1000) : 0;
+      const approachEnd = Math.min(rawApproach, Math.max(0, rideDuration - CAT_HOP_MS * 2));
+      const hopOnEnd = Math.min(approachEnd + CAT_HOP_MS, Math.max(approachEnd, rideDuration - CAT_HOP_MS));
+      const hopOffStart = Math.max(hopOnEnd, rideDuration - CAT_HOP_MS);
+      cat.rideAnim = {
+        at: cat.ride.at,
+        startPos,
+        approachPath,
+        cumDist,
+        totalDist,
+        approachEnd,
+        hopOnEnd,
+        hopOffStart,
+        hopOffFrom: null,
+        landIdx: null,
+      };
+    }
+    const anim = cat.rideAnim;
+    const elapsed = Math.max(0, t - cat.ride.at);
+    const hx = target.mesh.position.x;
+    const hy = target.baseY + (target.grounded ? CAT_HEAD_OFFSET_Y - 0.47 : CAT_HEAD_OFFSET_Y);
+    const hz = target.mesh.position.z;
+
+    if (t >= cat.ride.until) {
+      const landIdx = anim.landIdx ?? (nodes.length ? nearestCatNode(hx, hz) : 0);
+      finishLanding(cat, t, landIdx);
+    } else if (elapsed < anim.approachEnd) {
+      const pt = samplePathPoint(anim.approachPath, anim.cumDist, anim.totalDist, (elapsed / anim.approachEnd) * anim.totalDist);
+      m.set(pt.x, pt.y, pt.z);
+      cat.mesh.scale.setScalar(CAT_GROUND_SCALE);
+      cat.mesh.renderOrder = 10;
+      cat.ridingMesh = null;
+      cat.ridingFeet = null;
+      cat.dir = pt.dir;
+      cat.pose = "walk";
+      cat.sprite.setDir(cat.dir);
+      cat.sprite.setPose("walk");
+      return;
+    } else if (elapsed < anim.hopOnEnd) {
+      const from = anim.approachPath[anim.approachPath.length - 1] || anim.startPos;
+      const u = (elapsed - anim.approachEnd) / Math.max(1, anim.hopOnEnd - anim.approachEnd);
+      m.set(
+        THREE.MathUtils.lerp(from.x, hx, u),
+        THREE.MathUtils.lerp(from.y, hy, u) + 3.2 * 4 * u * (1 - u),
+        THREE.MathUtils.lerp(from.z, hz, u),
+      );
+      cat.mesh.scale.setScalar(THREE.MathUtils.lerp(CAT_GROUND_SCALE, CAT_PERCH_SCALE, u));
+      cat.mesh.renderOrder = 12;
+      cat.ridingMesh = target.mesh;
+      cat.ridingFeet = target.feet;
+      cat.dir = target.dir;
+      cat.pose = "perch";
+      cat.sprite.setDir(cat.dir);
+      cat.sprite.setPose("perch");
+      return;
+    } else if (elapsed < anim.hopOffStart) {
+      m.set(hx, hy, hz);
+      cat.mesh.scale.setScalar(CAT_PERCH_SCALE);
+      cat.mesh.renderOrder = 12;
+      cat.ridingMesh = target.mesh;
+      cat.ridingFeet = target.feet;
+      cat.dir = target.dir;
+      cat.pose = "perch";
+      cat.sprite.setDir(cat.dir);
+      cat.sprite.setPose("perch");
+      return;
+    } else {
+      if (!anim.hopOffFrom) {
+        anim.hopOffFrom = { x: hx, y: hy, z: hz };
+        anim.landIdx = nodes.length ? nearestCatNode(hx, hz) : 0;
+      }
+      const land = nodes[anim.landIdx] || { x: hx, y: groundHeight(hx, hz), z: hz };
+      const u = Math.min(1, (elapsed - anim.hopOffStart) / Math.max(1, rideDuration - anim.hopOffStart));
+      m.set(
+        THREE.MathUtils.lerp(anim.hopOffFrom.x, land.x, u),
+        THREE.MathUtils.lerp(anim.hopOffFrom.y, land.y, u) + 2.6 * 4 * u * (1 - u),
+        THREE.MathUtils.lerp(anim.hopOffFrom.z, land.z, u),
+      );
+      cat.mesh.scale.setScalar(THREE.MathUtils.lerp(CAT_PERCH_SCALE, CAT_GROUND_SCALE, u));
+      cat.mesh.renderOrder = 12;
+      cat.ridingMesh = null;
+      cat.ridingFeet = null;
+      cat.pose = "sit";
+      cat.sprite.setPose("sit");
+      return;
+    }
+  }
+
+  cat.mesh.scale.setScalar(CAT_GROUND_SCALE);
+  cat.mesh.renderOrder = 10;
+  cat.ridingMesh = null;
+  cat.ridingFeet = null;
+
+  const eating = t >= cat.fed.at && t < cat.fed.until;
+  if (!nodes.length) {
+    cat.pose = eating ? "eat" : "sit";
+    cat.sprite.setPose(cat.pose);
+    return;
+  }
+  const activeMs = (t < cat.fed.at ? t : eating ? cat.fed.at : t - (cat.fed.until - cat.fed.at)) - cat.fed.lost;
+  const slot = Math.floor(activeMs / CAT_LEG_MS);
+  if (cat.afterRide) {
+    if (slot === cat.afterRide.landSlot) {
+      const p = nodes[cat.afterRide.nodeIdx];
+      m.set(p.x, p.y, p.z);
+      cat.pose = eating ? "eat" : "sit";
+      cat.sprite.setPose(cat.pose);
+      return;
+    }
+    if (slot > cat.afterRide.nextSlot) cat.afterRide = null;
+  }
+  const inSlotMs = ((activeMs % CAT_LEG_MS) + CAT_LEG_MS) % CAT_LEG_MS;
+  const leg = getCatLeg(cat, slot);
+  if (leg.totalDist === 0 || inSlotMs >= leg.walkMs) {
+    const end = leg.path[leg.path.length - 1];
+    m.set(end.x, end.y, end.z);
+    cat.pose = eating ? "eat" : "sit";
+    cat.sprite.setPose(cat.pose);
+    return;
+  }
+  const pt = samplePathPoint(leg.path, leg.cumDist, leg.totalDist, (inSlotMs / leg.walkMs) * leg.totalDist);
+  m.set(pt.x, pt.y, pt.z);
+  cat.dir = pt.dir;
+  cat.pose = eating ? "eat" : "walk";
+  cat.sprite.setDir(cat.dir);
+  cat.sprite.setPose(cat.pose);
+}
+
+function catWasFed(m) {
+  const cat = cats.find((c) => c.id === m.id);
+  if (!cat || ![m.at, m.until, m.lost].every(Number.isFinite)) return;
+  cat.fed = { at: m.at, until: m.until, lost: m.lost };
+  if (Number.isInteger(m.phrase)) showBubble(cat.mesh, CAT_PHRASES[Math.abs(m.phrase) % CAT_PHRASES.length]);
+}
+
+function catRideUpdate(m) {
+  const cat = cats.find((c) => c.id === m.id);
+  if (!cat) return;
+  const now = roomNow();
+  if (!m.playerId || !(m.until > m.at) || m.until <= now) {
+    if (cat.ride) startHopOff(cat, now);
+    return;
+  }
+  cat.ride = { playerId: m.playerId, at: m.at, until: m.until };
+  cat.hopOff = null;
+  cat.rideAnim = null;
+  if (Number.isInteger(m.phrase) && cat.lastRideAt !== m.at) {
+    cat.lastRideAt = m.at;
+    showBubble(cat.mesh, CAT_RIDE_PHRASES[Math.abs(m.phrase) % CAT_RIDE_PHRASES.length]);
+  }
+}
+
 // ---- Collision ----
 const BODY_RADIUS = 0.9; // character "width"
 const MAX_STEP = 1.2; // height difference it can climb
@@ -1998,6 +2573,14 @@ function updateOcclusion() {
   setFeet(myFeet, pos.x + slide.x, pos.y, pos.z + slide.z);
   setFeet(capyFeet, capy.mesh.position.x, capy.mesh.position.y, capy.mesh.position.z);
   for (const o of others.values()) setFeet(o.feet, o.mesh.position.x, o.mesh.position.y, o.mesh.position.z);
+  // After trainers: a perched cat shares its rider's depth nudged slightly forward so it sits
+  // over the cap without Z-fighting while still hiding behind walls/benches in front of the rider.
+  for (const cat of cats) {
+    if (cat.ridingFeet) {
+      _toCam.copy(camera.position).sub(cat.ridingFeet).normalize();
+      cat.feet.copy(cat.ridingFeet).addScaledVector(_toCam, 0.05);
+    } else setFeet(cat.feet, cat.mesh.position.x, cat.mesh.position.y, cat.mesh.position.z);
+  }
 }
 
 // ---- Movement ----
@@ -2395,6 +2978,7 @@ addEventListener("keydown", (e) => {
   const typing = ["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName);
   const k = e.key.toLowerCase();
   if (!typing && !e.repeat && !e.ctrlKey && !e.metaKey && k === "q") cycleHold();
+  if (!typing && !e.repeat && !e.ctrlKey && !e.metaKey && k === "e") (mySeat >= 0 || (!nearBoard() && !nearCapy() && !nearCat())) && toggleSit();
   // a quick tap on a move key can end before the next frame: stand up right away
   if (!typing && !gamePaused && mySeat >= 0 && MOVE_KEYS[k]) {
     dir = MOVE_KEYS[k];
@@ -2607,6 +3191,7 @@ function createOther(p) {
     gender: g,
     color: p.color,
     admin: !!p.admin,
+    prs: p.prs | 0, // merged pull requests: the contributor badge
   };
   mesh.position.copy(o.target);
   others.set(p.id, o);
@@ -2641,6 +3226,7 @@ function updateCount() {
 }
 
 let meAdmin = false; // the server confirmed this connection is the admin
+let myPrs = 0; // my merged pull requests, once the server knows my GitHub login (/github)
 let deployed = ""; // the deploy this tab first connected to
 let pendingPassword = ""; // typed after /admin, saved only if the server accepts it
 let kicked = false; // kicked or banned: stay out instead of reconnecting
@@ -2665,6 +3251,9 @@ function connect() {
     let password = "";
     try { password = localStorage.getItem("admin-password") || ""; } catch {}
     if (password) sock.send(JSON.stringify({ t: "auth", password, quiet: true }));
+    // and so does a contributor who logged in with GitHub before
+    const session = githubSession();
+    if (session) sock.send(JSON.stringify({ t: "github", session }));
   };
   sock.onmessage = (ev) => {
     if (ws !== sock || ev.data === "pong") return;
@@ -2685,11 +3274,11 @@ function connect() {
     else if (m.t === "state") m.players.forEach(createOther);
     else if (m.t === "joined") createOther(m.player);
     else if (m.t === "left") removeOther(m.id);
-    else if (m.t === "chat") receiveChat(m.id, m.name, m.text, m.admin, m.color);
+    else if (m.t === "chat") receiveChat(m.id, m.name, m.text, m.admin, m.color, m.prs);
     else if (m.t === "history") {
       // what was said before we arrived (also on reconnect, so start clean)
       elMsgs.replaceChildren();
-      m.messages.forEach((c) => addToHistory(c.name, c.text, c.id, c.admin, c.color));
+      m.messages.forEach((c) => addToHistory(c.name, c.text, c.id, c.admin, c.color, c.prs));
       elMsgs.scrollTop = elMsgs.scrollHeight;
     }
     else if (m.t === "radio") receiveCommand(m.command);
@@ -2699,6 +3288,8 @@ function connect() {
     else if (m.t === "note-like") wall.onNoteLiked(m.id, m.likes);
     else if (m.t === "capy") capyWasFed(m);
     else if (m.t === "stone") stoneThrown(m);
+    else if (m.t === "cat") catWasFed(m);
+    else if (m.t === "cat-ride") catRideUpdate(m);
     else if (m.t === "error" || m.t === "notice") addToHistory("system", m.msg);
     else if (m.t === "rename") {
       // the server refused our name and gave us another one
@@ -2712,6 +3303,25 @@ function connect() {
       if (m.id === myId) meAdmin = true;
       const o = others.get(m.id);
       if (o) o.admin = true;
+    }
+    else if (m.t === "contrib") {
+      if (m.id === myId) myPrs = m.prs | 0;
+      const o = others.get(m.id);
+      if (o) o.prs = m.prs | 0;
+    }
+    else if (m.t === "github-code") showGithubCode(m);
+    else if (m.t === "github-ok") {
+      try { localStorage.setItem("github-session", m.session); } catch {}
+      closeGithubLogin();
+      addToHistory("system", m.prs > 0 ? `github ok: ${m.login}, ${prsText(m.prs)} merged` : `github ok: ${m.login}, no merged PR yet (the badge comes with the first one)`);
+    }
+    else if (m.t === "github-fail") {
+      closeGithubLogin();
+      addToHistory("system", m.msg);
+    }
+    else if (m.t === "github-out") {
+      // the server no longer knows this session
+      try { localStorage.removeItem("github-session"); } catch {}
     }
     else if (m.t === "admin-ok") {
       // the server accepted the password typed after /admin: keep it and reload to show the controls
@@ -2744,6 +3354,7 @@ function connect() {
           gender: m.gender,
           cap: m.cap,
           admin: o.admin,
+          prs: o.prs,
         };
         removeOther(m.id);
         createOther(p);
@@ -2922,11 +3533,28 @@ function mentionText(el, parts) {
   );
 }
 
-function addToHistory(name, text, id, admin, color) {
+const prsText = (n) => `${n} PR${n === 1 ? "" : "s"}`;
+// Red 1–10, blue 11–20, black 21–50, then the purple Master Ball at 51+.
+// Highest threshold first; its index runs backwards through the four balls in the sprite sheet.
+const PR_TIERS = [{ from: 51 }, { from: 21 }, { from: 11 }, { from: 1 }];
+/** Fills el with the ball for prs merged pull requests and the count (nothing for 0). */
+function showPrs(el, prs) {
+  if (el.dataset.prs === String(prs)) return;
+  el.dataset.prs = prs;
+  el.replaceChildren();
+  el.title = prs > 0 ? `${prsText(prs)} merged` : "";
+  if (!(prs > 0)) return;
+  const tier = PR_TIERS.findIndex((t) => prs >= t.from);
+  const ball = Object.assign(document.createElement("i"), { ariaHidden: "true" });
+  ball.style.backgroundPosition = `${(PR_TIERS.length - 1 - tier) * (100 / (PR_TIERS.length - 1))}% 0`;
+  el.append(ball, prsText(prs));
+}
+function addToHistory(name, text, id, admin, color, prs = 0) {
   const d = document.createElement("div");
   d.className = admin ? "m admin" : "m";
   const s = document.createElement("small");
   s.textContent = name;
+  if (prs > 0) showPrs(s.appendChild(Object.assign(document.createElement("span"), { className: "prs" })), prs);
   paintName(s, color);
   if (IS_ADMIN && id && id !== myId && id !== "me") {
     s.className = "mod";
@@ -3010,12 +3638,13 @@ function showWho(m) {
 
 // ---- Name above each trainer ----
 const nameTags = new Map(); // mesh -> div
-function nameTag(mesh, name, id, admin, color) {
+function nameTag(mesh, name, id, admin, color, prs = 0) {
   let el = nameTags.get(mesh);
   if (!el) {
     el = Object.assign(document.createElement("div"), { className: "tag" });
     el.append(
       Object.assign(document.createElement("b"), { className: "badge", textContent: "admin" }),
+      Object.assign(document.createElement("b"), { className: "contrib" }),
       Object.assign(document.createElement("span"), { className: "who" }),
     );
     if (IS_ADMIN && id) {
@@ -3028,14 +3657,16 @@ function nameTag(mesh, name, id, admin, color) {
   if (el.lastChild.textContent !== name) el.lastChild.textContent = name;
   if (el.dataset.color !== (color || "")) paintName(el, (el.dataset.color = color || ""));
   el.classList.toggle("admin", !!admin);
+  // contributor: a ball and the merged pull requests
+  showPrs(el.children[1], prs | 0);
 }
 function updateNameTags() {
-  nameTag(sprite, NAME, null, meAdmin, COLOR);
-  for (const [id, o] of others) nameTag(o.mesh, o.name || "trainer", id, o.admin, o.color);
+  nameTag(sprite, NAME, null, meAdmin, COLOR, myPrs);
+  for (const [id, o] of others) nameTag(o.mesh, o.name || "trainer", id, o.admin, o.color, o.prs);
   for (const [mesh, el] of nameTags) {
     if (!mesh.parent) { el.remove(); nameTags.delete(mesh); continue; }
     const baseY = mesh === sprite ? pos.y : mesh.position.y + (mesh.userData.lift || 0);
-    _v.set(mesh.position.x, baseY + mesh.scale.y * 0.92, mesh.position.z).project(camera);
+    _v.set(mesh.position.x, baseY + mesh.scale.y * 0.92 + headCatLift(mesh), mesh.position.z).project(camera);
     el.style.left = `${(_v.x * 0.5 + 0.5) * innerWidth}px`;
     el.style.top = `${(-_v.y * 0.5 + 0.5) * innerHeight}px`;
     el.style.display = _v.z < 1 ? "" : "none";
@@ -3050,7 +3681,7 @@ sitPrompt.addEventListener("click", (e) => {
   e.currentTarget.blur(); // give the keyboard back to the game
 });
 function updateSitPrompt(seat) {
-  const s = seat >= 0 && !gamePaused && !typing() ? seatSpot(seat) : null;
+  const s = seat >= 0 && !gamePaused && !typing() && !nearBoard() && !nearCapy() && !nearCat() ? seatSpot(seat) : null;
   sitPrompt.hidden = !s;
   if (!s) return;
   _v.set(s.x, s.y + 5.2, s.z).project(camera); // above a standing trainer's name tag
@@ -3072,7 +3703,7 @@ function updateBubbles() {
     const baseY = owner === sprite ? pos.y : owner.position.y + (owner.userData.lift || 0);
     _v.set(
       owner.position.x,
-      baseY + owner.scale.y * 0.95,
+      baseY + owner.scale.y * 0.95 + headCatLift(owner),
       owner.position.z,
     ).project(camera);
     _v.y += 20 / (innerHeight / 2); // move above the name tag
@@ -3081,8 +3712,8 @@ function updateBubbles() {
   }
 }
 
-function receiveChat(id, name, text, admin, color) {
-  addToHistory(name, text, id, admin, color);
+function receiveChat(id, name, text, admin, color, prs) {
+  addToHistory(name, text, id, admin, color, prs);
   const owner = id === myId || id === "me" ? sprite : others.get(id)?.mesh;
   if (owner) showBubble(owner, text, owner !== sprite && mentionsMe(mentionParts(text)));
 }
@@ -3094,6 +3725,14 @@ document.querySelector("#chat form").addEventListener("submit", (e) => {
   const text = elInput.value.trim().slice(0, 140);
   elInput.value = "";
   if (/^\/admin$/i.test(text)) return openAdminLogin();
+  // contributors: /github proves your GitHub login, and the room shows your merged pull requests
+  if (/^\/github$/i.test(text)) return startGithubLogin();
+  if (/^\/github (out|logout)$/i.test(text)) {
+    const session = githubSession();
+    try { localStorage.removeItem("github-session"); } catch {}
+    if (ws?.readyState === 1) ws.send(JSON.stringify({ t: "github-out", session }));
+    return addToHistory("system", "github: logged out");
+  }
   if (/^\/logout$/i.test(text)) {
     try { localStorage.removeItem("admin-password"); } catch {}
     location.reload();
@@ -3145,6 +3784,42 @@ adminLogin.addEventListener("submit", (e) => {
 });
 adminLogin.querySelector("[data-cancel]").addEventListener("click", closeAdminLogin);
 adminPw.addEventListener("keydown", (e) => e.key === "Escape" && closeAdminLogin());
+// GitHub login (device flow): the room hands out a code, the player types it at github.com and the room
+// learns their login. No password or GitHub token ever reaches this page; it keeps a session of the room's.
+const githubLogin = document.querySelector("#github-login");
+let githubPoll = 0;
+function githubSession() {
+  try { return localStorage.getItem("github-session") || ""; } catch { return ""; }
+}
+function startGithubLogin() {
+  if (!MULTIPLAYER || ws?.readyState !== 1) return addToHistory("system", "github login needs the room: you are offline");
+  ws.send(JSON.stringify({ t: "github-start" }));
+}
+function showGithubCode(m) {
+  closeGithubLogin();
+  githubLogin.querySelector("code").textContent = m.code;
+  githubLogin.querySelector("a").href = m.url;
+  githubLogin.hidden = false;
+  elInput.blur();
+  // ask the room now and then if the code was typed, until it says ok, fails or the code runs out
+  githubPoll = setInterval(() => {
+    if (Date.now() > m.until + 5000) return closeGithubLogin();
+    if (ws?.readyState === 1) ws.send(JSON.stringify({ t: "github-poll" }));
+  }, (m.every + 1) * 1000);
+}
+function closeGithubLogin() {
+  clearInterval(githubPoll);
+  githubLogin.hidden = true;
+}
+githubLogin.querySelector("[data-cancel]").addEventListener("click", closeGithubLogin);
+githubLogin.querySelector("[data-copy]").addEventListener("click", (e) => {
+  const button = e.currentTarget;
+  navigator.clipboard?.writeText(githubLogin.querySelector("code").textContent).then(() => {
+    button.textContent = "copied!";
+    button.classList.add("done");
+    setTimeout(() => (button.classList.remove("done"), (button.textContent = "copy")), 1500);
+  }, () => {});
+});
 elInput.addEventListener("focus", () => {
   Object.keys(keys).forEach((k) => (keys[k] = false));
   if (!MOBILE) elInput.placeholder = "Esc or empty Enter to walk…";
@@ -3249,8 +3924,45 @@ capyPrompt.addEventListener("click", (e) => {
   e.currentTarget.blur(); // give the keyboard back to the game
 });
 document.body.append(capyPrompt);
-const nearCapy = () =>
-  mySeat < 0 && !nearBoard() && Math.hypot(pos.x - capy.mesh.position.x, pos.z - capy.mesh.position.z) < CAPY_NEAR;
+const catPrompt = Object.assign(document.createElement("button"), { id: "cat-prompt", type: "button" });
+catPrompt.innerHTML = MOBILE ? "tap to feed the cat" : "<kbd>E</kbd> feed the cat";
+const feedCat = (cat) => {
+  if (!cat) return;
+  if (CATS.some((c) => c.id === cat.id) && MULTIPLAYER && ws?.readyState === 1) return ws.send(JSON.stringify({ t: "cat", id: cat.id }));
+  const now = roomNow();
+  if (now < cat.fed.until) return;
+  catWasFed({ id: cat.id, at: now, until: now + CAT_SIT_MS, lost: cat.fed.lost + cat.fed.until - cat.fed.at, phrase: Math.floor(Math.random() * 1000) });
+};
+catPrompt.addEventListener("click", (e) => {
+  feedCat(nearCat());
+  e.currentTarget.blur(); // give the keyboard back to the game
+});
+document.body.append(catPrompt);
+// Pick at most one closest animal in interaction range so prompts and E never collide.
+function closestAnimal() {
+  if (mySeat >= 0 || nearBoard()) return null;
+  let best = null;
+  let bestDist = Infinity;
+  const capyDist = Math.hypot(pos.x - capy.mesh.position.x, pos.z - capy.mesh.position.z);
+  if (capyDist < CAPY_NEAR) {
+    best = { kind: "capy" };
+    bestDist = capyDist;
+  }
+  for (const cat of cats) {
+    if (cat.ride || cat.hopOff) continue; // on a player's head or hopping down: not feedable
+    const d = Math.hypot(pos.x - cat.mesh.position.x, pos.z - cat.mesh.position.z);
+    if (d < CAT_NEAR && d < bestDist) {
+      best = { kind: "cat", cat };
+      bestDist = d;
+    }
+  }
+  return best;
+}
+const nearCapy = () => closestAnimal()?.kind === "capy";
+const nearCat = () => {
+  const a = closestAnimal();
+  return a?.kind === "cat" ? a.cat : null;
+};
 function updateCapy() {
   const t = roomNow();
   walkCapy(t);
@@ -3356,6 +4068,22 @@ function updateWallPrompt() {
   wallPrompt.style.top = `${(-_v.y * 0.5 + 0.5) * innerHeight}px`;
 }
 
+function updateCats() {
+  const t = roomNow();
+  for (const cat of cats) {
+    walkCat(cat, t);
+    cat.sprite.update(t);
+    cat.mesh.rotation.set(camera.rotation.x * 0.5, 0, 0);
+  }
+  const active = nearCat();
+  const show = eNow === "cat" && !!active && !bubbles.has(active.mesh);
+  catPrompt.classList.toggle("on", show);
+  if (!show) return;
+  _v.set(active.mesh.position.x, active.mesh.position.y + 4.2, active.mesh.position.z).project(camera);
+  catPrompt.style.left = `${(_v.x * 0.5 + 0.5) * innerWidth}px`;
+  catPrompt.style.top = `${(-_v.y * 0.5 + 0.5) * innerHeight}px`;
+}
+
 const fishing = createFishing({
   scene,
   button: document.querySelector("#fish"),
@@ -3366,9 +4094,11 @@ const fishing = createFishing({
   onChange: (target) => sendFish(target),
 });
 // tells the room your line is out (where the bobber is) or back in, so the others see it; the
-// timer stays yours
-const sendFish = (target) =>
-  ws?.readyState === 1 && ws.send(JSON.stringify(target ? { t: "fish", on: true, x: target.x, z: target.z } : { t: "fish", on: false }));
+// timer stays yours. A function declaration: createFishing above may call it while it starts
+// (a saved line whose fish got away while the tab was closed).
+function sendFish(target) {
+  if (ws?.readyState === 1) ws.send(JSON.stringify(target ? { t: "fish", on: true, x: target.x, z: target.z } : { t: "fish", on: false }));
+}
 const _waterFrom = new THREE.Vector3();
 /** @returns {number | null} the height of the water at (x, z), or null where there is none (or the town isn't loaded yet) */
 function waterY(x, z) {
@@ -3413,10 +4143,11 @@ const seatDistance = (id) => {
 
 let eNow = null;
 /**
- * What E does right now: the line if it is out, standing up if seated, then the wall, the capybara,
- * and last the pond's edge or the free seat, whichever is closer. Only that action's prompt shows.
+ * What E does right now: the line if it is out, standing up if seated, then the wall, the closest
+ * animal (capybara or cat), and last the pond's edge or the free seat, whichever is closer.
+ * Only that action's prompt shows.
  * @param {number} [seat] nearest free seat, if already known this frame
- * @returns {"fish" | "stand" | "wall" | "capy" | "cast" | "sit" | null}
+ * @returns {"fish" | "stand" | "wall" | "capy" | "cat" | "cast" | "sit" | null}
  */
 function eAction(seat = nearestFreeSeat()) {
   if (gamePaused || wall.isOpen()) return null;
@@ -3424,7 +4155,8 @@ function eAction(seat = nearestFreeSeat()) {
   if (p === "focus" || p === "bite") return "fish";
   if (mySeat >= 0) return "stand";
   if (nearBoard()) return "wall";
-  if (nearCapy()) return "capy";
+  const animal = closestAnimal();
+  if (animal) return animal.kind;
   const spot = fishSpot();
   if (spot && (seat < 0 || spot.d < seatDistance(seat))) return "cast";
   return seat >= 0 ? "sit" : null;
@@ -3435,6 +4167,7 @@ function doE(action = eAction()) {
   else if (action === "cast") fishSpot() && fishing.choose(castHere);
   else if (action === "wall") wall.show();
   else if (action === "capy") feedCapy();
+  else if (action === "cat") feedCat(nearCat());
   else if (action === "stand" || action === "sit") toggleSit();
 }
 addEventListener("keydown", (e) => {
@@ -3489,7 +4222,38 @@ function updateFishing() {
   fishPrompt.style.top = `${(-_v.y * 0.5 + 0.5) * innerHeight}px`;
 }
 
+if (import.meta.env.DEV) {
+  import("./debug.js").then(({ setupDebug }) => {
+    setupDebug({
+      THREE,
+      renderer,
+      scene,
+      cats,
+      baseCatCount: CATS.length,
+      createCat,
+      useFeetDepth,
+      bubbles,
+      getCatNav: () => catNav,
+      measureCats: updateCats,
+      getPlayerCount: () => others.size + 1,
+      roomNow,
+      getMyId: () => myId,
+      catRideMs: CAT_RIDE_MS,
+      catRideUpdate,
+      resolveRideTarget,
+      getTimeMode: () => timeMode,
+      getCyclePhase: cyclePhase,
+      getCycleDurationMs: () => cycleDurationMs,
+      setCycleDuration,
+      getLook: () => currentLook,
+      getRainAmount: () => rainAmount,
+      getLampIntensity: () => lampLights[0]?.intensity ?? 0,
+    });
+  });
+}
+
 function loop() {
+  const now = performance.now();
   const dt = Math.min(clock.getDelta(), 0.05);
   checkSavedPosition();
   savePosition(performance.now());
@@ -3502,7 +4266,6 @@ function loop() {
     f.scale.y = 1 + 0.25 * Math.sin(waterUniforms.uTime.value * (11 + i * 3) + i);
   });
   updateTimeOfDay(dt);
-  updateCycleDebug();
   updateRain(dt);
   stones.update(dt);
   updateFireflies();
@@ -3549,7 +4312,6 @@ function loop() {
   } else tAnim = 0;
   const currentStep = walking ? Math.floor(tAnim) % CHARACTER.steps : 0;
   const running = Boolean(walking && run);
-  const now = performance.now();
   if (onGround && walking) setGround(false); // moving gets you up
   const grounded = onGround && setSitFrameTex(sheetTex, dir); // facing the way you stood
   if (!grounded) setFrame(dir, currentStep, running);
@@ -3576,12 +4338,13 @@ function loop() {
   camera.lookAt(pos.x + slide.x, pos.y + 1, pos.z + slide.z);
   updateCapy();
   updateFishing();
+  updateCats();
   updateOcclusion();
   // facing the camera, tilted only halfway (the shadow looks like a standing body)
   sprite.rotation.set(camera.rotation.x * 0.5, 0, 0);
   showHeld(myHeld, sprite, CHARACTER.cfg, myHold, grounded ? null : heldDir(myHold, mySeat >= 0 ? seatSpot(mySeat) : null, !walking, dir));
 
-  updateLampShadows([sprite, capy.mesh, ...[...others.values()].map((o) => o.mesh)]);
+  updateLampShadows([sprite, capy.mesh, ...cats.map((c) => c.mesh), ...[...others.values()].map((o) => o.mesh)]);
   renderer.render(scene, camera);
   updateNameTags();
   updateBubbles();

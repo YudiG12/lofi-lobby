@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="16" viewBox="0 0 64 16" shape-rendering="crispEdges">
+  <defs>
+    <path id="ball" d="M6 0h4v1h2v2h2v2h1v6h-1v2h-2v2h-2v1H6v-1H4v-2H2v-2H1V5h1V3h2V1h2z"/>
+    <clipPath id="clip"><use href="#ball"/></clipPath>
+    <g id="shine">
+      <path fill="#fff" d="M4 2h3v1H5v1H4v2H3V4h1z"/>
+      <path fill="#fff" opacity=".55" d="M7 2h2v1H7z"/>
+    </g>
+    <g id="button">
+      <path fill="#181820" d="M6 6h4v1h1v3h-1v1H6v-1H5V7h1z"/>
+      <path fill="#f8f8f0" d="M7 7h2v1h1v1H9v1H7V9H6V8h1z"/>
+      <path fill="#a8a8b8" d="M9 8h1v1H9v1H7V9h2z"/>
+      <path fill="#fff" d="M7 7h2v1H7z"/>
+    </g>
+  </defs>
+
+  <!-- 1–10 PRs: red -->
+  <g>
+    <use href="#ball" fill="#181820"/>
+    <g clip-path="url(#clip)">
+      <path fill="#f03848" d="M0 0h16v7H0z"/>
+      <path fill="#ff6868" d="M2 2h8v1H5v3H3v2H1V4h1z"/>
+      <path fill="#b82040" d="M12 2h4v5H9V6h5V4h-2z"/>
+      <path fill="#f4f0e8" d="M0 9h16v7H0z"/>
+      <path fill="#c0c0cc" d="M1 11h2v2h3v2H3v-2H1zm12 0h3v5H9v-2h3v-1h1z"/>
+      <path fill="#181820" d="M0 7h6v2H0zm10 0h6v2h-6z"/>
+      <use href="#shine"/>
+    </g>
+    <use href="#button"/>
+  </g>
+
+  <!-- 11–20 PRs: blue -->
+  <g transform="translate(16)">
+    <use href="#ball" fill="#181820"/>
+    <g clip-path="url(#clip)">
+      <path fill="#4898e8" d="M0 0h16v7H0z"/>
+      <path fill="#78c8f8" d="M2 2h8v1H5v3H3v2H1V4h1z"/>
+      <path fill="#2858a0" d="M12 1h4v6H9V6h5V4h-2z"/>
+      <path fill="#e04850" d="M1 2h3v2h2v1H4V4H2v2H1zm14 0h-3v2h-2v1h2V4h2v2h1z"/>
+      <path fill="#e8f0f8" d="M0 9h16v7H0z"/>
+      <path fill="#a8b8d0" d="M1 11h2v2h3v2H3v-2H1zm12 0h3v5H9v-2h3v-1h1z"/>
+      <path fill="#181820" d="M0 7h6v2H0zm10 0h6v2h-6z"/>
+      <use href="#shine"/>
+    </g>
+    <use href="#button"/>
+  </g>
+
+  <!-- 21–50 PRs: black -->
+  <g transform="translate(32)">
+    <use href="#ball" fill="#181820"/>
+    <g clip-path="url(#clip)">
+      <path fill="#383840" d="M0 0h16v7H0z"/>
+      <path fill="#606068" d="M2 2h8v1H5v3H3v2H1V4h1z"/>
+      <path fill="#202028" d="M12 1h4v6H9V6h5V4h-2z"/>
+      <path fill="#f8d048" d="M4 0h3v2H6v2h4V2H9V0h3v4h-2v2H6V4H4z"/>
+      <path fill="#fff0a0" d="M5 1h1v2H5zm6 0h1v2h-1z"/>
+      <path fill="#e8e8e0" d="M0 9h16v7H0z"/>
+      <path fill="#a8a8b0" d="M1 11h2v2h3v2H3v-2H1zm12 0h3v5H9v-2h3v-1h1z"/>
+      <path fill="#181820" d="M0 7h6v2H0zm10 0h6v2h-6z"/>
+    </g>
+    <use href="#button"/>
+  </g>
+
+  <!-- 51+ PRs: purple Master Ball -->
+  <g transform="translate(48)">
+    <use href="#ball" fill="#181820"/>
+    <g clip-path="url(#clip)">
+      <path fill="#b858e0" d="M0 0h16v7H0z"/>
+      <path fill="#e888f8" d="M2 2h8v1H5v3H3v2H1V4h1z"/>
+      <path fill="#7830a8" d="M12 1h4v6H9V6h5V4h-2z"/>
+      <path fill="#f090d8" d="M3 0h3v3H4v2H2V2h1zm10 0h-3v3h2v2h2V2h-1z"/>
+      <path fill="#e8d8f0" d="M0 9h16v7H0z"/>
+      <path fill="#b098c8" d="M1 11h2v2h3v2H3v-2H1zm12 0h3v5H9v-2h3v-1h1z"/>
+      <path fill="#181820" d="M0 7h6v2H0zm10 0h6v2h-6z"/>
+      <use href="#shine"/>
+    </g>
+    <use href="#button"/>
+  </g>
+</svg>
