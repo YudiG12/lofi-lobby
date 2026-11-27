@@ -52,10 +52,11 @@ export function badName(name) {
   return [...ANYWHERE_LIST, ...SQUASHED].some((t) => all.includes(t));
 }
 
-// chat: each bad word becomes LOBBA; returns null when the message must not go out at all
-export function cleanChat(text) {
+// chat (and wall notes): each bad word becomes "lobba"; returns null when the message must not go out at all
+export function cleanChat(text, max) {
   if (ANYWHERE_LIST.some((t) => normalize(text).includes(t))) return null;
-  return text.replace(/\S+/g, (tok) => (badWord(tok) ? "LOBBA" : tok));
+  const cleaned = text.replace(/\S+/g, (tok) => (badWord(tok) ? "lobba" : tok));
+  return max ? cleaned.slice(0, max).trimEnd() : cleaned;
 }
 
 // links (the message wall refuses them: a note stays forever, so it is where spam would go).

@@ -1,0 +1,31 @@
+#fish-prompt { position: fixed; z-index: 2; transform: translate(-50%, -100%); font: inherit; font-size: 11px; color: #F2F2F5;
+  background: rgba(10,11,16,.84); border: 1px solid rgba(255,201,90,.6); border-radius: 6px; padding: 6px 10px; cursor: pointer;
+  opacity: 0; pointer-events: none; transition: opacity .2s; white-space: nowrap; animation: fish-bob 1.6s ease-in-out infinite; }
+@keyframes fish-bob { 50% { margin-top: -4px; } }
+#fish-prompt.on { opacity: 1; pointer-events: auto; }
+#fish-prompt.bite { border-color: #ff8a6b; }
+#fish-prompt kbd { font: inherit; color: #1b1406; background: #ffc95a; border-radius: 3px; padding: 0 5px; margin-right: 4px; }
+
+#place .tools button#fish.timer { width: auto; display: flex; gap: 6px; padding: 0 8px; border-color: #ffc95a; color: #ffc95a; font-size: 11px; }
+#place .tools button#fish.bite { border-color: #ff8a6b; color: #ff8a6b; animation: fish-tug .5s ease-in-out infinite; }
+#place .tools button#fish.confirm { border-color: #ff8a6b; color: #ff8a6b; }
+#place .tools button#fish.confirm::after { content: attr(aria-label); color: #ff8a6b; opacity: 1; }
+@keyframes fish-tug { 50% { transform: translateY(2px); } }
+
+#fish-time, #catch { left: 50%; top: 28px; transform: translateX(-50%); z-index: 5; animation: fish-in .25s ease-out; }
+#fish-time[hidden], #catch[hidden] { display: none; }
+@keyframes fish-in { from { opacity: 0; transform: translate(-50%, -10px); } }
+#fish-time { display: grid; grid-template-columns: auto auto auto; align-items: center; gap: 8px; padding: 12px 14px; max-width: calc(100% - 32px); box-sizing: border-box; font-size: 11px; }
+#fish-time b { grid-column: 1 / -1; font-weight: 400; color: #ffc95a; }
+#fish-time .quick { display: flex; gap: 6px; }
+#fish-time button, #fish-time input { font: inherit; font-size: 11px; color: #F2F2F5; background: rgba(255,255,255,.06);
+  border: 1px solid rgba(255,255,255,.2); border-radius: 6px; padding: 5px 9px; cursor: pointer; }
+#fish-time input { width: 3.2em; text-align: center; cursor: text; }
+#fish-time button:hover, #fish-time input:focus { border-color: #ffc95a; color: #ffc95a; outline: none; }
+#fish-time button[type="submit"] { color: #1b1406; background: #ffc95a; border-color: #ffc95a; }
+#fish-time small { grid-column: 1 / -1; color: #9a9db0; font-size: 9px; }
+@media (pointer: coarse) { #fish-time small { display: none; } }
+
+#catch { display: flex; gap: 12px; align-items: center; padding: 10px 16px 10px 12px; }
+#catch canvas { display: block; image-rendering: pixelated; }
+#catch .txt { margin: 0; font-size: 11px; }
