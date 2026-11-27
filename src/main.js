@@ -253,6 +253,43 @@ function resize() {
 addEventListener("resize", resize);
 resize();
 
+// Camera zoom: scroll wheel, + / - / 0 keys, remembered in localStorage.
+// Uses PerspectiveCamera.zoom so camera.position (and therefore fog distances) stays unchanged.
+const MIN_ZOOM = 0.5;
+const MAX_ZOOM = 2.2;
+let targetZoom = 1;
+try {
+  const saved = parseFloat(localStorage.getItem("camera-zoom"));
+  if (Number.isFinite(saved)) targetZoom = THREE.MathUtils.clamp(saved, MIN_ZOOM, MAX_ZOOM);
+} catch {}
+camera.zoom = targetZoom;
+camera.updateProjectionMatrix();
+
+function setZoom(next) {
+  targetZoom = THREE.MathUtils.clamp(next, MIN_ZOOM, MAX_ZOOM);
+  try { localStorage.setItem("camera-zoom", targetZoom.toFixed(2)); } catch {}
+}
+
+function uiModalOpen() {
+  return !document.querySelector("#enter")?.hidden ||
+    !!document.querySelector("#wall:not([hidden]), #admin-login:not([hidden]), #github-login:not([hidden]), .social-card:not([hidden])");
+}
+
+renderer.domElement.addEventListener("wheel", (e) => {
+  if (uiModalOpen()) return;
+  e.preventDefault();
+  const step = Math.sign(e.deltaY) * Math.min(0.25, Math.abs(e.deltaY) * 0.0015);
+  setZoom(targetZoom * (1 - step));
+}, { passive: false });
+
+addEventListener("keydown", (e) => {
+  const typing = ["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName) || document.activeElement?.isContentEditable;
+  if (typing || uiModalOpen() || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.key === "+" || e.key === "=") setZoom(targetZoom * 1.12);
+  else if (e.key === "-" || e.key === "_") setZoom(targetZoom / 1.12);
+  else if (e.key === "0" && !e.repeat) setZoom(1);
+});
+
 // ---- Town (FBX) ----
 const texLoader = new THREE.TextureLoader();
 // the atlas cuts out leaves and fences (alphaTest), in the lamp shadows too
@@ -4647,6 +4684,11 @@ function loop() {
   shadow.visible = mySeat < 0; // would float under the hanging feet
   camera.position.set(pos.x + slide.x, pos.y + 38, pos.z + 42 + slide.z);
   camera.lookAt(pos.x + slide.x, pos.y + 1, pos.z + slide.z);
+  if (Math.abs(camera.zoom - targetZoom) > 0.0005) {
+    camera.zoom = THREE.MathUtils.lerp(camera.zoom, targetZoom, Math.min(1, dt * 12));
+    if (Math.abs(camera.zoom - targetZoom) <= 0.0005) camera.zoom = targetZoom;
+    camera.updateProjectionMatrix();
+  }
   updateCapy();
   owl.update(performance.now(), pos);
   owl.mesh.rotation.set(camera.rotation.x * 0.5, 0, 0); // faces the camera like the trainers
