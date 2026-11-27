@@ -74,6 +74,7 @@ Open the URL, pick a trainer and press **enter the room**: the click is what let
 | Message wall | Notes go over HTTP (`/api/notes`), not the WebSocket, and live in the room object's storage: **one key per note**, so the wall has no size limit and is read a page at a time | [SECURITY.md](SECURITY.md) |
 | Accounts, friends, private chat | An account is made by a GitHub login (device flow), numbered in the order they were made and named by that number everywhere; medals are rules over the account; friends need both sides, and so does a private chat with a non-friend (an invitation); private chat goes through the room's WebSocket and its storage keeps the last 50 messages per pair (`worker/social.js`, `src/social.js`) | [ADR 014](docs/adr/014-accounts-friends-and-private-chat.md) |
 | Where accounts live | **D1** (`worker/accounts.js`): accounts and sessions in one database for the whole deploy, made by Wrangler on the first deploy and its tables by the Worker; an account is GitHub's numeric user id (the login can change) and keeps the verified e-mail, which never leaves the server. Friends and private messages stay in the room's storage | [ADR 015](docs/adr/015-accounts-in-d1.md) |
+| See-through | Inside a circle around your trainer, what stands in front of you (nearer the camera, over your feet) is drawn half see-through, fading to the edge: a dither in the materials' shaders (`src/see-through.js`), so nothing is sorted and the ground is never cut | [ADR 016](docs/adr/016-see-through-around-your-trainer.md) |
 | Admin | Secret `ADMIN_PASSWORD`, checked in the room object in constant time, few tries per connection | [SECURITY.md](SECURITY.md) |
 
 **Limits of this design.** There is a single room (`lobby`), and a room is one object, so it holds a few dozen players (capped at 100); growing past that would mean opening more rooms, not a bigger one. Positions are relayed, not simulated on the server, so a modified client can teleport; nothing in the lobby is worth cheating for. The YouTube player can't be fully controlled (ads, embeds disabled by the owner): those videos are skipped. It plays off screen, which YouTube's terms for embedded players do not expect.
@@ -93,6 +94,7 @@ src/
   cycle-debug.js    dev-only cycle debug module (stripped from production builds)
   radio.js          YouTube player (off screen) synced by the clock or by the room's radio command
   social.js         account, profile and medals, friends list, private chat tabs
+  see-through.js    half see-through circle around you on what stands in front
 public/assets/      Twinleaf FBX model, textures and male/female trainer sheets
 worker/index.js     Worker (static assets + /ws routing) and the Room Durable Object
 worker/social.js    medals, friends and private chat (methods of the Room)

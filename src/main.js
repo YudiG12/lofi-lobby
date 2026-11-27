@@ -8,6 +8,7 @@ import { createStones } from "./stones.js";
 import { addSitFrames, sitFramePos } from "./ground-sit.js";
 import { createCapybara, CAPY_NEAR, CAPY_RADIUS, PHRASES as CAPY_PHRASES } from "./capybara.js";
 import { createOwl } from "./owl.js";
+import { seeThrough, updateSeeThrough } from "./see-through.js";
 import { createFishing, createFishingGear, FISH_NEAR, FISH_LEAVE } from "./fishing.js";
 import { createCat, CATS, CAT_NEAR, CAT_SIT_MS, CAT_RIDE_MS, PHRASES as CAT_PHRASES, RIDE_PHRASES as CAT_RIDE_PHRASES } from "./cat.js";
 import { CAROUSEL, carouselSeat, createCarousel, inClearing, isCarouselSeat, onCarousel } from "./carousel.js";
@@ -356,6 +357,7 @@ function prepareTown(fbx) {
     placeCapyWalk();
     placeOwl();
     mergeTown(fbx);
+    seeThrough(scene);
     markLampShadowsStale(); // the town, the lamps and everything around them just took their places
     buildCatNavGrid();
 }
@@ -740,6 +742,8 @@ const benchBoxes = [];
 // ends, the same iron as the lamp posts.
 const woodLight = new THREE.MeshLambertMaterial({ color: "#b07a45", flatShading: true });
 const woodDark = new THREE.MeshLambertMaterial({ color: "#8a5a34", flatShading: true });
+const benchIron = ironMaterial.clone();
+for (const m of [woodLight, woodDark, benchIron]) m.userData.noSeeThrough = true;
 function createBench(x, y, z, face) {
   const g = new THREE.Group();
   const part = (mat, w, h, d, px, py, pz, tilt = 0) => {
@@ -752,10 +756,10 @@ function createBench(x, y, z, face) {
   // local front is +z. Iron ends: front leg, back leg rising into the backrest,
   // rail under the seat, armrest on top
   for (const sx of [-2.15, 2.15]) {
-    part(ironMaterial, 0.22, 1.45, 0.22, sx, 0.72, 0.55);
-    part(ironMaterial, 0.22, 2.75, 0.22, sx, 1.37, -0.68, -0.08);
-    part(ironMaterial, 0.2, 0.18, 1.45, sx, 1.33, -0.05);
-    part(ironMaterial, 0.26, 0.16, 1.2, sx, 2.15, 0.05);
+    part(benchIron, 0.22, 1.45, 0.22, sx, 0.72, 0.55);
+    part(benchIron, 0.22, 2.75, 0.22, sx, 1.37, -0.68, -0.08);
+    part(benchIron, 0.2, 0.18, 1.45, sx, 1.33, -0.05);
+    part(benchIron, 0.26, 0.16, 1.2, sx, 2.15, 0.05);
   }
   // seat: three slats with gaps, alternating tones (top at ~1.6, where a sitter's hips go)
   [0.5, 0, -0.5].forEach((sz, i) =>
@@ -1420,6 +1424,7 @@ function prepareWet() {
       return swapped.get(m);
     };
     o.material = Array.isArray(o.material) ? o.material.map(swap) : swap(o.material);
+    seeThrough(o);
   }
   applyWet();
 }
@@ -2678,6 +2683,7 @@ function useFeetDepth(mesh, feet = new THREE.Vector3(), order = 10) {
   mesh.renderOrder = order;
   mesh.material.depthTest = true;
   mesh.material.depthWrite = true;
+  mesh.material.userData.noSeeThrough = true;
   mesh.material.onBeforeCompile = (shader) => {
     shader.uniforms.uFeet = uFeet;
     shader.vertexShader = shader.vertexShader
@@ -4665,6 +4671,8 @@ function loop() {
   sprite.castShadow = !riding;
   const movers = [...others.values()].filter((o) => !isRideSeat(o.seat)).map((o) => o.mesh);
   updateLampShadows([...(riding ? [] : [sprite]), capy.mesh, owl.mesh, ...cats.map((c) => c.mesh), ...movers]);
+  camera.updateMatrixWorld();
+  updateSeeThrough(camera, renderer, { x: sprite.position.x, y: pos.y, z: sprite.position.z });
   renderer.render(scene, camera);
   updateNameTags();
   updateBubbles();
