@@ -12,7 +12,7 @@ import { createFishing, createFishingGear, FISH_NEAR, FISH_LEAVE } from "./fishi
 import { createCat, CATS, CAT_NEAR, CAT_SIT_MS, CAT_RIDE_MS, PHRASES as CAT_PHRASES, RIDE_PHRASES as CAT_RIDE_PHRASES } from "./cat.js";
 import { CAROUSEL, carouselSeat, createCarousel, inClearing, isCarouselSeat, onCarousel } from "./carousel.js";
 import { WHEEL, wheelSeat, createFerrisWheel, inWheelClearing, isWheelSeat, onWheel } from "./ferris-wheel.js";
-import { COASTER, coasterSeat, coasterCycle, coasterRiding, coasterBoardLeft, coasterBackIn, createCoaster, inCoasterClearing, isCoasterSeat, onCoaster } from "./roller-coaster.js";
+import { COASTER, coasterSeat, coasterCycle, coasterRiding, coasterCountdown, createCoaster, inCoasterClearing, isCoasterSeat, onCoaster } from "./roller-coaster.js";
 
 // ---- Asset config (change here to use other files) ----
 const TOWN = {
@@ -377,7 +377,7 @@ function clearFairGround(root) {
 }
 const carousel = createCarousel();
 const wheel = createFerrisWheel();
-const coaster = createCoaster();
+const coaster = createCoaster({ lamps: !MOBILE }); // phones: only the trains' headlights
 let fairPlaced = false;
 function placeFair() {
   carousel.root.position.y = groundHeight(CAROUSEL.x, CAROUSEL.z);
@@ -390,7 +390,7 @@ function placeFair() {
 // the seats on a ride: their spot comes from the clock, they need no message while it turns
 const isRideSeat = (id) => isCarouselSeat(id) || isWheelSeat(id) || isCoasterSeat(id);
 // on the roller coaster while it is out on the track: no getting off until it is back at the station
-const strappedIn = () => isCoasterSeat(mySeat) && coasterRiding(roomNow());
+const strappedIn = () => isCoasterSeat(mySeat) && coasterRiding(roomNow(), mySeat);
 // solid ground of the rides, for everything that walks (you, the others' placement searches, the cats)
 const onRide = (x, z, r) => onCarousel(x, z, r) || onWheel(x, z, r) || onCoaster(x, z, r);
 
@@ -705,8 +705,8 @@ const lampPosts = LAMP_POSTS.map(([x, z]) => createLampPost(x, z));
 const FAIR_POSTS = [
   [-27, 31, CAROUSEL],
   [-11, 46, CAROUSEL],
-  [27, 31, WHEEL],
-  [11, 46, WHEEL],
+  [27, 43.5, WHEEL], // south-east of the wheel, clear of the roller coaster
+  [16, 45, WHEEL], // south-west of the wheel, clear of the roller coaster
 ];
 const fairPosts = FAIR_POSTS.map(([x, z, ride]) => {
   const p = createLampPost(x, z);
@@ -2763,6 +2763,28 @@ const elStick = Object.assign(document.createElement("div"), { id: "stick" });
 elStick.append(Object.assign(document.createElement("div"), { className: "knob" }));
 document.body.append(elStick);
 const canvasEl = renderer.domElement;
+// first person: drag with the mouse to look around
+canvasEl.addEventListener("pointerdown", (e) => {
+  if (e.pointerType === "touch" || e.button !== 0 || !firstPerson() || gamePaused) return;
+  look.dragId = e.pointerId;
+  look.x = e.clientX;
+  look.y = e.clientY;
+  canvasEl.setPointerCapture(e.pointerId);
+});
+canvasEl.addEventListener("pointermove", (e) => {
+  if (e.pointerId !== look.dragId) return;
+  const dYaw = -(e.clientX - look.x) * LOOK_DRAG,
+    dPitch = -(e.clientY - look.y) * LOOK_DRAG;
+  if (isCoasterSeat(mySeat)) turnHead(dYaw, dPitch);
+  else (headingYaw += dYaw), (look.pitch = THREE.MathUtils.clamp(look.pitch + dPitch, -LOOK_PITCH_MAX, LOOK_PITCH_MAX));
+  look.x = e.clientX;
+  look.y = e.clientY;
+});
+const endLook = (e) => {
+  if (e.pointerId === look.dragId) look.dragId = null;
+};
+canvasEl.addEventListener("pointerup", endLook);
+canvasEl.addEventListener("pointercancel", endLook);
 canvasEl.addEventListener("pointerdown", (e) => {
   if (e.pointerType !== "touch" || stick.id !== null || gamePaused) return;
   document.activeElement?.blur?.(); // close the keyboard
@@ -2796,6 +2818,102 @@ const releaseStick = (e) => {
 };
 canvasEl.addEventListener("pointerup", releaseStick);
 canvasEl.addEventListener("pointercancel", releaseStick);
+// ---- First person ----
+// V (or the eye button in the top card) switches the camera between the town's view, far above, and
+// your own eyes. Each place keeps its own choice (remembered): walking about the town starts in the
+// town's view, the roller coaster in first person.
+//  - Walking: drag the mouse to turn; W/S walk the way you look, A/D step sideways. On a phone the
+//    stick drives like a tank: forward and back walk, left and right turn.
+//  - On the coaster: the camera sits in your seat, looks the way the car goes and turns with it (over
+//    the top in the loops). Drag to look around; while the train is out the move keys and the stick
+//    turn your head too, since you can't walk. Let go and the view eases back to the front.
+const viewPref = { town: false, coaster: true };
+try {
+  viewPref.town = localStorage.getItem("view") === "first";
+  viewPref.coaster = localStorage.getItem("coaster-view") !== "third";
+} catch {}
+const viewPlace = () => (isCoasterSeat(mySeat) ? "coaster" : "town");
+let headingYaw = 0; // the way you face when walking in first person (0 = north, like the town's camera)
+const YAW_OF = { up: 0, left: Math.PI / 2, down: Math.PI, right: -Math.PI / 2 };
+function toggleView() {
+  const place = viewPlace();
+  viewPref[place] = !viewPref[place];
+  if (place === "town" && viewPref.town) (headingYaw = YAW_OF[dir] ?? 0), (look.pitch = 0); // look the way your trainer faced
+  try {
+    localStorage.setItem(place === "town" ? "view" : "coaster-view", viewPref[place] ? "first" : "third");
+  } catch {}
+}
+addEventListener("keydown", (e) => {
+  const typing = ["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName);
+  if (typing || e.repeat || e.ctrlKey || e.metaKey || e.altKey || e.key.toLowerCase() !== "v" || gamePaused) return;
+  toggleView();
+});
+const viewBtn = document.querySelector("#view");
+viewBtn?.addEventListener("click", (e) => {
+  toggleView();
+  e.currentTarget.blur(); // give the keyboard back to the game
+});
+const look = { yaw: 0, pitch: 0, dragId: null, x: 0, y: 0, idle: 0 };
+const LOOK_YAW_MAX = 2.6; // about 150 degrees to each side
+const LOOK_PITCH_MAX = 1.2;
+const LOOK_DRAG = 0.005; // radians per pixel dragged
+const LOOK_RATE = 2.2; // radians per second with the keys or the stick at full
+const turnHead = (dYaw, dPitch) => {
+  look.yaw = THREE.MathUtils.clamp(look.yaw + dYaw, -LOOK_YAW_MAX, LOOK_YAW_MAX);
+  look.pitch = THREE.MathUtils.clamp(look.pitch + dPitch, -LOOK_PITCH_MAX, LOOK_PITCH_MAX);
+  look.idle = 0;
+};
+const FP_FOV = 75; // wide, like a pair of eyes; the town's camera is 30 from far away
+const TOWN_FOV = 30;
+const _fpBasis = new THREE.Matrix4();
+const _fpRight = new THREE.Vector3();
+const _fpUp = new THREE.Vector3();
+const _fpFwd = new THREE.Vector3();
+const _fpTurn = new THREE.Quaternion();
+const _fpAxis = new THREE.Vector3();
+/** puts the camera in your seat on the coaster, looking the way the car goes plus where you turned your head */
+function placeFirstPersonCamera(seat, dt) {
+  _fpUp.fromArray(seat.up);
+  _fpFwd.fromArray(seat.fwd);
+  _fpRight.crossVectors(_fpFwd, _fpUp).normalize();
+  camera.position.set(seat.x, seat.y, seat.z).addScaledVector(_fpUp, 1.4); // the eyes, over the seat
+  _fpBasis.makeBasis(_fpRight, _fpUp, _fpFwd.clone().negate()); // a camera looks down its -z
+  camera.quaternion.setFromRotationMatrix(_fpBasis);
+  // nobody touching it for a moment: the view eases back to the front
+  look.idle += dt;
+  if (look.dragId === null && look.idle > 1.2) {
+    const k = Math.exp(-dt * 2.5);
+    look.yaw *= k;
+    look.pitch *= k;
+  }
+  camera.quaternion.multiply(_fpTurn.setFromAxisAngle(_fpAxis.set(0, 1, 0), look.yaw));
+  camera.quaternion.multiply(_fpTurn.setFromAxisAngle(_fpAxis.set(1, 0, 0), look.pitch));
+}
+// first person is on where you are (the town, or the coaster)
+const firstPerson = () => fairPlaced && viewPref[viewPlace()];
+const EYES = 4.2; // over the feet: a trainer is about 5 tall
+const _fpEuler = new THREE.Euler(0, 0, 0, "YXZ");
+/** puts the camera at your eyes when you walk (or sit off the coaster) in first person */
+function placeWalkCamera() {
+  camera.position.set(pos.x + slide.x, pos.y + EYES, pos.z + slide.z);
+  camera.quaternion.setFromEuler(_fpEuler.set(look.pitch, headingYaw, 0));
+}
+// Billboards (trainers, cats, the capybara, the owl) face the town's camera tilted halfway, as
+// always. In first person the camera can look anywhere, so they turn to face it fully instead.
+// `roll` turns a rider on a ride with their car (on the coaster, over the top in the loops).
+function faceCamera(obj, roll = 0) {
+  if (firstPerson()) obj.quaternion.copy(camera.quaternion);
+  else obj.rotation.set(camera.rotation.x * 0.5, 0, roll);
+}
+const _rollUp = new THREE.Vector3();
+const _camInv = new THREE.Quaternion();
+/** how far a rider's car is turned as the town's camera sees it (radians), from the seat's up */
+function rollOf(seat) {
+  if (!seat?.up || firstPerson()) return 0;
+  _rollUp.fromArray(seat.up).applyQuaternion(_camInv.copy(camera.quaternion).invert());
+  return Math.atan2(-_rollUp.x, _rollUp.y);
+}
+
 const pos = new THREE.Vector3(0, 0, 0);
 // sitting or standing moves you at once; the sprite and camera glide over from where you were
 const slide = { x: 0, z: 0 };
@@ -3092,7 +3210,7 @@ function sit(id) {
   if (!s) return;
   setGround(false);
   mySeat = id;
-  if (isCoasterSeat(id)) myRide = coasterCycle(roomNow()); // the ride you board: off when the next cycle begins
+  if (isCoasterSeat(id)) myRide = coasterCycle(roomNow(), id); // the ride you board: off when your train's next cycle begins
   const [ox, oz] = [pos.x, pos.z];
   pos.set(s.x, s.y, s.z);
   glideFrom(ox, oz);
@@ -3178,7 +3296,7 @@ function getOffCoaster(notify) {
 // The ride is over once its cycle is: everyone gets off at the station, so the next riders can board.
 // Checked every frame, and every second too, since a tab in the background draws no frames
 function leaveFinishedRide() {
-  if (isCoasterSeat(mySeat) && coasterCycle(roomNow()) > myRide) standUp();
+  if (isCoasterSeat(mySeat) && coasterCycle(roomNow(), mySeat) > myRide) standUp();
 }
 setInterval(leaveFinishedRide, 1000);
 // Off a gondola: onto the grass in front of the wheel, below where it is (from up high too: the
@@ -3716,7 +3834,10 @@ function updateOthers(dt) {
       o.target.set(seat.x, 0, seat.z);
     } else m.position.y = topHeight(m.position.x, m.position.z);
     m.castShadow = !isRideSeat(o.seat); // see the loop: riders cast no shadow
-    m.rotation.copy(sprite.rotation);
+    faceCamera(m, rollOf(seat)); // a rider turns with their car
+    m.userData.up = seat?.up || null;
+    // in first person on the coaster, the riders of your own train would sit in front of your eyes
+    m.visible = !(seat?.train !== undefined && firstPerson() && isCoasterSeat(mySeat) && seat.train === seatSpot(mySeat)?.train);
     // running uses the run frames of the same sheet, like your own trainer (not on the code-drawn fallback)
     const running = o.run && !seat && o.cfg === CROP[o.gender];
     // on the ground, facing the way they stood (walking or a bench gets them up)
@@ -3933,10 +4054,12 @@ function updateNameTags() {
   for (const [mesh, el] of nameTags) {
     if (!mesh.parent) { el.remove(); nameTags.delete(mesh); continue; }
     const baseY = mesh === sprite ? pos.y : mesh.position.y + (mesh.userData.lift || 0);
-    _v.set(mesh.position.x, baseY + mesh.scale.y * 0.92 + headCatLift(mesh), mesh.position.z).project(camera);
+    const up = mesh.userData.up; // a rider: over the head the way the car is turned
+    if (up) _v.set(mesh.position.x, mesh.position.y, mesh.position.z).addScaledVector(_rollUp.fromArray(up), mesh.scale.y * 0.92).project(camera);
+    else _v.set(mesh.position.x, baseY + mesh.scale.y * 0.92 + headCatLift(mesh), mesh.position.z).project(camera);
     el.style.left = `${(_v.x * 0.5 + 0.5) * innerWidth}px`;
     el.style.top = `${(-_v.y * 0.5 + 0.5) * innerHeight}px`;
-    el.style.display = _v.z < 1 ? "" : "none";
+    el.style.display = _v.z < 1 && mesh.visible && !(mesh === sprite && firstPerson()) ? "" : "none";
   }
 }
 
@@ -3948,17 +4071,32 @@ sitPrompt.addEventListener("click", (e) => {
   e.currentTarget.blur(); // give the keyboard back to the game
 });
 // The roller coaster's countdown over its station, for whoever is near it or riding: the seconds left
-// to board while the train waits, then the seconds until it is back
+// to board the train that waits there, or until the next one comes in
 const coasterSign = document.querySelector("#coaster-sign");
 const COASTER_SIGN_NEAR = 18;
 const COASTER_SIGN_AT = { x: (COASTER.station.x0 + COASTER.station.x1) / 2, z: COASTER.station.z1 };
+// While you ride the roller coaster, a note at the bottom of the screen says how to switch the view
+// (and the eye button glows), since first person is new to most players
+const rideHint = document.querySelector("#ride-hint");
+const [rideHintKey, rideHintTap] = rideHint.children;
+function updateRideHint() {
+  const riding = isCoasterSeat(mySeat) && !gamePaused;
+  rideHint.hidden = !riding;
+  viewBtn?.classList.toggle("hint", riding);
+  if (!riding) return;
+  const fp = firstPerson();
+  const key = fp ? "<kbd>V</kbd> town view · drag to look around" : "<kbd>V</kbd> first person: see from your seat";
+  const tap = fp ? "tap 👁 for the town view · drag to look around" : "tap 👁 to see from your seat";
+  if (rideHintKey.innerHTML !== key) rideHintKey.innerHTML = key;
+  if (rideHintTap.textContent !== tap) rideHintTap.textContent = tap;
+}
 function updateCoasterSign() {
   const near = Math.hypot(pos.x - COASTER_SIGN_AT.x, pos.z - COASTER_SIGN_AT.z) < COASTER_SIGN_NEAR || isCoasterSeat(mySeat);
   const now = roomNow();
-  const board = coasterBoardLeft(now);
+  const { board, next } = coasterCountdown(now);
   coasterSign.hidden = !fairPlaced || gamePaused || !near;
   if (coasterSign.hidden) return;
-  const html = board ? `all aboard! leaves in <b>${board}s</b>` : `back at the station in <b>${coasterBackIn(now) || 1}s</b>`;
+  const html = board ? `all aboard! leaves in <b>${board}s</b>` : `next train in <b>${next || 1}s</b>`;
   if (coasterSign.innerHTML !== html) coasterSign.innerHTML = html;
   coasterSign.classList.toggle("go", !!board);
   _v.set(COASTER_SIGN_AT.x, coaster.root.position.y + 7.4, COASTER_SIGN_AT.z).project(camera); // over the garland
@@ -4268,7 +4406,7 @@ function updateCapy() {
   const t = roomNow();
   walkCapy(t);
   capy.update(t);
-  capy.mesh.rotation.set(camera.rotation.x * 0.5, 0, 0); // faces the camera like the trainers
+  faceCamera(capy.mesh); // faces the camera like the trainers
   const show = eNow === "capy" && !bubbles.has(capy.mesh);
   capyPrompt.classList.toggle("on", show);
   if (!show) return;
@@ -4374,7 +4512,7 @@ function updateCats() {
   for (const cat of cats) {
     walkCat(cat, t);
     cat.sprite.update(t);
-    cat.mesh.rotation.set(camera.rotation.x * 0.5, 0, 0);
+    faceCamera(cat.mesh);
   }
   const active = nearCat();
   const show = eNow === "cat" && !!active && !bubbles.has(active.mesh);
@@ -4600,8 +4738,23 @@ function loop() {
     dz = 0;
   }
   const run = keys.shift || stick.mag > 0.9;
+  if (firstPerson() && !isCoasterSeat(mySeat) && (dx || dz)) {
+    let ix = dx,
+      iz = dz; // right, and back
+    if (stick.x || stick.z) (headingYaw -= stick.x * LOOK_RATE * dt), (ix = 0); // a tank: sideways turns
+    const sn = Math.sin(headingYaw),
+      cs = Math.cos(headingYaw);
+    dx = cs * ix + sn * iz;
+    dz = -sn * ix + cs * iz;
+    if (Math.abs(dx) < 1e-3 && Math.abs(dz) < 1e-3) dx = dz = 0;
+    else dir = Math.abs(dx) > Math.abs(dz) ? (dx > 0 ? "right" : "left") : dz > 0 ? "down" : "up"; // what the others see
+  }
   leaveFinishedRide();
-  if (strappedIn()) (dx = 0), (dz = 0); // the move keys do nothing while the sleigh is out
+  if (strappedIn()) {
+    // no walking off a moving train: in first person the move keys and the stick turn your head
+    if (firstPerson() && (dx || dz)) turnHead(-dx * LOOK_RATE * dt, -dz * LOOK_RATE * dt);
+    (dx = 0), (dz = 0);
+  }
   if (mySeat >= 0 && (dx || dz)) standUp(true, [dx, dz]); // any move key gets you up, off that way
   const riding = isRideSeat(mySeat);
   if (riding) {
@@ -4646,18 +4799,33 @@ function loop() {
   sprite.position.set(pos.x + slide.x, pos.y, pos.z + slide.z);
   if (running && GENDER === "male") sprite.position.y -= 0.8;
   shadow.position.set(pos.x + slide.x, pos.y + 0.05, pos.z + slide.z);
-  shadow.visible = mySeat < 0; // would float under the hanging feet
-  camera.position.set(pos.x + slide.x, pos.y + 38, pos.z + 42 + slide.z);
-  camera.lookAt(pos.x + slide.x, pos.y + 1, pos.z + slide.z);
+  shadow.visible = mySeat < 0 && !firstPerson(); // would float under the hanging feet; in first person you are the camera
+  const fp = firstPerson();
+  if (camera.fov !== (fp ? FP_FOV : TOWN_FOV)) (camera.fov = fp ? FP_FOV : TOWN_FOV), camera.updateProjectionMatrix();
+  if (fp && isCoasterSeat(mySeat)) placeFirstPersonCamera(seatSpot(mySeat), dt);
+  else if (fp) placeWalkCamera();
+  else {
+    camera.position.set(pos.x + slide.x, pos.y + 38, pos.z + 42 + slide.z);
+    camera.lookAt(pos.x + slide.x, pos.y + 1, pos.z + slide.z);
+    look.yaw = look.pitch = 0;
+    look.dragId = null;
+  }
+  if (fp && !isCoasterSeat(mySeat)) look.yaw = 0; // walking turns you, not just your head
+  viewBtn?.classList.toggle("on", fp);
+  viewBtn?.setAttribute("aria-label", fp ? "town view" : "first person");
+  sprite.visible = !fp; // in first person you are the camera: no trainer in front of your eyes
   updateCapy();
   owl.update(performance.now(), pos);
-  owl.mesh.rotation.set(camera.rotation.x * 0.5, 0, 0); // faces the camera like the trainers
+  faceCamera(owl.mesh); // faces the camera like the trainers
   updateFishing();
   updateCats();
   updateOcclusion();
-  // facing the camera, tilted only halfway (the shadow looks like a standing body)
-  sprite.rotation.set(camera.rotation.x * 0.5, 0, 0);
-  showHeld(myHeld, sprite, CHARACTER.cfg, myHold, grounded ? null : heldDir(myHold, mySeat >= 0 ? seatSpot(mySeat) : null, !walking, dir));
+  // facing the camera, tilted only halfway (the shadow looks like a standing body); on a ride, turned with the car
+  const mySpot = mySeat >= 0 ? seatSpot(mySeat) : null;
+  faceCamera(sprite, rollOf(mySpot));
+  sprite.userData.up = mySpot?.up || null;
+  showHeld(myHeld, sprite, CHARACTER.cfg, myHold, grounded ? null : heldDir(myHold, mySpot, !walking, dir));
+  if (fp) myHeld.visible = false;
 
   carousel.update(roomNow(), dayAmount);
   wheel.update(roomNow(), dayAmount);
@@ -4672,6 +4840,7 @@ function loop() {
   updateBubbles();
   updateSitPrompt(eNow === "sit" ? freeSeat : -1);
   updateCoasterSign();
+  updateRideHint();
   updateWallPrompt();
   updateStonePrompt();
   requestAnimationFrame(loop);
