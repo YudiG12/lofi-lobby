@@ -5,6 +5,7 @@ import { connectRadioToServer, receiveCommand } from "./radio.js";
 import { setupSocial } from "./social.js";
 import { createBoard, setupWall } from "./board.js";
 import { createStones } from "./stones.js";
+import { createJumpingFish } from "./fish.js";
 import { addSitFrames, sitFramePos } from "./ground-sit.js";
 import { createCapybara, CAPY_NEAR, CAPY_RADIUS, PHRASES as CAPY_PHRASES } from "./capybara.js";
 import { SCENES, HOME, isScene, portalAt } from "./scenes.js";
@@ -4315,6 +4316,7 @@ function updateCapy() {
 // You plan the throw (where the stone touches the water), see it at once, and the room sends it to
 // everyone; others animate the same path from your hand (src/stones.js).
 const stones = createStones(scene, { surfaceY: (x, z) => topHeight(x, z), camera });
+const fish = createJumpingFish(scene, { camera, hash: catHash, waterY, splash: stones.splash });
 const STONE_NEAR = 4.5; // how close to the pond you must be
 const STONE_EVERY_MS = 1200;
 let lastStone = 0;
@@ -4813,6 +4815,7 @@ function loop() {
   updateTimeOfDay(dt);
   updateRain(dt);
   stones.update(dt);
+  if (pondBox) fish.update(roomNow(), pondBox);
   updateFireflies();
   let dx = 0,
     dz = 0;

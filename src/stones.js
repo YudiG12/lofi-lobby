@@ -174,5 +174,10 @@ export function createStones(scene, { surfaceY, camera }) {
       }
     }
   }
-  return { launch, update };
+  // rings and drops on the water without a stone (a fish leaving or falling back in)
+  function splash(x, y, z, big) {
+    ripple(x, y, z, big);
+    drops(x, y, z, big ? 10 : 5, big ? 0.8 : 0.5);
+  }
+  return { launch, update, splash };
 }
