@@ -13,6 +13,7 @@
 //                     { t: "github-poll" }   (has the player typed the code yet?)
 //                     { t: "github", session }   (on reconnect: the session a login gave this browser)
 //                     { t: "github-out" }   (forget that session)
+//                     accounts, profiles, friends and private chat: see worker/social.js
 //                     { t: "radio", idx, password }   (admin)
 //                     { t: "auth", password, quiet }   (admin login: admin-ok or an error; quiet = on reconnect, no admin-ok)
 //                     { t: "who", id, password }   (admin: who is this player)
@@ -37,6 +38,8 @@
 //                                                               Only the server starts rides. Also sent on join, without phrase)
 //                     { t: "github-code", code, url, every, until }   (type code at url; ask again every `every` seconds)
 //                     { t: "github-ok", session, login, prs } | { t: "github-fail", msg } | { t: "github-out" }
+//                     { t: "account", ... } | { t: "acct", id, n } | { t: "profile", ... } | { t: "friends", ... } | { t: "dm", ... }
+//                                                 (accounts, friends and private chat: worker/social.js; players and chat also carry n)
 //                     { t: "contrib", id, prs }   (that player is a contributor with prs merged pull requests;
 //                                                  players and chat also carry prs)
 //                     { t: "history", messages: [{ id, name, text, at }] } (on join)
@@ -135,7 +138,9 @@ const NOTE_ID = /^note:\d{15}-[a-z0-9]{6}$/;
 const AFTER_EVERY_NOTE = "note:999999999999999-zzzzzz"; // a cursor above every note id
 const topKey = (likes, id) => `top:${String(likes).padStart(6, "0")}:${id}`;
 // rate buckets: capacity, refill per second
-const RATES = { pos: [30, 20], chat: [8, 1], sit: [20, 6], like: [30, 0.5], github: [4, 1 / 30], other: [10, 1] };
+const RATES = { pos: [30, 20], chat: [8, 1], sit: [20, 6], like: [30, 0.5], github: [4, 1 / 30], social: [20, 2], other: [10, 1] };
+// accounts, profiles, friends and private chat (worker/social.js); a private message spends the chat budget
+const SOCIAL = ["profile", "friend", "friends", "bio", "dm-open", "dm-read", "chat-invite", "chat-accept"];
 // contributors: a player proves their GitHub login (OAuth device flow, GITHUB_CLIENT_ID) and the room counts
 // their merged pull requests in GITHUB_REPO. GitHub's token is used once and never kept: the browser gets a
 // random session of the room's own, stored here only as a hash.
@@ -165,6 +170,8 @@ function safeClose(ws, code = 1000, reason = "") {
 
 import { badName, cleanChat, hasLink, normalize } from "./moderation.js";
 import { renamedNotes, wallName } from "./notes.js";
+import { installSocial } from "./social.js";
+import { Accounts, primaryEmail } from "./accounts.js";
 
 const DIRS = ["down", "up", "left", "right"];
 const cleanText = (s, max) =>
@@ -266,6 +273,8 @@ export class Room {
     this.leftSockets = new WeakSet();
     this.ghBusy = new Set(); // player ids with a GitHub call in flight
     this.ghTriedAt = 0; // last read of the pull requests, good or bad
+    // accounts and sessions, in D1; the repository's owner is account 0
+    this.accounts = new Accounts(env.DB, state.storage, String(env.GITHUB_REPO || "").split("/")[0].toLowerCase());
     this.state.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
   }
 
@@ -501,7 +510,8 @@ export class Room {
     if (!Array.isArray(ids)) {
       ids = [];
       for (const [id, note] of await this.state.storage.list({ prefix: "note:" })) if (note?.owner === owner) ids.push(id);
-      await this.state.storage.put(key, ids);
+      // only a key that has notes gets a list: a made-up key must not leave anything in the room's storage
+      if (ids.length) await this.state.storage.put(key, ids);
     }
     return ids;
   }
@@ -629,7 +639,7 @@ export class Room {
 
   // only each player's public fields (never the IP)
   public(p) {
-    return { id: p.id, name: p.name, gender: p.gender, color: p.color || "", cap: p.cap ?? -1, x: p.x, z: p.z, dir: p.dir, step: p.step, seat: p.seat ?? -1, hold: p.hold | 0, ground: !!p.ground, fish: p.fish || null, admin: !!p.admin, prs: p.prs | 0 };
+    return { id: p.id, name: p.name, gender: p.gender, color: p.color || "", cap: p.cap ?? -1, x: p.x, z: p.z, dir: p.dir, step: p.step, seat: p.seat ?? -1, hold: p.hold | 0, ground: !!p.ground, fish: p.fish || null, admin: !!p.admin, prs: p.prs | 0, n: p.acct ?? -1 };
   }
   players() {
     return this.openSockets()
@@ -670,7 +680,7 @@ export class Room {
     const p = ws.deserializeAttachment();
     if (!p) return;
     if (!p.joinedAt && m.t !== "hello") return;
-    const type = m.t === "pos" ? "pos" : m.t === "chat" ? "chat" : m.t === "sit" ? "sit" : m.t === "github-start" ? "github" : "other";
+    const type = m.t === "pos" ? "pos" : m.t === "chat" || m.t === "dm" ? "chat" : m.t === "sit" ? "sit" : m.t === "github-start" ? "github" : SOCIAL.includes(m.t) ? "social" : "other";
     // the seat the room really has for this player, tagged with the request it answers
     const seatReply = () => ws.send(JSON.stringify({ t: "seat", id: p.id, seat: p.seat ?? -1, n: Number.isSafeInteger(m.n) ? m.n : 0 }));
     if (!this.allowed(p, type)) {
@@ -704,15 +714,18 @@ export class Room {
       p.cap = cap(m.cap);
       ws.serializeAttachment(p);
       this.broadcast({ t: "gender", id: p.id, gender: p.gender, cap: p.cap }, ws);
+      await this.saveLook(p);
     } else if (m.t === "color") {
       p.color = nameColor(m.color);
       ws.serializeAttachment(p);
       this.broadcast({ t: "color", id: p.id, color: p.color }, ws);
+      await this.saveLook(p);
     } else if (m.t === "name") {
       p.name = this.nameFor(ws, m.name);
       ws.serializeAttachment(p);
       this.broadcast({ t: "name", id: p.id, name: p.name }, ws);
       await this.rememberName(p);
+      await this.saveLook(p);
     } else if (m.t === "pos") {
       p.x = number(m.x);
       p.z = number(m.z);
@@ -790,8 +803,12 @@ export class Room {
     } else if (m.t === "github") {
       await this.githubResume(ws, m.session);
     } else if (m.t === "github-out") {
-      if (typeof m.session === "string" && GH_SESSION.test(m.session)) await this.state.storage.delete(await sessionKey(m.session));
-      this.setContributor(ws, "");
+      if (typeof m.session === "string" && GH_SESSION.test(m.session)) {
+        try { await this.accounts.closeSession(await sessionKey(m.session)); } catch {}
+      }
+      await this.setContributor(ws, null);
+    } else if (m.t === "dm" || SOCIAL.includes(m.t)) {
+      await this.socialMessage(ws, p, m);
     } else if (m.t === "auth") {
       if (!(await this.isAdmin(ws, p, m.password))) return;
       // everyone sees who the admin is (badge over the name, colour in the chat)
@@ -827,7 +844,7 @@ export class Room {
       if (s.repeats > REPEAT_LIMIT) return this.strike(ws, p.ip);
       s.lastText = text;
       s.lastAt = now;
-      const msg = { id: p.id, name: p.name, text, at: now, ...(p.color && { color: p.color }), ...(p.admin && { admin: true }), ...(p.prs > 0 && { prs: p.prs }) };
+      const msg = { id: p.id, name: p.name, text, at: now, ...(p.color && { color: p.color }), ...(p.admin && { admin: true }), ...(p.prs > 0 && { prs: p.prs }), ...(p.acct != null && { n: p.acct }) };
       this.broadcast({ t: "chat", ...msg });
       this.stat("chat", p);
       await this.saveHistory([...(await this.history()), msg]);
@@ -839,7 +856,7 @@ export class Room {
   async githubStart(ws) {
     const fail = (msg) => ws.send(JSON.stringify({ t: "github-fail", msg }));
     const id = ws.deserializeAttachment()?.id;
-    if (!this.env.GITHUB_CLIENT_ID) return fail("github login is not set up on this server");
+    if (!this.env.GITHUB_CLIENT_ID || !this.accounts.on) return fail("github login is not set up on this server");
     if (!id || this.ghBusy.has(id)) return;
     this.ghBusy.add(id);
     let r = null;
@@ -847,7 +864,8 @@ export class Room {
       const res = await fetch(GH_WEB + "/login/device/code", {
         method: "POST",
         headers: { ...GH_HEADERS, "Content-Type": "application/json" },
-        body: JSON.stringify({ client_id: this.env.GITHUB_CLIENT_ID }),
+        // user:email: the account keeps the player's verified e-mail (worker/accounts.js); nothing else is asked for
+        body: JSON.stringify({ client_id: this.env.GITHUB_CLIENT_ID, scope: "user:email" }),
       });
       r = await res.json();
     } catch {} finally { this.ghBusy.delete(id); }
@@ -889,11 +907,21 @@ export class Room {
       const user = await (await fetch(GH_API + "/user", { headers: auth })).json();
       const login = typeof user?.login === "string" ? user.login.toLowerCase() : "";
       if (!GH_LOGIN.test(login)) return end("github login failed, type /github again");
+      const githubId = Number.isSafeInteger(user.id) && user.id > 0 ? user.id : null;
+      let email = null;
+      try { email = primaryEmail(await (await fetch(GH_API + "/user/emails?per_page=100", { headers: auth })).json()); } catch {}
       await this.readContributors(auth);
+      // the account (made now, on a first login) and a session of the room's own for this browser
+      let account;
       const session = [...crypto.getRandomValues(new Uint8Array(24))].map((b) => b.toString(16).padStart(2, "0")).join("");
-      await this.state.storage.put(await sessionKey(session), { login, at: Date.now() });
+      try {
+        account = await this.accounts.signIn({ login, githubId, email });
+        await this.accounts.openSession(await sessionKey(session), account.n);
+      } catch {
+        return end("could not open your account, type /github again");
+      }
       end();
-      const prs = await this.setContributor(ws, login);
+      const prs = await this.setContributor(ws, account);
       ws.send(JSON.stringify({ t: "github-ok", session, login, prs }));
     } catch {
       // GitHub is slow or down: the player keeps asking until the code expires
@@ -903,21 +931,38 @@ export class Room {
   }
   // A browser that logged in before comes back with its session.
   async githubResume(ws, session) {
-    if (typeof session !== "string" || !GH_SESSION.test(session)) return;
-    const saved = await this.state.storage.get(await sessionKey(session));
-    if (!GH_LOGIN.test(saved?.login || "")) return void ws.send(JSON.stringify({ t: "github-out" }));
-    await this.setContributor(ws, saved.login);
+    if (typeof session !== "string" || !GH_SESSION.test(session) || !this.accounts.on) return;
+    let account;
+    try {
+      account = await this.accounts.session(await sessionKey(session));
+    } catch {
+      return; // the accounts database did not answer: a guest for now, the browser keeps its session
+    }
+    if (!account) return void ws.send(JSON.stringify({ t: "github-out" }));
+    await this.setContributor(ws, account);
   }
-  // Whose connection this is on GitHub ("" = nobody) and how many merged pull requests that is; everyone is told.
-  async setContributor(ws, login) {
+  // Whose connection this is: its account (worker/accounts.js; null = nobody) and how many merged pull
+  // requests its GitHub login has; everyone is told.
+  async setContributor(ws, account) {
+    const login = account?.login || "";
     const counts = login ? await this.contributors() : {};
     const p = ws.deserializeAttachment();
     if (!p || p.left) return 0;
     const before = p.prs | 0;
+    const was = p.acct ?? -1;
     p.gh = login;
     p.prs = Math.min(9999, counts[login] | 0);
+    if (account) p.acct = account.n;
+    else delete p.acct;
     ws.serializeAttachment(p);
     if (p.prs !== before) this.broadcast({ t: "contrib", id: p.id, prs: p.prs });
+    const now = p.acct ?? -1;
+    if (now !== was) {
+      this.broadcast({ t: "acct", id: p.id, n: now });
+      if (was >= 0) await this.presence(was, false);
+    }
+    if (account) await this.accountAttached(ws, account, now !== was);
+    else if (was >= 0) ws.send(JSON.stringify({ t: "account", n: -1 }));
     return p.prs;
   }
   // { login: merged pull requests }, from storage; read again from GitHub in the background when it gets old
@@ -1194,12 +1239,15 @@ export class Room {
       if (p.joinedAt) {
         this.broadcast({ t: "left", id: p.id }, ws);
         this.clearCatRideFor(p.id).catch(() => {});
+        if (p.acct != null) this.presence(p.acct, false).catch(() => {});
       }
     } else {
       safeClose(ws, code, reason);
     }
   }
 }
+
+installSocial(Room, { cleanText });
 
 export default {
   // once a day: archive yesterday's numbers in the room's storage (see Room.archive)
