@@ -67,6 +67,8 @@
 //   POST /api/notes { name, gender, text, color, key }  one per NOTE_EVERY_MS per IP, banned IPs refused,
 //                                                  same cleaning and word filter as names and chat, no links
 //   PATCH /api/notes/<id> { text, color, key }  the writer edits their note
+//   PATCH /api/notes/name { name, gender, key }  the writer changed their name: their notes take the new one
+//     ("owned:<owner hash>" lists the ids of each wall key's notes; built from a scan the first time)
 //   POST /api/notes/<id>/claim  the admin takes a note nobody owns (written before wall keys existed)
 //   DELETE /api/notes/<id>  the writer (X-Wall-Key header) or the admin (password in the Authorization header)
 // A note belongs to whoever holds its "wall key" (random, kept in the writer's browser; the note stores its hash).
@@ -167,6 +169,7 @@ function safeClose(ws, code = 1000, reason = "") {
 }
 
 import { badName, cleanChat, hasLink, normalize } from "./moderation.js";
+import { renamedNotes, wallName } from "./notes.js";
 import { installSocial } from "./social.js";
 import { Accounts, primaryEmail } from "./accounts.js";
 
@@ -374,8 +377,7 @@ export class Room {
       if (hasLink(raw)) return json({ error: "links are not allowed on the wall" }, 400);
       const text = cleanChat(raw, NOTE_MAX);
       if (text === null) return json({ error: "note blocked" }, 400);
-      let name = cleanText(m.name, 16) || "trainer";
-      if (badName(name) || /admin|moderador|moderator|staff/.test(normalize(name))) name = "trainer";
+      const name = wallName(m.name);
       const at = Date.now();
       const lastKey = "note-at:" + ip;
       const [ban, last, count] = await Promise.all([this.state.storage.get("ban:" + ip), this.state.storage.get(lastKey), this.noteCount()]);
@@ -386,8 +388,31 @@ export class Room {
       const note = { name, gender: gender(m.gender), text, at, color: NOTE_COLORS.includes(m.color) ? m.color : "cream", ...(owner && { owner }) };
       const id = `note:${String(at).padStart(15, "0")}-${crypto.randomUUID().replace(/-/g, "").slice(0, 6)}`;
       await this.state.storage.put({ [id]: note, [lastKey]: at, "note-count": count + 1 });
+      if (owner) await this.ownNote(owner, id, true);
       this.broadcast({ t: "note", note: shown(id, note), total: count + 1 });
       return json({ note: shown(id, note, owner), total: count + 1 });
+    }
+    // the writer changed their name: every note of their wall key is signed with the new one
+    if (req.method === "PATCH" && url.pathname === "/api/notes/name") {
+      const bytes = req.headers.get("Content-Length");
+      if (!bytes || !(Number(bytes) <= 1024)) return json({ error: "bad request" }, 413);
+      let m;
+      try { m = JSON.parse(await req.text()); } catch { return json({ error: "bad request" }, 400); }
+      const owner = await ownerOf(m?.key);
+      if (!owner) return json({ error: "bad request" }, 400);
+      const now = Date.now();
+      const wait = (this.noteEdits.get(ip) || 0) + NOTE_EDIT_EVERY_MS - now;
+      if (wait > 0) return json({ error: `wait ${Math.ceil(wait / 1000)} s to edit again` }, 429);
+      this.noteEdits.set(ip, now);
+      if ((await this.state.storage.get("ban:" + ip)) > now) return json({ error: "you are banned" }, 403);
+      const ids = await this.ownedNotes(owner);
+      if (!ids.length) return json({ renamed: 0 });
+      const notes = new Map();
+      for (let i = 0; i < ids.length; i += 128) for (const e of await this.state.storage.get(ids.slice(i, i + 128))) notes.set(...e);
+      const changed = [...renamedNotes(notes, owner, wallName(m.name), gender(m.gender))];
+      for (let i = 0; i < changed.length; i += 128) await this.state.storage.put(Object.fromEntries(changed.slice(i, i + 128)));
+      for (const [id, note] of changed) this.broadcast({ t: "note-edit", note: shown(id, note) });
+      return json({ renamed: changed.length });
     }
     // the writer edits their own note: same cleaning as a new one, and a short wait between edits
     if (req.method === "PATCH" && del) {
@@ -426,6 +451,7 @@ export class Room {
       if (!owner) return json({ error: "bad request" }, 400);
       if (note.owner) return json({ error: "this note already has an owner" }, 409);
       await this.state.storage.put(claim[1], { ...note, owner });
+      await this.ownNote(owner, claim[1], true);
       return json({ note: shown(claim[1], { ...note, owner }, owner) });
     }
     if (req.method === "DELETE" && del) {
@@ -440,6 +466,7 @@ export class Room {
       let total = await this.noteCount();
       if (await this.state.storage.delete(del[1])) await this.state.storage.put("note-count", (total = Math.max(0, total - 1)));
       await this.state.storage.delete(["likes:" + del[1], topKey(note?.likes | 0, del[1])]); // its likes go with it
+      if (note?.owner) await this.ownNote(note.owner, del[1], false);
       this.broadcast({ t: "note-del", id: del[1], total });
       return json({ ok: true });
     }
@@ -476,6 +503,23 @@ export class Room {
     return { page, next: cursor };
   }
   // how many notes the wall holds (kept beside them, so nobody has to list them all)
+  // the ids of one wall key's notes. Notes from before this list existed are found once, by reading the wall.
+  async ownedNotes(owner) {
+    const key = "owned:" + owner;
+    let ids = await this.state.storage.get(key);
+    if (!Array.isArray(ids)) {
+      ids = [];
+      for (const [id, note] of await this.state.storage.list({ prefix: "note:" })) if (note?.owner === owner) ids.push(id);
+      // only a key that has notes gets a list: a made-up key must not leave anything in the room's storage
+      if (ids.length) await this.state.storage.put(key, ids);
+    }
+    return ids;
+  }
+  async ownNote(owner, id, on) {
+    const ids = await this.ownedNotes(owner); // a first write also takes in the older notes
+    const next = on ? [...new Set([...ids, id])] : ids.filter((x) => x !== id);
+    if (next.length !== ids.length) await this.state.storage.put("owned:" + owner, next);
+  }
   async noteCount() {
     let n = await this.state.storage.get("note-count");
     if (n == null) await this.state.storage.put("note-count", (n = (await this.state.storage.list({ prefix: "note:" })).size));
