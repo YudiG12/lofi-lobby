@@ -25,7 +25,12 @@
 #fish-time button[type="submit"] { color: #1b1406; background: #ffc95a; border-color: #ffc95a; }
 #fish-time small { grid-column: 1 / -1; color: #9a9db0; font-size: 9px; }
 @media (pointer: coarse) { #fish-time small { display: none; } }
+#fish-time .catch-log { grid-column: 1 / -1; display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; padding-top: 6px; border-top: 1px solid rgba(255,255,255,.1); }
+#fish-time .catch-log canvas { display: block; width: 32px; height: 16px; image-rendering: pixelated; }
 
 #catch { display: flex; gap: 12px; align-items: center; padding: 10px 16px 10px 12px; }
 #catch canvas { display: block; image-rendering: pixelated; }
-#catch .txt { margin: 0; font-size: 11px; }
+#catch .info { display: flex; flex-direction: column; gap: 2px; }
+#catch .txt { margin: 0; font-size: 11px; display: flex; align-items: center; gap: 6px; }
+#catch .meta { color: #9a9db0; font-size: 9px; }
+#catch .new { color: #1b1406; background: #ffc95a; border-radius: 3px; padding: 1px 5px; font-size: 9px; line-height: 1.2; }

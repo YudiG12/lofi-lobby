@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- **Seven catches for the fishing pomodoro**: depending on focus length, day or night, rain and whether you are in town or at the Lago, you can reel in a pond perch, golden koi, moonfish, sunfish, rain catfish, lake trout or an old boot, with a local catch log in the minutes box.
 - **A second scene, the Lago**: walk off the top of the town, up the dirt path between the pines, and the screen dims and opens on a lake under a cliff, with two waterfalls fed by a river, a wooden pier, the notice board (the same wall) and a lamp post by its landing, benches along the path, picnic tables and a swing. Walk back down the path to return. Only one scene is drawn at a time; the town stays loaded, so coming back is instant. Built from the town's own pieces (its atlas tiles, pines, water, stone pond rim, benches, lamp post and board); only the waterfalls, round trees, cattails, tables and swing are new.
 - **Each scene has its own players, chat and seats**, and you come back to the scene you left. Your friends, private chats, the wall and the radio are the same in every scene: a friend in the town shows as online from the lake, and a private message reaches them there. Kicks, bans and the limits per connection cover every scene ([ADR 016](docs/adr/016-scenes-share-one-durable-object.md)).
 - **Fish and skip stones at the Lago too**: at the shore or the pier's edge, facing the water, **E** casts the line and **T** throws a stone, as at the town's pond. The stone goes the way you face, or toward the closest water.

@@ -4622,6 +4622,7 @@ const fishing = createFishing({
   camera,
   shape: (d) => bodyShape(sprite.material.map, CHARACTER.cfg, d),
   onChange: (target) => sendFish(target),
+  context: () => ({ scene: sceneId, night: dayAmount < 0.35, raining: rainAmount >= 0.35 }),
 });
 // tells the room your line is out (where the bobber is) or back in, so the others see it; the
 // timer stays yours. A function declaration: createFishing above may call it while it starts
