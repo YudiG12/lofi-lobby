@@ -73,6 +73,7 @@
 - A single room, `lobby`: `?room=` is gone and the server refuses other room names, so nobody can open extra rooms to run up the bill.
 
 ### Fixed
+- The coffee and the cigarette now stay in your hand while you sit on the ground (C), for you and for everyone who sees you.
 - **Wall notes follow your name**: changing your name in the game left your notes on the wall signed with the old one. They are signed again with the new name.
 - **The radio is the same for everyone again**: the second you hear came from the video's length as YouTube reported it, which changes a little from one load to the next (10,556 or 10,555.341 s); over the thousands of loops since the radio's start that put two listeners up to half an hour apart. The playlist now gives each video's length. Entering no longer plays a moment from the wrong spot before jumping, and coming back from the pause screen starts at the room's second instead of where you left.
 - **Room to walk between the pond and the Ferris wheel**: the wheel stood so close to the pond's corner that nobody could pass. It moved a little to the right and blocks less of the grass, so you can walk by on both sides of it.
