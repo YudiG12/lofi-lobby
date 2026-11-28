@@ -3546,17 +3546,18 @@ function connect() {
     else if (m.t === "state") m.players.forEach(createOther);
     else if (m.t === "joined") createOther(m.player);
     else if (m.t === "left") removeOther(m.id);
-    else if (m.t === "chat") receiveChat(m.id, m.name, m.text, m.admin, m.color, m.prs, m.n);
+    else if (m.t === "chat") receiveChat(m.id, m.name, m.text, m.admin, m.color, m.prs, m.n, { at: m.at, scope: m.scope });
     else if (social.onMessage(m)) {} // accounts, profiles, friends and private chat (src/social.js)
     else if (m.t === "acct") {
       const o = others.get(m.id);
       if (o) o.n = m.n;
     }
     else if (m.t === "history") {
-      // what was said before we arrived (also on reconnect, so start clean)
-      elMsgs.replaceChildren();
-      m.messages.forEach((c) => addToHistory(c.name, c.text, c.id, c.admin, c.color, c.prs, c.n));
-      elMsgs.scrollTop = elMsgs.scrollHeight;
+      // what was said before we arrived, one list per scope (also on reconnect, so start clean)
+      const list = chatList(m.scope);
+      list.replaceChildren();
+      m.messages.forEach((c) => addToHistory(c.name, c.text, c.id, c.admin, c.color, c.prs, c.n, { at: c.at, scope: m.scope, old: true }));
+      list.scrollTop = list.scrollHeight;
     }
     else if (m.t === "radio") receiveCommand(m.command);
     else if (m.t === "note") wall.onNote(m.note, m.total);
@@ -3765,7 +3766,12 @@ function updateOthers(dt) {
 }
 
 // ---- Chat + bubble above the head ----
+// Two chats, each a tab of the chat panel (src/social.js): the global one, the main one, reaches every
+// scene; the local one only the scene you are in. A bubble over the head is for whoever is in your scene.
 const elMsgs = document.querySelector("#msgs");
+const elMsgsLocal = document.querySelector("#msgs-local");
+const chatList = (scope) => (scope === "local" ? elMsgsLocal : elMsgs);
+const chatTime = (at) => new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 const elInput = document.querySelector("#msg");
 const bubbles = new Map(); // owner (mesh) -> { el, until }
 // any text field (chat or the admin login): game keys and the Enter shortcut stay out of it
@@ -3829,7 +3835,9 @@ function showPrs(el, prs) {
   ball.style.backgroundPosition = `${(PR_TIERS.length - 1 - tier) * (100 / (PR_TIERS.length - 1))}% 0`;
   el.append(ball, prsText(prs));
 }
-function addToHistory(name, text, id, admin, color, prs = 0, n = -1) {
+// a line in the global or local chat (system lines go to the room tab last open); old: from the history
+function addToHistory(name, text, id, admin, color, prs = 0, n = -1, { at = Date.now(), scope = social.roomScope(), old = false } = {}) {
+  const list = chatList(scope);
   const d = document.createElement("div");
   d.className = admin ? "m admin" : "m";
   const s = document.createElement("small");
@@ -3849,12 +3857,17 @@ function addToHistory(name, text, id, admin, color, prs = 0, n = -1) {
     // someone else named you: highlighted for you only
     if (mentionsMe(parts) && id !== myId && id !== "me") d.classList.add("mention");
   }
-  d.append(s, t);
+  // the name line: the name on the left, the time on the right
+  const when = Object.assign(document.createElement("time"), { dateTime: new Date(at).toISOString(), textContent: chatTime(at) });
+  const head = Object.assign(document.createElement("div"), { className: "head" });
+  head.append(s, when);
+  d.append(head, t);
   // follow new messages only if already at the bottom (don't yank someone reading old ones)
-  const atBottom = elMsgs.scrollHeight - elMsgs.scrollTop - elMsgs.clientHeight < 40;
-  elMsgs.append(d);
-  while (elMsgs.children.length > 60) elMsgs.firstChild.remove();
-  if (atBottom || name === NAME) elMsgs.scrollTop = elMsgs.scrollHeight;
+  const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 40;
+  list.append(d);
+  while (list.children.length > 60) list.firstChild.remove();
+  if (atBottom || name === NAME) list.scrollTop = list.scrollHeight;
+  if (!old && name !== "system") social.roomLine(scope === "local" ? "local" : "global");
 }
 
 function showBubble(owner, text, mention = false) {
@@ -4026,8 +4039,8 @@ function updateBubbles() {
   }
 }
 
-function receiveChat(id, name, text, admin, color, prs, n) {
-  addToHistory(name, text, id, admin, color, prs, n);
+function receiveChat(id, name, text, admin, color, prs, n, where) {
+  addToHistory(name, text, id, admin, color, prs, n, where);
   const owner = id === myId || id === "me" ? sprite : others.get(id)?.mesh;
   if (owner) showBubble(owner, text, owner !== sprite && mentionsMe(mentionParts(text)));
 }
@@ -4060,9 +4073,10 @@ document.querySelector("#chat form").addEventListener("submit", (e) => {
     return;
   }
   if (social.sendChat(text)) return; // a private chat's tab is open: it goes to that friend only
+  const scope = social.roomScope(); // the global chat or this scene's
   if (MULTIPLAYER && ws?.readyState === 1)
-    ws.send(JSON.stringify({ t: "chat", text }));
-  else receiveChat("me", NAME, text, false, COLOR); // offline: show only to me
+    ws.send(JSON.stringify({ t: "chat", text, scope }));
+  else receiveChat("me", NAME, text, false, COLOR, 0, -1, { scope }); // offline: show only to me
 });
 // Enter opens the chat; Esc leaves it
 addEventListener("keydown", (e) => {
@@ -4224,7 +4238,9 @@ const social = setupSocial({
   me: () => ({ name: NAME, color: COLOR, gender: GENDER, cap: myCap() }),
   look: trainerLook,
   elMsgs,
+  elMsgsLocal,
   elInput,
+  sceneName: () => SCENES[sceneId].name,
 });
 // near the board: a prompt over it ("E" or tap to read)
 const wallPrompt = Object.assign(document.createElement("button"), { id: "wall-prompt", type: "button" });
@@ -4556,8 +4572,9 @@ async function travel(portal) {
   myLeaveToken = "";
   if (old && old.readyState <= 1) try { old.close(1000, "travel"); } catch {}
   [...others.keys()].forEach(removeOther);
-  elMsgs.replaceChildren(); // the next room's chat is its own (it sends its history)
+  elMsgsLocal.replaceChildren(); // the next scene's local chat is its own (it sends its history); the global one stays
   sceneId = portal.to;
+  social.sceneChanged();
   useWorld(sceneId);
   pos.set(portal.arrive.x, 0, portal.arrive.z);
   pos.y = topHeight(pos.x, pos.z);

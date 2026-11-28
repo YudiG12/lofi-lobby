@@ -1,8 +1,9 @@
 // Room server: one Durable Object for the game, everyone connected over WebSocket. Each connection is in
-// one scene (/ws/<scene>) and sees that scene's players, chat and seats; the rest is shared.
+// one scene (/ws/<scene>) and sees that scene's players, local chat and seats; the rest (the global chat too) is shared.
 // Protocol (JSON):
 //   client -> server: { t: "hello", name, gender, color, cap, x, z, dir } | { t: "pos", x, z, dir, step, run }
-//                     { t: "chat", text } | { t: "name", name } | { t: "gender", gender, cap }
+//                     { t: "chat", text, scope } (scope "local": only this scene; anything else: every scene)
+//                     { t: "name", name } | { t: "gender", gender, cap }
 //                     { t: "color", color }   (name colour: one of NAME_COLORS)
 //                     { t: "sit", seat, n }   (bench seat 0..15, carousel horse 16..23, Ferris wheel gondola 24..31, roller coaster 32..36 while it waits at the station, or -1 to stand; n numbers the request)
 //                     { t: "capy" }   (feed the capybara)
@@ -23,7 +24,8 @@
 //   server -> client: { t: "you", id, v, now, token } (now: the room's clock, for what everyone must see at the same moment;
 //                                                     token: only this connection knows it, for /api/leave) | { t: "state", players: [...] }
 //                     { t: "joined", player } | { t: "left", id } | { t: "pos", ... }
-//                     { t: "chat", id, name, color, text, at } | { t: "name", id, name } | { t: "color", id, color }
+//                     { t: "chat", id, name, color, text, at, scope } (scope "global"|"local")
+//                     { t: "name", id, name } | { t: "color", id, color }
 //                     { t: "gender", id, gender, cap } | { t: "radio", command } | { t: "error", msg }
 //                     { t: "stone", id, pts }   (that player skipped a stone; the clients animate it)
 //                     { t: "ground", id, on }   (that player sat on the ground or got up)
@@ -43,7 +45,7 @@
 //                                                 (accounts, friends and private chat: worker/social.js; players and chat also carry n)
 //                     { t: "contrib", id, prs }   (that player is a contributor with prs merged pull requests;
 //                                                  players and chat also carry prs)
-//                     { t: "history", messages: [{ id, name, text, at }] } (on join)
+//                     { t: "history", scope, messages: [{ id, name, text, at }] } (on join: one per scope)
 //                     { t: "notice", msg } | { t: "rename", name } (your name was refused)
 //                     { t: "who", id, tag, names, sameTag } (admin only)
 //                     { t: "kicked", msg } (the server closes you; don't reconnect)
@@ -87,10 +89,10 @@
 
 const MAX_PLAYERS = 100;
 // Scenes (src/scenes.js) share this one object: a connection carries its scene ("room") and only sees
-// that scene's players, chat and seats. Accounts, friends, private chat, bans, limits per IP, the
-// wall and the radio are the same everywhere, which is why the scenes are not separate objects.
+// that scene's players, local chat and seats. Accounts, friends, private chat, the global chat, bans,
+// limits per IP, the wall and the radio are the same everywhere, which is why the scenes are not
+// separate objects.
 const roomOf = (p) => (ROOMS.includes(p?.room) ? p.room : HOME); // a socket from before scenes has none: the town
-const historyKey = (room) => (room === HOME ? "chat" : "chat:" + room);
 const SCENE_SEATS = { lago: 14 }; // the swing, two benches and two picnic tables (src/lake-layout.js)
 const seatsIn = (room) => (room === HOME ? MAX_SEATS : SCENE_SEATS[room] | 0);
 const TOWN_ONLY = ["capy", "cat"]; // the capybara and the cats live in the town (stones and fishing: any water)
@@ -176,7 +178,7 @@ function safeClose(ws, code = 1000, reason = "") {
 }
 
 import { badName, cleanChat, hasLink, normalize } from "./moderation.js";
-import { HOME, ROOMS, roomOfPath } from "./rooms.js";
+import { GLOBAL, HOME, ROOMS, historyKey, roomOfPath } from "./rooms.js";
 import { renamedNotes, wallName } from "./notes.js";
 import { installSocial } from "./social.js";
 import { Accounts, primaryEmail } from "./accounts.js";
@@ -641,8 +643,10 @@ export class Room {
         }
       }
     }
-    const messages = await this.history(room);
-    if (messages.length) server.send(JSON.stringify({ t: "history", messages }));
+    for (const [scope, key] of [["global", GLOBAL], ["local", room]]) {
+      const messages = await this.history(key);
+      server.send(JSON.stringify({ t: "history", scope, messages }));
+    }
     server.send(JSON.stringify({ t: "state", players: this.players(room).filter((p) => p.id !== id) }));
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -861,10 +865,15 @@ export class Room {
       if (s.repeats > REPEAT_LIMIT) return this.strike(ws, p.ip);
       s.lastText = text;
       s.lastAt = now;
+      // the global chat reaches every scene (the main one: there are few people, and they shouldn't be
+      // split by where they stand); the local one, this scene only
+      const local = m.scope === "local";
       const msg = { id: p.id, name: p.name, text, at: now, ...(p.color && { color: p.color }), ...(p.admin && { admin: true }), ...(p.prs > 0 && { prs: p.prs }), ...(p.acct != null && { n: p.acct }) };
-      say({ t: "chat", ...msg });
+      const scope = local ? "local" : "global";
+      this.broadcast({ t: "chat", scope, ...msg }, null, local ? room : undefined);
       this.stat("chat", p);
-      await this.saveHistory([...(await this.history(room)), msg], room);
+      const key = local ? room : GLOBAL;
+      await this.saveHistory([...(await this.history(key)), msg], key);
     }
   }
 
@@ -1069,7 +1078,7 @@ export class Room {
     const ips = new Set([target.ip]);
     // a banned player's messages leave the history too
     const gone = new Set(sockets.map((w) => w.deserializeAttachment()).filter((q) => q && ips.has(q.ip)).map((q) => q.id));
-    for (const room of ROOMS) await this.saveHistory((await this.history(room)).filter((m) => !gone.has(m.id)), room);
+    for (const room of [...ROOMS, GLOBAL]) await this.saveHistory((await this.history(room)).filter((m) => !gone.has(m.id)), room);
     const until = Date.now() + (action === "ban" ? BAN_MS : KICK_MS);
     for (const ip of ips) await this.state.storage.put("ban:" + ip, until);
     const msg = action === "ban" ? "you were banned from the room" : "you were kicked, come back later";
@@ -1104,7 +1113,7 @@ export class Room {
   }
 
   // kept in storage so it survives the object sleeping (hibernation)
-  // each scene has its own chat history ("chat" is the town's, as before there were scenes)
+  // each scene has its own local chat history, and the game one global history (see historyKey)
   async history(room = HOME) {
     const all = (await this.state.storage.get(historyKey(room))) || [];
     return all.filter((m) => m.at > Date.now() - HISTORY_MS);

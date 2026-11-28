@@ -75,13 +75,16 @@ const confirmIcon = (name, label, question, fn, kind = "danger") => {
  *   send(msg) -> boolean (false when offline), paintName(el, color), showPrs(el, prs),
  *   login() and logout() (the GitHub login), say(text) (a system line in the room's chat),
  *   me() -> { name, color, prs, gender, cap }, look(gender, cap) -> Promise<canvas> (a trainer's
- *   front frame), elMsgs and elInput (the room chat's list and box)
+ *   front frame), elMsgs, elMsgsLocal and elInput (the global and local chat's lists, and the box),
+ *   sceneName() (the scene you are in)
  */
 export function setupSocial(game) {
   let account = null; // { n, login, at, medals } once this browser is logged in
   let friends = { friends: [], in: [], out: [], chats: [] };
   const chats = new Map(); // account number -> an open private chat (see chatWith)
-  let active = "room"; // the tab open in the chat panel: "room" or an account number
+  let active = "global"; // the tab open in the chat panel: "global", "local" or an account number
+  let lastRoom = "global"; // the room chat (global or local) open last: where a private chat closes back to
+  const isRoom = (tab) => tab === "global" || tab === "local";
   let shown = null; // the profile on screen: an account number, or "guest"
   const known = (n) => friends.friends.find((f) => f.n === n) || friends.chats.find((f) => f.n === n);
 
@@ -282,10 +285,33 @@ export function setupSocial(game) {
   const chatHeader = chatPanel.querySelector("header");
   const tabs = $("div", { className: "tabs" });
   tabs.setAttribute("role", "tablist");
-  const roomTab = $("button", { type: "button", className: "on" }, $("span", { textContent: "chat" }));
-  roomTab.dataset.tab = "room";
-  roomTab.addEventListener("click", () => show("room"));
-  tabs.append(roomTab);
+  // the open tab has a speech bubble before its name: it says "chat" without a title taking the room
+  const bubble = () => $("i", { className: "ic", innerHTML: ICON.chat });
+  // the two room chats come first: global (the main one, every scene) and local (this scene only)
+  const roomTabs = {};
+  const roomLists = { global: game.elMsgs, local: game.elMsgsLocal };
+  const roomUnread = { global: 0, local: 0 };
+  for (const scope of ["global", "local"]) {
+    const tab = $("button", { type: "button", className: scope === active ? "on" : "" }, bubble(), $("span", { textContent: scope }), $("i", { className: "n" }));
+    tab.dataset.tab = scope;
+    tab.setAttribute("role", "tab");
+    tab.addEventListener("click", () => (tab.blur(), show(scope)));
+    roomTabs[scope] = tab;
+    tabs.append(tab);
+  }
+  roomTabs.global.title = "everyone, in every scene";
+  function drawRoomTabs() {
+    roomTabs.local.title = `only who is in ${game.sceneName()}`;
+    if (isRoom(active)) game.elInput.placeholder = active === "local" ? `only ${game.sceneName().toLowerCase()}…` : roomPlaceholder;
+    for (const scope of ["global", "local"]) {
+      const tab = roomTabs[scope];
+      tab.classList.toggle("on", active === scope);
+      tab.setAttribute("aria-selected", String(active === scope));
+      const badge = tab.querySelector("i.n");
+      badge.textContent = roomUnread[scope] > 99 ? "99+" : roomUnread[scope];
+      badge.classList.toggle("on", roomUnread[scope] > 0);
+    }
+  }
   chatHeader.replaceChildren(tabs);
   const dmMsgs = $("div", { id: "dm-msgs", hidden: true });
   game.elMsgs.after(dmMsgs);
@@ -295,19 +321,28 @@ export function setupSocial(game) {
   try { saved = JSON.parse(localStorage.getItem("dm-windows") || "{}") || {}; } catch {}
   const remember = () => { try { localStorage.setItem("dm-windows", JSON.stringify(saved)); } catch {} };
 
-  const line = (name, color, text) => {
+  const line = (name, color, text, at) => {
     const who = $("small", { textContent: name });
     game.paintName(who, color);
-    return $("div", { className: "m" }, who, $("span", { textContent: text })); // textContent: no HTML from a message
+    const when = $("time", { dateTime: new Date(at).toISOString(), textContent: new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) });
+    return $("div", { className: "m" }, $("div", { className: "head" }, who, when), $("span", { textContent: text })); // textContent: no HTML from a message
   };
   const chatVisible = () => !TOUCH || chatPanel.classList.contains("open");
+  // the room chat on screen again (the phone's sheet opened, the browser tab came back): it is read
+  const roomSeen = () => {
+    if (!isRoom(active) || !chatVisible() || document.visibilityState !== "visible" || !roomUnread[active]) return;
+    roomUnread[active] = 0;
+    drawRoomTabs();
+  };
+  new MutationObserver(roomSeen).observe(chatPanel, { attributes: true, attributeFilter: ["class"] });
+  document.addEventListener("visibilitychange", roomSeen);
   // am I looking at this chat right now (so what arrives is read)
   const watching = (c) => document.visibilityState === "visible" && (c.win ? true : active === c.n && chatVisible());
   function drawChat(c) {
     const list = c.win ? c.list : active === c.n ? dmMsgs : null;
     if (!list) return;
     const me = game.me();
-    list.replaceChildren(...c.msgs.map((x) => (x.from === c.n ? line(c.name, c.color, x.text) : line(me.name, me.color, x.text))));
+    list.replaceChildren(...c.msgs.map((x) => (x.from === c.n ? line(c.name, c.color, x.text, x.at) : line(me.name, me.color, x.text, x.at))));
     list.scrollTop = list.scrollHeight;
   }
   function drawTab(c) {
@@ -342,7 +377,7 @@ export function setupSocial(game) {
       remember();
     }
     if (!c.tab) {
-      const tab = $("button", { type: "button" }, $("span", { className: "nm" }), $("i", { className: "n" }),
+      const tab = $("button", { type: "button" }, bubble(), $("span", { className: "nm" }), $("i", { className: "n" }),
         ...(TOUCH ? [] : [$("b", { className: "x pop", innerHTML: svg(POP_OUT, 11), title: "pop out" })]),
         $("b", { className: "x shut", textContent: "✕", title: "close" }));
       tab.dataset.tab = c.n;
@@ -374,7 +409,7 @@ export function setupSocial(game) {
     if (c.tab) {
       c.tab.remove();
       c.tab = null;
-      if (active === c.n) show("room");
+      if (active === c.n) show(lastRoom);
     }
     if (!c.win) {
       const box = saved[c.n] || { x: innerWidth - 700, y: innerHeight - 380, w: 300, h: 320 };
@@ -461,19 +496,20 @@ export function setupSocial(game) {
     c.win = null;
     chats.delete(n);
     if (floated) delete saved[n], remember();
-    if (active === n) show("room");
+    if (active === n) show(lastRoom);
     drawAccount();
   }
   function show(tab) {
     active = tab;
-    const room = tab === "room";
-    roomTab.classList.toggle("on", room);
-    game.elMsgs.hidden = !room;
+    const room = isRoom(tab);
+    if (room) lastRoom = tab;
+    for (const scope of ["global", "local"]) roomLists[scope].hidden = active !== scope;
     dmMsgs.hidden = room;
+    if (room && chatVisible()) roomUnread[tab] = 0;
+    drawRoomTabs();
     for (const c of chats.values()) drawTab(c);
     if (room) {
-      game.elInput.placeholder = roomPlaceholder;
-      game.elMsgs.scrollTop = game.elMsgs.scrollHeight;
+      roomLists[tab].scrollTop = roomLists[tab].scrollHeight;
       return;
     }
     const c = chats.get(tab);
@@ -558,7 +594,7 @@ export function setupSocial(game) {
         if (!account) {
           friends = { friends: [], in: [], out: [], chats: [] };
           for (const c of [...chats.values()]) (c.tab?.remove(), c.win?.remove(), chats.delete(c.n)); // the windows keep their place for the next login
-          if (active !== "room") show("room");
+          if (!isRoom(active)) show(lastRoom);
           invites.replaceChildren();
           closeAll();
         }
@@ -567,7 +603,7 @@ export function setupSocial(game) {
           c.loaded = false;
           if (c.win) game.send({ t: "dm-open", n: c.n });
         }
-        if (account && active !== "room") show(active);
+        if (account && !isRoom(active)) show(active);
         if (m.created && document.querySelector("#enter")?.hidden !== false) openProfile(m.n, { ...game.me(), online: true });
         drawAccount();
       } else if (m.t === "profile") drawProfile(m);
@@ -609,9 +645,20 @@ export function setupSocial(game) {
     },
     /** What was typed in the chat box. @returns {boolean} it went to a private chat, not to the room */
     sendChat(text) {
-      if (active === "room") return false;
+      if (isRoom(active)) return false;
       if (!game.send({ t: "dm", n: active, text })) game.say("you are offline: the message was not sent");
       return true;
+    },
+    sessionEnded,
+    /** @returns {"global"|"local"} the room chat the box talks to (the one open last, when a private chat is open) */
+    roomScope: () => lastRoom,
+    /** Through a portal: the local tab now names the new scene. */
+    sceneChanged: drawRoomTabs,
+    /** A new line in the global or local chat: counted on its tab while that chat is out of sight. */
+    roomLine(scope) {
+      if (active === scope && chatVisible() && document.visibilityState === "visible") return;
+      roomUnread[scope]++;
+      drawRoomTabs();
     },
     sessionEnded,
     /** @returns {number} my account number, or -1 */
