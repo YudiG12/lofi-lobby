@@ -10,7 +10,7 @@
 
 export const SIT_DIRS = ["down", "left", "right", "up"]; // the row's order
 const GAP = 2;
-const DROP = 3; // how far the body comes down
+export const SIT_DROP = 3; // how far the body comes down, in sheet pixels
 const OUTLINE = "#000000";
 
 // the box of the opaque pixels of a frame
@@ -65,7 +65,7 @@ function sitFrame(src, p, dir) {
     hx1 = -1;
   for (let x = 0; x < w; x++) if (opaque(x, legTop - 1)) (hx0 = Math.min(hx0, x)), (hx1 = Math.max(hx1, x));
   const cx = Math.round((hx0 + hx1) / 2);
-  const ly = legTop + DROP - 1; // the row the legs rest on
+  const ly = legTop + SIT_DROP - 1; // the row the legs rest on
 
   const out = Object.assign(document.createElement("canvas"), { width: w, height: h });
   const g = out.getContext("2d");
@@ -74,7 +74,7 @@ function sitFrame(src, p, dir) {
     g.fillStyle = col;
     g.fillRect(x, y, rw, rh);
   };
-  const body = () => g.drawImage(f, 0, 0, w, legTop, 0, DROP, w, legTop); // without the legs, lowered
+  const body = () => g.drawImage(f, 0, 0, w, legTop, 0, SIT_DROP, w, legTop); // without the legs, lowered
 
   body();
   if (dir === "down" || dir === "up") {
@@ -120,7 +120,7 @@ function sitFrame(src, p, dir) {
     drawShoe();
   }
   // the body's last rows (hands, hem) over the top edge of the legs
-  g.drawImage(f, 0, legTop - 2, w, 2, 0, legTop - 2 + DROP, w, 2);
+  g.drawImage(f, 0, legTop - 2, w, 2, 0, legTop - 2 + SIT_DROP, w, 2);
   return out;
 }
 

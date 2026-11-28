@@ -5,7 +5,7 @@ import { connectRadioToServer, receiveCommand } from "./radio.js";
 import { setupSocial } from "./social.js";
 import { createBoard, setupWall } from "./board.js";
 import { createStones } from "./stones.js";
-import { addSitFrames, sitFramePos } from "./ground-sit.js";
+import { addSitFrames, sitFramePos, SIT_DROP } from "./ground-sit.js";
 import { createCapybara, CAPY_NEAR, CAPY_RADIUS, PHRASES as CAPY_PHRASES } from "./capybara.js";
 import { SCENES, HOME, isScene, portalAt } from "./scenes.js";
 import { createLake } from "./lake.js";
@@ -2949,11 +2949,11 @@ function bodyShape(tex, cfg, d) {
     skin: tone[3] ? `rgb(${tone.slice(0, 3).map((v) => Math.round(v / tone[3])).join(",")})` : "#f0b890" });
 }
 const heldTex = {};
-function heldTextures(item, d, shape) {
+function heldTextures(item, d, shape, sink = 0) {
   const tick = Math.floor(performance.now() / (item === 1 ? 260 : item === 2 ? 320 : item === 4 ? 420 : 400));
   // the screen's light, steam or smoke rising, or a page turning about every 4 seconds
   const frame = item === 1 ? FLICKER[tick % 8] : item === 2 || item === 4 ? tick % 4 : +(tick % 10 === 9);
-  const key = item + d + frame + (shape?.key || "");
+  const key = item + d + frame + (shape?.key || "") + "+" + sink;
   if (heldTex[key]) return heldTex[key];
   const art = HELD_ART[item + (d === "left" ? "right" : d)] || HELD_ART[item + "down"];
   const make = (glowOnly) => {
@@ -2972,7 +2972,7 @@ function heldTextures(item, d, shape) {
       c.globalAlpha = glowOnly && !glows ? 0.3 : 1; // the rest glows a little too, to stay readable at night
       const rise = puff === undefined ? 0 : (frame + puff) % 4; // 0..3 pixels up, then it starts again
       c.fillStyle = color === "skin" ? shape?.skin || "#f0b890" : color;
-      c.fillRect(x + (shape?.shift || 0) + (rise % 2), y + (shape?.drop || 0) - rise, w, h);
+      c.fillRect(x + (shape?.shift || 0) + (rise % 2), y + (shape?.drop || 0) + sink - rise, w, h);
     }
     const t = new THREE.CanvasTexture(cv);
     t.magFilter = t.minFilter = THREE.NearestFilter;
@@ -2996,17 +2996,21 @@ function createHeld(feet) {
   return mesh;
 }
 // which way the item is drawn for a trainer, or null when it doesn't show: anything on a bench,
-// and the coffee or the cigarette while standing still
+// and the coffee or the cigarette while standing still or sitting on the ground
 const COFFEE = 2;
-const ON_FOOT = [COFFEE, 4]; // what stays in your hand on your feet
-const heldDir = (item, seat, still, d) => (!item ? null : seat ? seat.dir : ON_FOOT.includes(item) && still ? d : null);
-// put the item over its trainer, seen from direction d (or hide it: d is null)
-function showHeld(mesh, body, cfg, item, d) {
+const ON_FOOT = [COFFEE, 4]; // what stays in your hand off a bench
+const heldDir = (item, seat, still, d, grounded) =>
+  !item ? null : seat ? seat.dir : ON_FOOT.includes(item) && (still || grounded) ? d : null;
+// put the item over its trainer, seen from direction d (or hide it: d is null); on the ground the
+// body is drawn lower (src/ground-sit.js), so the item is drawn lower on its frame too (moving the
+// plane instead would break the equal depth with the body, which then covers parts of the item)
+function showHeld(mesh, body, cfg, item, d, grounded) {
   mesh.visible = !!(item && d);
   if (!mesh.visible) return;
   const shape = bodyShape(body.material.map, cfg, d);
   if (!shape) return void (mesh.visible = false);
-  [mesh.material.map, mesh.material.emissiveMap] = heldTextures(item, d, shape);
+  const sink = grounded ? Math.round((SIT_DROP * 32) / framePos(cfg, d, 0).h) : 0; // sheet pixels to art pixels
+  [mesh.material.map, mesh.material.emissiveMap] = heldTextures(item, d, shape, sink);
   mesh.position.copy(body.position);
   mesh.rotation.copy(body.rotation);
 }
@@ -3755,8 +3759,8 @@ function updateOthers(dt) {
     m.position.y -= m.userData.lift;
     // standing still: on the standing frame, a moment after the last step arrived
     const still = !o.step && performance.now() - (o.movedAt || 0) > 300;
-    const hd = grounded ? null : heldDir(o.hold, seat, still, o.dir); // the coffee is drawn for a standing body
-    if (o.held || hd) showHeld((o.held ??= createHeld(o.feet)), m, o.cfg, o.hold, hd);
+    const hd = heldDir(o.hold, seat, still, o.dir, grounded);
+    if (o.held || hd) showHeld((o.held ??= createHeld(o.feet)), m, o.cfg, o.hold, hd, grounded);
     // their rod, line and bobber while their line is out (the bobber's height once the pond is loaded)
     if (o.fish && o.fish.y === null) o.fish.y = waterY(o.fish.x, o.fish.z);
     const fishes = o.fish && o.fish.y !== null;
@@ -4903,7 +4907,7 @@ function loop() {
   updateOcclusion();
   // facing the camera, tilted only halfway (the shadow looks like a standing body)
   sprite.rotation.set(camera.rotation.x * 0.5, 0, 0);
-  showHeld(myHeld, sprite, CHARACTER.cfg, myHold, grounded ? null : heldDir(myHold, mySeat >= 0 ? seatSpot(mySeat) : null, !walking, dir));
+  showHeld(myHeld, sprite, CHARACTER.cfg, myHold, heldDir(myHold, mySeat >= 0 ? seatSpot(mySeat) : null, !walking, dir, grounded), grounded);
 
   carousel.update(roomNow(), dayAmount);
   wheel.update(roomNow(), dayAmount);
