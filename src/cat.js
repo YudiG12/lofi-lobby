@@ -6,6 +6,7 @@ import * as THREE from "three";
 export const CAT_NEAR = 4; // how close you must be to feed it
 export const CAT_SIT_MS = 6000;
 export const CAT_RIDE_MS = 18000; // how long a cat stays on a player's head (matches worker/index.js)
+export const CAT_FEED_RIDE_CHANCE = 0.65; // chance a fed cat climbs onto the feeder's head after eating (matches worker/index.js)
 
 export const CATS = [
   { id: "black", palette: "black", seed: 101, speed: 2.6 },

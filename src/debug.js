@@ -223,14 +223,23 @@ export function setupDebug(app) {
   } = app;
 
   const toggleDebugRide = () => {
-    const cat = cats[0];
-    if (!cat) return;
     const now = roomNow();
-    if (cat.ride) return catRideUpdate({ id: cat.id, playerId: null, at: now, until: now });
+    const myPlayerId = getMyId() || "me";
+    const riding = cats.find((c) => c.ride?.playerId === myPlayerId && (now >= c.ride.at || now < c.fed.until));
+    if (riding) return catRideUpdate({ id: riding.id, playerId: null, at: now, until: now });
+    const idle = cats.filter((c) => !c.hopOff && !(c.ride && now >= c.ride.at));
+    const cat = idle[Math.floor(Math.random() * idle.length)];
+    if (!cat) return;
+    for (const c of cats) {
+      if (c.ride?.playerId === myPlayerId && now < c.ride.at) {
+        c.ride = null;
+        c.rideAnim = null;
+      }
+    }
     cat.lastRideAt = null;
     catRideUpdate({
       id: cat.id,
-      playerId: getMyId() || "me",
+      playerId: myPlayerId,
       at: now,
       until: now + catRideMs,
       phrase: Math.floor(Math.random() * 1000),
@@ -239,8 +248,13 @@ export function setupDebug(app) {
 
   const getRideLabel = (cat) => {
     if (cat.ride) {
+      const now = roomNow();
       const rider = resolveRideTarget(cat.ride.playerId);
-      return `on ${rider?.name || "?"} (${Math.max(0, Math.ceil((cat.ride.until - roomNow()) / 1000))}s)`;
+      if (now < cat.ride.at) {
+        const prefix = now < cat.fed.until ? "after eat" : "scheduled";
+        return `${prefix} -> ${rider?.name || "?"} (${Math.max(0, Math.ceil((cat.ride.at - now) / 1000))}s)`;
+      }
+      return `on ${rider?.name || "?"} (${Math.max(0, Math.ceil((cat.ride.until - now) / 1000))}s)`;
     }
     return cat.hopOff ? "hopping down" : "";
   };
@@ -268,6 +282,11 @@ export function setupDebug(app) {
       getPlayerCount,
       toggleDebugRide,
       getRideLabel,
+      isDebugRiding: () => {
+        const now = roomNow();
+        const me = getMyId() || "me";
+        return cats.some((c) => c.ride?.playerId === me && (now >= c.ride.at || now < c.fed.until));
+      },
     }),
     createCycleDebugModule({
       getTimeMode,

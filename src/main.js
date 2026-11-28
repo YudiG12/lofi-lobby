@@ -9,7 +9,7 @@ import { addSitFrames, sitFramePos } from "./ground-sit.js";
 import { createCapybara, CAPY_NEAR, CAPY_RADIUS, PHRASES as CAPY_PHRASES } from "./capybara.js";
 import { createOwl } from "./owl.js";
 import { createFishing, createFishingGear, FISH_NEAR, FISH_LEAVE } from "./fishing.js";
-import { createCat, CATS, CAT_NEAR, CAT_SIT_MS, CAT_RIDE_MS, PHRASES as CAT_PHRASES, RIDE_PHRASES as CAT_RIDE_PHRASES } from "./cat.js";
+import { createCat, CATS, CAT_NEAR, CAT_SIT_MS, CAT_RIDE_MS, CAT_FEED_RIDE_CHANCE, PHRASES as CAT_PHRASES, RIDE_PHRASES as CAT_RIDE_PHRASES } from "./cat.js";
 import { CAROUSEL, carouselSeat, createCarousel, inClearing, isCarouselSeat, onCarousel } from "./carousel.js";
 import { WHEEL, wheelSeat, createFerrisWheel, inWheelClearing, isWheelSeat, onWheel } from "./ferris-wheel.js";
 import { COASTER, coasterSeat, coasterCycle, coasterRiding, coasterBoardLeft, coasterBackIn, createCoaster, inCoasterClearing, isCoasterSeat, onCoaster } from "./roller-coaster.js";
@@ -2179,11 +2179,16 @@ function walkCat(cat, t) {
     }
   }
 
-  if (cat.ride) {
+  if (cat.ride && t >= cat.ride.at) {
     const target = resolveRideTarget(cat.ride.playerId);
     if (!target) {
-      startHopOff(cat, t);
+      if (cat.rideAnim) startHopOff(cat, t);
+      else cat.ride = null;
       return;
+    }
+    if (Number.isInteger(cat.ride.phrase) && cat.lastRideAt !== cat.ride.at) {
+      cat.lastRideAt = cat.ride.at;
+      showBubble(cat.mesh, CAT_RIDE_PHRASES[Math.abs(cat.ride.phrase) % CAT_RIDE_PHRASES.length]);
     }
     const rideDuration = Math.max(1, cat.ride.until - cat.ride.at);
     if (!cat.rideAnim || cat.rideAnim.at !== cat.ride.at) {
@@ -2231,7 +2236,7 @@ function walkCat(cat, t) {
       cat.sprite.setPose("walk");
       return;
     } else if (elapsed < anim.hopOnEnd) {
-      const from = anim.approachPath[anim.approachPath.length - 1] || anim.startPos;
+      const from = anim.totalDist > 0 ? anim.approachPath[anim.approachPath.length - 1] : anim.startPos;
       const u = (elapsed - anim.approachEnd) / Math.max(1, anim.hopOnEnd - anim.approachEnd);
       m.set(
         THREE.MathUtils.lerp(from.x, hx, u),
@@ -2332,13 +2337,26 @@ function catRideUpdate(m) {
   if (!cat) return;
   const now = roomNow();
   if (!m.playerId || !(m.until > m.at) || m.until <= now) {
-    if (cat.ride) startHopOff(cat, now);
+    if (cat.ride) {
+      if (now < cat.ride.at) {
+        cat.ride = null;
+        cat.rideAnim = null;
+      } else {
+        startHopOff(cat, now);
+      }
+    }
     return;
   }
-  cat.ride = { playerId: m.playerId, at: m.at, until: m.until };
+  if (cats.some((other) => other !== cat && other.ride?.playerId === m.playerId && other.ride.until > m.at && other.ride.at < m.until)) return;
+  cat.ride = {
+    playerId: m.playerId,
+    at: m.at,
+    until: m.until,
+    phrase: Number.isInteger(m.phrase) ? m.phrase : null,
+  };
   cat.hopOff = null;
   cat.rideAnim = null;
-  if (Number.isInteger(m.phrase) && cat.lastRideAt !== m.at) {
+  if (m.at <= now && Number.isInteger(m.phrase) && cat.lastRideAt !== m.at) {
     cat.lastRideAt = m.at;
     showBubble(cat.mesh, CAT_RIDE_PHRASES[Math.abs(m.phrase) % CAT_RIDE_PHRASES.length]);
   }
@@ -4231,8 +4249,24 @@ const feedCat = (cat) => {
   if (!cat) return;
   if (CATS.some((c) => c.id === cat.id) && MULTIPLAYER && ws?.readyState === 1) return ws.send(JSON.stringify({ t: "cat", id: cat.id }));
   const now = roomNow();
-  if (now < cat.fed.until) return;
-  catWasFed({ id: cat.id, at: now, until: now + CAT_SIT_MS, lost: cat.fed.lost + cat.fed.until - cat.fed.at, phrase: Math.floor(Math.random() * 1000) });
+  if (now < cat.fed.until || cat.hopOff || (cat.ride && now >= cat.ride.at)) return;
+  if (cat.ride && now < cat.ride.at) {
+    cat.ride = null;
+    cat.rideAnim = null;
+  }
+  const until = now + CAT_SIT_MS;
+  catWasFed({ id: cat.id, at: now, until, lost: cat.fed.lost + cat.fed.until - cat.fed.at, phrase: Math.floor(Math.random() * 1000) });
+  const playerId = myId || "me";
+  const playerBusy = cats.some((c) => c !== cat && c.ride?.playerId === playerId && c.ride.until > now && (now >= c.ride.at || now < c.fed.until));
+  if (!playerBusy && Math.random() < CAT_FEED_RIDE_CHANCE) {
+    for (const c of cats) {
+      if (c !== cat && c.ride?.playerId === playerId && now < c.ride.at && now >= c.fed.until) {
+        c.ride = null;
+        c.rideAnim = null;
+      }
+    }
+    catRideUpdate({ id: cat.id, playerId, at: until, until: until + CAT_RIDE_MS, phrase: Math.floor(Math.random() * 1000) });
+  }
 };
 catPrompt.addEventListener("click", (e) => {
   feedCat(nearCat());
@@ -4249,8 +4283,9 @@ function closestAnimal() {
     best = { kind: "capy" };
     bestDist = capyDist;
   }
+  const now = roomNow();
   for (const cat of cats) {
-    if (cat.ride || cat.hopOff) continue; // on a player's head or hopping down: not feedable
+    if ((cat.ride && now >= cat.ride.at) || cat.hopOff || (now >= cat.fed.at && now < cat.fed.until)) continue; // on a player's head, hopping down, or eating: not feedable
     const d = Math.hypot(pos.x - cat.mesh.position.x, pos.z - cat.mesh.position.z);
     if (d < CAT_NEAR && d < bestDist) {
       best = { kind: "cat", cat };
