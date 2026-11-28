@@ -5,6 +5,7 @@
  */
 import * as THREE from "three";
 import "./fishing.css";
+import { FISH_W, FISH_H, SPECIES, fishGrid, pickCatch } from "./fish-species.js";
 
 const FAST = import.meta.env.DEV && new URLSearchParams(location.search).has("fast");
 const MIN = FAST ? 1000 : 60000;
@@ -16,48 +17,30 @@ export const FISH_NEAR = 2.4;
 export const FISH_LEAVE = 2;
 const CONFIRM_MS = 3000;
 
-const FW = 24,
-  FH = 12;
-const OUTLINE = "#1b1b24";
-const C = { back: "#55666f", side: "#8496a2", belly: "#c9d2d8", bars: "#46525c", fin: "#9a5a5a" };
 /**
- * Draws the fish in pixel art, facing left.
+ * Draws a species pixel-art sprite (or its silhouette) onto a canvas.
+ * @param {HTMLCanvasElement} cv
+ * @param {string} id
  * @param {number} P size of one pixel on screen
+ * @param {boolean} [silhouette]
  * @returns {HTMLCanvasElement}
  */
-function fishCanvas(P) {
-  const g = Array.from({ length: FH }, () => Array(FW).fill(null));
-  const set = (x, y, col) => x >= 0 && x < FW && y >= 0 && y < FH && (g[y][x] = col);
-  const x0 = 2,
-    len = 15,
-    h = 8,
-    cy = (FH - 1) / 2;
-  const half = (x) => (h / 2) * Math.sqrt(Math.max(0, 1 - (((x - x0) / (len - 1) - 0.42) / 0.6) ** 2));
-  for (let x = x0; x < x0 + len; x++)
-    for (let y = 0; y < FH; y++) {
-      const d = (y - cy) / Math.max(half(x), 0.5);
-      if (Math.abs(y - cy) > half(x)) continue;
-      const bar = d < 0.45 && x - x0 > 3 && x - x0 < 13 && (x - x0) % 4 === 2;
-      set(x, y, bar ? C.bars : d < -0.35 ? C.back : d > 0.4 ? C.belly : C.side);
-    }
-  const xt = x0 + len - 1;
-  for (let i = 1; i <= 5; i++) {
-    const spread = 1 + i * 0.85;
-    for (let y = 0; y < FH; y++) {
-      const d = Math.abs(y - cy);
-      if (d <= spread && !(i > 3 && d < spread - 2)) set(xt + i, y, C.fin);
+function drawCatch(cv, id, P, silhouette = false) {
+  const w = FISH_W * P,
+    h = FISH_H * P;
+  if (cv.width !== w) cv.width = w;
+  if (cv.height !== h) cv.height = h;
+  const c = cv.getContext("2d");
+  c.clearRect(0, 0, w, h);
+  const grid = fishGrid(id);
+  for (let y = 0; y < FISH_H; y++) {
+    for (let x = 0; x < FISH_W; x++) {
+      const col = grid[y][x];
+      if (!col) continue;
+      c.fillStyle = silhouette ? "rgba(242, 242, 245, 0.16)" : col;
+      c.fillRect(x * P, y * P, P, P);
     }
   }
-  for (let x = x0 + 5; x <= x0 + 9; x++) set(x, Math.ceil(cy - half(x)) - 1, C.fin);
-  set(x0 + 2, Math.round(cy - 1), OUTLINE);
-  set(x0, Math.round(cy + 1), OUTLINE);
-  const cv = Object.assign(document.createElement("canvas"), { width: FW * P, height: FH * P });
-  const c = cv.getContext("2d");
-  for (let y = 0; y < FH; y++)
-    for (let x = 0; x < FW; x++) {
-      const col = g[y][x] || ([[1, 0], [-1, 0], [0, 1], [0, -1]].some(([a, b]) => g[y + b]?.[x + a]) ? OUTLINE : null);
-      if (col) (c.fillStyle = col), c.fillRect(x * P, y * P, P, P);
-    }
   return cv;
 }
 
@@ -376,13 +359,26 @@ gl_Position.xy = (cell / uRes * 2.0 - 1.0) * gl_Position.w;`,
  * @param {THREE.Camera} o.camera
  * @param {(dir: string) => {shift: number, drop: number} | null} o.shape where your trainer's body is on its frame (null while its sheet loads)
  * @param {(target: {x: number, y: number, z: number} | null) => void} [o.onChange] the line went out (where the bobber is) or came back in (null)
+ * @param {() => {scene?: string, night?: boolean, raining?: boolean}} [o.context] current world context for picking a catch
  */
-export function createFishing({ scene, button, say, feetDepth, camera, shape, onChange }) {
+export function createFishing({ scene, button, say, feetDepth, camera, shape, onChange, context = () => ({}) }) {
   let state = load("fishing", { phase: "idle" });
   if (state?.phase !== "out") state = { phase: "idle" };
   let confirmUntil = 0,
     lastPlop = 0;
   const setState = (s) => (save("fishing", (state = s)), onChange?.(s.phase === "out" ? s.target : null));
+
+  const readLog = () => {
+    const raw = load("fish-log", {});
+    const log = {};
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+      for (const s of SPECIES) {
+        const n = raw[s.id];
+        if (Number.isInteger(n) && n > 0) log[s.id] = n;
+      }
+    }
+    return log;
+  };
 
   /** @returns {"idle" | "focus" | "bite"} */
   const phase = (now = Date.now()) => (state.phase !== "out" ? "idle" : now < state.end ? "focus" : "bite");
@@ -398,8 +394,22 @@ export function createFishing({ scene, button, say, feetDepth, camera, shape, on
 
   const picker = Object.assign(document.createElement("form"), { id: "fish-time", className: "glass", hidden: true });
   picker.innerHTML =
-    '<b>focus for how long?</b><div class="quick"></div><label><input inputmode="numeric" maxlength="3" autocomplete="off" aria-label="minutes" /> min</label><button type="submit">cast</button><small>Enter casts · Esc cancels</small>';
+    '<b>focus for how long?</b><div class="quick"></div><label><input inputmode="numeric" maxlength="3" autocomplete="off" aria-label="minutes" /> min</label><button type="submit">cast</button><small>Enter casts · Esc cancels</small><div class="catch-log"></div>';
   const field = picker.querySelector("input");
+  const logRow = picker.querySelector(".catch-log");
+  const logSlots = SPECIES.map((s) => {
+    const cv = document.createElement("canvas");
+    logRow.append(cv);
+    return { species: s, cv };
+  });
+  function renderLog() {
+    const log = readLog();
+    for (const { species: s, cv } of logSlots) {
+      const n = log[s.id] || 0;
+      drawCatch(cv, s.id, 2, n === 0);
+      cv.title = n ? `${s.name} (×${n})` : s.hint ? `??? (${s.hint})` : "???";
+    }
+  }
   for (const m of MINUTES) {
     const b = Object.assign(document.createElement("button"), { type: "button", textContent: `${m}` });
     b.addEventListener("click", () => ((field.value = m), picker.requestSubmit()));
@@ -432,6 +442,7 @@ export function createFishing({ scene, button, say, feetDepth, camera, shape, on
    */
   function choose(cast) {
     onPick = cast;
+    renderLog();
     field.value = load("fish-minutes", 25);
     picker.hidden = false;
     field.focus();
@@ -439,7 +450,12 @@ export function createFishing({ scene, button, say, feetDepth, camera, shape, on
   }
 
   const card = Object.assign(document.createElement("div"), { id: "catch", className: "glass", hidden: true });
-  card.append(fishCanvas(4), Object.assign(document.createElement("p"), { className: "txt" }));
+  const catchCanvas = document.createElement("canvas");
+  const catchInfo = Object.assign(document.createElement("div"), { className: "info" });
+  const catchTxt = Object.assign(document.createElement("p"), { className: "txt" });
+  const catchMeta = Object.assign(document.createElement("small"), { className: "meta" });
+  catchInfo.append(catchTxt, catchMeta);
+  card.append(catchCanvas, catchInfo);
   document.body.append(card);
   let cardTimer = 0;
 
@@ -465,8 +481,17 @@ export function createFishing({ scene, button, say, feetDepth, camera, shape, on
   }
   function pull() {
     const minutes = state.minutes;
+    const caught = pickCatch({ ...context(), minutes });
+    const log = readLog();
+    const isNew = !log[caught.id];
+    log[caught.id] = (log[caught.id] || 0) + 1;
+    save("fish-log", log);
+    const found = SPECIES.filter((s) => log[s.id] > 0).length;
     setState({ phase: "idle" });
-    card.querySelector(".txt").textContent = `you caught a fish! ${minutes} min of focus done`;
+    drawCatch(catchCanvas, caught.id, 4);
+    catchTxt.textContent = `you caught ${caught.label}!`;
+    if (isNew) catchTxt.append(Object.assign(document.createElement("span"), { className: "new", textContent: "new" }));
+    catchMeta.textContent = `${minutes} min of focus done · ${found}/${SPECIES.length} found`;
     card.hidden = false;
     clearTimeout(cardTimer);
     cardTimer = setTimeout(() => (card.hidden = true), 6000);
