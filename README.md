@@ -37,14 +37,19 @@ Open the URL, pick a trainer and press **enter the room**: the click is what let
 | Enter | open the chat; it stays open after sending · Esc or Enter on an empty box goes back to walking |
 | @ in the chat | mention someone in the room (Tab or Enter picks the name); everyone reads it, but it is highlighted for them |
 | G | switch trainer |
-| N or the day/night button | switch between day and night for you |
+| T by the pond | skip a stone on the water (everyone sees it) |
+| C, or the sitting button | sit on the ground, facing the way you stand (any move gets you up) |
+| N or the day/night button | switch between night, day and automatic day/night cycle for you |
 | R or the rain button | turn the rain on or off for you (greyer sky by day) |
 | F or the full screen button | enter or leave full screen (hidden where the browser can't, e.g. iPhone) |
 | B, or E (or a tap on the note) by the board | open the message wall: read the notes, like them and pin your own (most liked first, or newest) |
-| E (or a tap on the note) at the pond's edge, facing the water | fish: choose how many minutes to focus; when the time is up a fish bites and you have a minute to press E again and pull it in |
+| E (or a tap on the note) at the pond's edge, facing the water | fish: choose how many minutes to focus; when the time is up a fish bites and you have a minute to press E again and pull it in (everyone sees your line out; the timer is yours) |
 | Space | pause the music for you only |
+| Click a name (over a trainer or in the chat) | open that player's profile: their trainer, account number and medals; add them as a friend or invite them to a private chat |
 
 - There are two scenes, each its own room: the town (`lobby`) and the lake (`lago`), reached by the path at the top of the town. The server refuses any other room name; the list is [`src/scenes.js`](src/scenes.js).
+- Accounts: press the GitHub button in the top card or **log in** on the start screen (or type `/github`) and type the code it shows at github.com/login/device. That is the only way to make an account. It gets a number in the order accounts were made, a profile with medals, a friends list and private chat (with friends, or with anyone who accepts your invitation): a tab in the chat panel that can be dragged out into a window. `/github out` logs out; the account stays.
+- Contributors: type `/github` in the chat and type the code it shows at github.com/login/device. The game learns your GitHub login and shows a badge with your merged pull requests (`/github out` forgets it). For a deploy of your own, create a GitHub OAuth App with "Enable Device Flow" on and put its Client ID in `GITHUB_CLIENT_ID` and your repository in `GITHUB_REPO` (`wrangler.toml`); no secret is needed.
 - Admin: type `/admin` in the chat and enter the password in the login box (`ADMIN_PASSWORD`); `/logout` leaves. Then you can restart or skip the song for everyone, and click a player's name (above them or in the chat) to kick or ban them, and delete notes on the message wall (the ✕ on a note); `/unban` in the chat lifts every ban.
 - Change the song list in [`src/radio.js`](src/radio.js) (`LISTA`, YouTube video ids).
 
@@ -56,27 +61,40 @@ Open the URL, pick a trainer and press **enter the room**: the click is what let
 |---|---|---|
 | Hosting | One **Worker** serves the Vite build as static assets and routes `/ws/<room>`; no other server | [ADR 001](docs/adr/001-one-durable-object-per-room.md) |
 | Rooms | One **Durable Object per room**, WebSocket Hibernation API; each player's state lives in its own socket (`serializeAttachment`) | [ADR 001](docs/adr/001-one-durable-object-per-room.md) |
-| Music | YouTube player with no controls; position = clock time since a fixed start, or since the last admin command kept in the object's storage | [ADR 002](docs/adr/002-radio-synced-by-the-clock.md) |
+| Music | YouTube player with no controls, kept off screen; position = clock time since a fixed start, or since the last admin command kept in the object's storage | [ADR 002](docs/adr/002-radio-synced-by-the-clock.md) |
 | Rendering | three.js: sprites as lit planes in a 3D scene, real shadows from each lamp, **every sprite pixel takes the depth of the feet** | [ADR 003](docs/adr/003-sprites-take-the-depth-of-the-feet.md) |
 | Assets | The repo and live site include the **Twinleaf FBX town, its textures and both trainer sheets** from `public/assets/`; code-generated fallbacks remain for load failures | [ADR 005](docs/adr/005-version-and-deploy-game-assets.md) |
 | Presence | `pagehide` beacon (`/api/leave` with per-socket token), zero-wake `ping`/`pong` heartbeat + DO `alarm()`, and strict pre-`hello` gating | [ADR 006](docs/adr/006-reliable-disconnect-and-stale-socket-cleanup.md) |
+| Day / night / auto | Client-side 3-state switch (`night`, `day`, `auto`): 10-minute keyframed cycle (`DEFAULT_CYCLE_MS` in `src/main.js`), persisted in `localStorage`; dev-only module in `src/cycle-debug.js` | [ADR 008](docs/adr/008-client-side-day-night-cycle.md) |
+| Town cats | Five clock-synced procedural cats roaming a whole-town BFS NavGrid (`src/cat.js`), fed with `E`, with DO heartbeat lottery for head-perching (`worker/index.js`) | [ADR 009](docs/adr/009-free-roaming-town-cats-and-head-perching.md) |
+| Debug hub | Single dev-only `import.meta.env.DEV` hub (`src/debug.js`) behind one toolbar bug button, hosting modular debug views (`src/cat-debug.js`, `src/cycle-debug.js`) and stripped from production builds | [ADR 010](docs/adr/010-dev-only-modular-debug-hub.md) |
+| Carousel | Built in code where pines are taken out of the town as it loads; turned by the room's clock (`roomNow()`), so its horses are just seats 16..23 and riding sends no messages; nothing that turns casts a shadow | [ADR 011](docs/adr/011-christmas-carousel.md) |
+| Ferris wheel and fair lamps | The carousel's pattern right of the pond: gondolas are seats 24..31, boarded only near the bottom, placed upright each frame from the room's clock; four lamps around the rides whose light casts no shadow | [ADR 012](docs/adr/012-ferris-wheel-and-fair-lamps.md) |
+| Roller coaster | Over the pond, in 42 s cycles by the room's clock: 12 s at the station to board seats 32..36, one per car of a level 5-car train (the server checks the time), 30 s along a curve whose speed comes from a precomputed table; riders get off when the cycle ends | [ADR 013](docs/adr/013-roller-coaster-in-cycles.md) |
 | Message wall | Notes go over HTTP (`/api/notes`), not the WebSocket, and live in the room object's storage: **one key per note**, so the wall has no size limit and is read a page at a time | [SECURITY.md](SECURITY.md) |
+| Accounts, friends, private chat | An account is made by a GitHub login (device flow), numbered in the order they were made and named by that number everywhere; medals are rules over the account; friends need both sides, and so does a private chat with a non-friend (an invitation); private chat goes through the room's WebSocket and its storage keeps the last 50 messages per pair (`worker/social.js`, `src/social.js`) | [ADR 014](docs/adr/014-accounts-friends-and-private-chat.md) |
+| Where accounts live | **D1** (`worker/accounts.js`): accounts and sessions in one database for the whole deploy, made by Wrangler on the first deploy and its tables by the Worker; an account is GitHub's numeric user id (the login can change) and keeps the verified e-mail, which never leaves the server. Friends and private messages stay in the room's storage | [ADR 015](docs/adr/015-accounts-in-d1.md) |
 | Admin | Secret `ADMIN_PASSWORD`, checked in the room object in constant time, few tries per connection | [SECURITY.md](SECURITY.md) |
 
 **Scenes.** Each scene is a room; a portal (a box at a map edge, in [`src/scenes.js`](src/scenes.js)) closes the socket, swaps the scene and joins the next room behind a short fade. The town is loaded once and kept out of the scene while you're away, so only one place is drawn at a time. Bans live in the town's object, which the other rooms ask.
 
-**Limits of this design.** A room is one object, so it holds a few dozen players (capped at 100); growing past that would mean opening more rooms, not a bigger one. Positions are relayed, not simulated on the server, so a modified client can teleport; nothing in the lobby is worth cheating for. The YouTube player can't be hidden or fully controlled (ads, embeds disabled by the owner): those videos are skipped.
+**Limits of this design.** A room is one object, so it holds a few dozen players (capped at 100); growing past that would mean opening more rooms, not a bigger one. Positions are relayed, not simulated on the server, so a modified client can teleport; nothing in the lobby is worth cheating for. The YouTube player can't be fully controlled (ads, embeds disabled by the owner): those videos are skipped. It plays off screen, which YouTube's terms for embedded players do not expect.
 
 The full design, with the protocol and the sync rules, is in the [v1 spec](docs/spec/v1.md).
 
 ### Repository
 
 ```
-index.html          HUD: room box, radio, chat, entry screen (glass over the scene)
+index.html          HUD: room box, chat, entry screen (glass over the scene)
 src/
   main.js           scene, lights, water, asset loading and code-generated fallbacks,
                     collision, chat bubbles, name tags, multiplayer client
-  radio.js          YouTube player synced by the clock or by the room's radio command
+  cat.js            procedural pixel-art town cats (5 coats, walk, eat, 4-dir head perch)
+  debug.js          dev-only modular debug hub (stripped from production builds)
+  cat-debug.js      dev-only cat & NavGrid debug module (stripped from production builds)
+  cycle-debug.js    dev-only cycle debug module (stripped from production builds)
+  radio.js          YouTube player (off screen) synced by the clock or by the room's radio command
+  social.js         account, profile and medals, friends list, private chat tabs
   scenes.js         the scenes (= rooms) and their portals
   lake.js           the lake scene, built from the town's pieces
   lake-layout.js    the lake's tile map and where everything stands (pure, tested)
@@ -84,6 +102,8 @@ test/               unit tests (npm test)
 public/assets/      Twinleaf FBX model, textures and male/female trainer sheets
 worker/index.js     Worker (static assets + /ws routing) and the Room Durable Object
 worker/rooms.js     which room a request is for
+worker/social.js    medals, friends and private chat (methods of the Room)
+worker/accounts.js  accounts and sessions, in D1
 scripts/            deploy-your-own, README image rendering
 docs/               PRD, spec, ADRs, README images and real gameplay screenshot
 ```

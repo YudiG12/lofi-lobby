@@ -3,8 +3,17 @@
 //   client -> server: { t: "hello", name, gender, color, cap, x, z, dir } | { t: "pos", x, z, dir, step, run }
 //                     { t: "chat", text } | { t: "name", name } | { t: "gender", gender, cap }
 //                     { t: "color", color }   (name colour: one of NAME_COLORS)
-//                     { t: "sit", seat, n }   (bench seat 0..15 or -1 to stand; n numbers the request)
+//                     { t: "sit", seat, n }   (bench seat 0..15, carousel horse 16..23, Ferris wheel gondola 24..31, roller coaster 32..36 while it waits at the station, or -1 to stand; n numbers the request)
 //                     { t: "capy" }   (feed the capybara)
+//                     { t: "stone", pts: [[x, z], ...] }   (a stone skipped on the pond: where it touched the water, 1 to 6)
+//                     { t: "ground", on }   (sit on the ground, or get up)
+//                     { t: "fish", on, x, z }   (your fishing line is out, the bobber at x, z; or back in)
+//                     { t: "cat", id }   (feed one of the town cats)
+//                     { t: "github-start" }   (log in with GitHub: ask for a code to type at github.com/login/device)
+//                     { t: "github-poll" }   (has the player typed the code yet?)
+//                     { t: "github", session }   (on reconnect: the session a login gave this browser)
+//                     { t: "github-out" }   (forget that session)
+//                     accounts, profiles, friends and private chat: see worker/social.js
 //                     { t: "radio", idx, password }   (admin)
 //                     { t: "auth", password, quiet }   (admin login: admin-ok or an error; quiet = on reconnect, no admin-ok)
 //                     { t: "who", id, password }   (admin: who is this player)
@@ -15,11 +24,24 @@
 //                     { t: "joined", player } | { t: "left", id } | { t: "pos", ... }
 //                     { t: "chat", id, name, color, text, at } | { t: "name", id, name } | { t: "color", id, color }
 //                     { t: "gender", id, gender, cap } | { t: "radio", command } | { t: "error", msg }
-//                     { t: "hold", item }   (what you hold: 0 nothing, 1 laptop, 2 coffee, 3 book; the client decides when it shows)
+//                     { t: "stone", id, pts }   (that player skipped a stone; the clients animate it)
+//                     { t: "ground", id, on }   (that player sat on the ground or got up)
+//                     { t: "fish", id, fish }   (that player's line: [x, z] of the bobber, or null when it is in)
+//                     { t: "hold", item }   (what you hold: 0 nothing, 1 laptop, 2 coffee, 3 book, 4 cigarette; the client decides when it shows)
 //                     { t: "seat", id, seat, n }   (who sits where; n only on a correction to the sender)
 //                     { t: "capy", at, until, lost, phrase }   (the capybara was fed: it sits from at to until, room clock;
 //                                                               lost = all its sitting before; phrase picks what it says.
 //                                                               Also sent on join, without phrase)
+//                     { t: "cat", id, at, until, lost, phrase }   (same clock-pause feeding state, per cat id)
+//                     { t: "cat-ride", id, playerId, at, until, phrase }   (the room picked a player for that cat to
+//                                                               sit on their head from at to until; playerId null ends it early.
+//                                                               Only the server starts rides. Also sent on join, without phrase)
+//                     { t: "github-code", code, url, every, until }   (type code at url; ask again every `every` seconds)
+//                     { t: "github-ok", session, login, prs } | { t: "github-fail", msg } | { t: "github-out" }
+//                     { t: "account", ... } | { t: "acct", id, n } | { t: "profile", ... } | { t: "friends", ... } | { t: "dm", ... }
+//                                                 (accounts, friends and private chat: worker/social.js; players and chat also carry n)
+//                     { t: "contrib", id, prs }   (that player is a contributor with prs merged pull requests;
+//                                                  players and chat also carry prs)
 //                     { t: "history", messages: [{ id, name, text, at }] } (on join)
 //                     { t: "notice", msg } | { t: "rename", name } (your name was refused)
 //                     { t: "who", id, tag, names, sameTag } (admin only)
@@ -45,6 +67,8 @@
 //   POST /api/notes { name, gender, text, color, key }  one per NOTE_EVERY_MS per IP, banned IPs refused,
 //                                                  same cleaning and word filter as names and chat, no links
 //   PATCH /api/notes/<id> { text, color, key }  the writer edits their note
+//   PATCH /api/notes/name { name, gender, key }  the writer changed their name: their notes take the new one
+//     ("owned:<owner hash>" lists the ids of each wall key's notes; built from a scan the first time)
 //   POST /api/notes/<id>/claim  the admin takes a note nobody owns (written before wall keys existed)
 //   DELETE /api/notes/<id>  the writer (X-Wall-Key header) or the admin (password in the Authorization header)
 // A note belongs to whoever holds its "wall key" (random, kept in the writer's browser; the note stores its hash).
@@ -65,7 +89,14 @@ const MAX_BYTES = 1024;
 const COORD_LIMIT = 500;
 const ADMIN_ATTEMPTS = 20; // per IP, then locked for ADMIN_LOCK_MS (the "other" rate limit already caps tries at ~1/s)
 const ADMIN_LOCK_MS = 60_000;
-const MAX_SEATS = 16; // bench seats numbered 0..15 (bench * 2 + side); the client knows where each is
+const MAX_SEATS = 37; // bench seats 0..15 (bench * 2 + side), carousel horses 16..23, Ferris wheel gondolas 24..31, roller coaster 32..36; the client knows where each is
+// The roller coaster runs in cycles by the room's clock (src/roller-coaster.js): it waits at the station
+// for BOARD_MS, then rides for RIDE_MS. Its seats can be taken only while it waits (plus a little for the trip).
+const COASTER_SEATS = [32, 37];
+const COASTER_BOARD_MS = 12_000;
+const COASTER_CYCLE_MS = COASTER_BOARD_MS + 30_000;
+const COASTER_LATE_MS = 1_500;
+const coasterBoarding = (now) => now % COASTER_CYCLE_MS < COASTER_BOARD_MS + COASTER_LATE_MS;
 const MAX_PER_IP = 3; // tabs/devices behind one IP
 const KICK_MS = 10 * 60_000; // kick = a short ban, so the client's auto-reconnect doesn't undo it
 const BAN_MS = 7 * 24 * 60 * 60_000;
@@ -91,13 +122,39 @@ const NOTE_COLORS = ["cream", "yellow", "pink", "blue", "green", "lilac"];
 // the capybara: fed, it sits for a while, and then walks a little before it can be fed again
 const CAPY_SIT_MS = 6000;
 const CAPY_REST_MS = 3000;
+// cats: same clock-pause sync per id so multiple cats can be added from config
+const CAT_IDS = ["black", "orange", "calico", "tuxedo", "siamese"];
+const CAT_SIT_MS = 6000;
+const CAT_REST_MS = 3000;
+// now and then (on the heartbeat alarm) a cat climbs onto a random online player's head
+const CAT_RIDE_MS = 18_000;
+const CAT_RIDE_EVERY_MS = 90_000;
+const CAT_RIDE_CHANCE = 0.65;
 const LIKES_PER_IP = 3; // on one note: a house can share an IP, a like farm can't hide behind fresh wall keys
 const LIKES_MAX = 2000; // likers kept per note (one storage value)
 const NOTE_ID = /^note:\d{15}-[a-z0-9]{6}$/;
 const AFTER_EVERY_NOTE = "note:999999999999999-zzzzzz"; // a cursor above every note id
 const topKey = (likes, id) => `top:${String(likes).padStart(6, "0")}:${id}`;
 // rate buckets: capacity, refill per second
-const RATES = { pos: [30, 20], chat: [8, 1], sit: [20, 6], like: [30, 0.5], other: [10, 1] };
+const RATES = { pos: [30, 20], chat: [8, 1], sit: [20, 6], like: [30, 0.5], github: [4, 1 / 30], social: [20, 2], other: [10, 1] };
+// accounts, profiles, friends and private chat (worker/social.js); a private message spends the chat budget
+const SOCIAL = ["profile", "friend", "friends", "bio", "dm-open", "dm-read", "chat-invite", "chat-accept"];
+// contributors: a player proves their GitHub login (OAuth device flow, GITHUB_CLIENT_ID) and the room counts
+// their merged pull requests in GITHUB_REPO. GitHub's token is used once and never kept: the browser gets a
+// random session of the room's own, stored here only as a hash.
+const GH_WEB = "https://github.com";
+const GH_API = "https://api.github.com";
+const GH_HEADERS = { Accept: "application/json", "User-Agent": "lofi-lobby" };
+const GH_SESSION = /^[a-f0-9]{48}$/;
+const GH_LOGIN = /^[a-z0-9-]{1,39}$/;
+const GH_REPO = /^[\w.-]{1,100}\/[\w.-]{1,100}$/;
+const GH_COUNTS_FRESH_MS = 6 * 3600_000; // the counts are read again after this long
+const GH_RETRY_MS = 10 * 60_000; // and after a failed read, not before this
+const GH_PAGES = 10; // closed pull requests read, 100 a page
+const sessionKey = async (session) => {
+  const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode("github|" + session));
+  return "gh:" + [...new Uint8Array(hash)].map((b) => b.toString(16).padStart(2, "0")).join("");
+};
 const HEARTBEAT_CHECK_MS = 60_000;
 const HEARTBEAT_TIMEOUT_MS = 120_000; // > 60s background tab timer throttling
 const HELLO_TIMEOUT_MS = 15_000; // pre-hello sockets cannot hold room slots via edge pings
@@ -111,6 +168,9 @@ function safeClose(ws, code = 1000, reason = "") {
 
 import { badName, cleanChat, hasLink, normalize } from "./moderation.js";
 import { HOME, roomOfPath, leaveRoom } from "./rooms.js";
+import { renamedNotes, wallName } from "./notes.js";
+import { installSocial } from "./social.js";
+import { Accounts, primaryEmail } from "./accounts.js";
 
 const DIRS = ["down", "up", "left", "right"];
 const cleanText = (s, max) =>
@@ -210,6 +270,10 @@ export class Room {
     this.noteEdits = new Map(); // ip -> time of the last note edit (in memory)
     this.spam = new Map(); // ip -> { strikes, mutedUntil, lastStrike, lastText, lastAt }
     this.leftSockets = new WeakSet();
+    this.ghBusy = new Set(); // player ids with a GitHub call in flight
+    this.ghTriedAt = 0; // last read of the pull requests, good or bad
+    // accounts and sessions, in D1; the repository's owner is account 0
+    this.accounts = new Accounts(env.DB, state.storage, String(env.GITHUB_REPO || "").split("/")[0].toLowerCase());
     this.state.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
   }
 
@@ -312,8 +376,7 @@ export class Room {
       if (hasLink(raw)) return json({ error: "links are not allowed on the wall" }, 400);
       const text = cleanChat(raw, NOTE_MAX);
       if (text === null) return json({ error: "note blocked" }, 400);
-      let name = cleanText(m.name, 16) || "trainer";
-      if (badName(name) || /admin|moderador|moderator|staff/.test(normalize(name))) name = "trainer";
+      const name = wallName(m.name);
       const at = Date.now();
       const lastKey = "note-at:" + ip;
       const [ban, last, count] = await Promise.all([this.state.storage.get("ban:" + ip), this.state.storage.get(lastKey), this.noteCount()]);
@@ -324,8 +387,31 @@ export class Room {
       const note = { name, gender: gender(m.gender), text, at, color: NOTE_COLORS.includes(m.color) ? m.color : "cream", ...(owner && { owner }) };
       const id = `note:${String(at).padStart(15, "0")}-${crypto.randomUUID().replace(/-/g, "").slice(0, 6)}`;
       await this.state.storage.put({ [id]: note, [lastKey]: at, "note-count": count + 1 });
+      if (owner) await this.ownNote(owner, id, true);
       this.broadcast({ t: "note", note: shown(id, note), total: count + 1 });
       return json({ note: shown(id, note, owner), total: count + 1 });
+    }
+    // the writer changed their name: every note of their wall key is signed with the new one
+    if (req.method === "PATCH" && url.pathname === "/api/notes/name") {
+      const bytes = req.headers.get("Content-Length");
+      if (!bytes || !(Number(bytes) <= 1024)) return json({ error: "bad request" }, 413);
+      let m;
+      try { m = JSON.parse(await req.text()); } catch { return json({ error: "bad request" }, 400); }
+      const owner = await ownerOf(m?.key);
+      if (!owner) return json({ error: "bad request" }, 400);
+      const now = Date.now();
+      const wait = (this.noteEdits.get(ip) || 0) + NOTE_EDIT_EVERY_MS - now;
+      if (wait > 0) return json({ error: `wait ${Math.ceil(wait / 1000)} s to edit again` }, 429);
+      this.noteEdits.set(ip, now);
+      if ((await this.state.storage.get("ban:" + ip)) > now) return json({ error: "you are banned" }, 403);
+      const ids = await this.ownedNotes(owner);
+      if (!ids.length) return json({ renamed: 0 });
+      const notes = new Map();
+      for (let i = 0; i < ids.length; i += 128) for (const e of await this.state.storage.get(ids.slice(i, i + 128))) notes.set(...e);
+      const changed = [...renamedNotes(notes, owner, wallName(m.name), gender(m.gender))];
+      for (let i = 0; i < changed.length; i += 128) await this.state.storage.put(Object.fromEntries(changed.slice(i, i + 128)));
+      for (const [id, note] of changed) this.broadcast({ t: "note-edit", note: shown(id, note) });
+      return json({ renamed: changed.length });
     }
     // the writer edits their own note: same cleaning as a new one, and a short wait between edits
     if (req.method === "PATCH" && del) {
@@ -364,6 +450,7 @@ export class Room {
       if (!owner) return json({ error: "bad request" }, 400);
       if (note.owner) return json({ error: "this note already has an owner" }, 409);
       await this.state.storage.put(claim[1], { ...note, owner });
+      await this.ownNote(owner, claim[1], true);
       return json({ note: shown(claim[1], { ...note, owner }, owner) });
     }
     if (req.method === "DELETE" && del) {
@@ -378,6 +465,7 @@ export class Room {
       let total = await this.noteCount();
       if (await this.state.storage.delete(del[1])) await this.state.storage.put("note-count", (total = Math.max(0, total - 1)));
       await this.state.storage.delete(["likes:" + del[1], topKey(note?.likes | 0, del[1])]); // its likes go with it
+      if (note?.owner) await this.ownNote(note.owner, del[1], false);
       this.broadcast({ t: "note-del", id: del[1], total });
       return json({ ok: true });
     }
@@ -414,6 +502,23 @@ export class Room {
     return { page, next: cursor };
   }
   // how many notes the wall holds (kept beside them, so nobody has to list them all)
+  // the ids of one wall key's notes. Notes from before this list existed are found once, by reading the wall.
+  async ownedNotes(owner) {
+    const key = "owned:" + owner;
+    let ids = await this.state.storage.get(key);
+    if (!Array.isArray(ids)) {
+      ids = [];
+      for (const [id, note] of await this.state.storage.list({ prefix: "note:" })) if (note?.owner === owner) ids.push(id);
+      // only a key that has notes gets a list: a made-up key must not leave anything in the room's storage
+      if (ids.length) await this.state.storage.put(key, ids);
+    }
+    return ids;
+  }
+  async ownNote(owner, id, on) {
+    const ids = await this.ownedNotes(owner); // a first write also takes in the older notes
+    const next = on ? [...new Set([...ids, id])] : ids.filter((x) => x !== id);
+    if (next.length !== ids.length) await this.state.storage.put("owned:" + owner, next);
+  }
   async noteCount() {
     let n = await this.state.storage.get("note-count");
     if (n == null) await this.state.storage.put("note-count", (n = (await this.state.storage.list({ prefix: "note:" })).size));
@@ -510,6 +615,22 @@ export class Room {
     if (radio) server.send(JSON.stringify({ t: "radio", command: radio }));
     const capy = await this.state.storage.get("capy");
     if (capy) server.send(JSON.stringify({ t: "capy", ...capy }));
+    const cats = await this.state.storage.get("cats");
+    if (cats && typeof cats === "object") {
+      for (const id of CAT_IDS) {
+        if (cats[id]) server.send(JSON.stringify({ t: "cat", id, ...cats[id] }));
+      }
+    }
+    const rides = await this.state.storage.get("cat-rides");
+    if (rides && typeof rides === "object") {
+      const online = new Set(this.players().map((q) => q.id));
+      for (const id of CAT_IDS) {
+        const r = rides[id];
+        if (r?.playerId && r.until > Date.now() && online.has(r.playerId)) {
+          server.send(JSON.stringify({ t: "cat-ride", id, playerId: r.playerId, at: r.at, until: r.until }));
+        }
+      }
+    }
     const messages = await this.history();
     if (messages.length) server.send(JSON.stringify({ t: "history", messages }));
     server.send(JSON.stringify({ t: "state", players: this.players().filter((p) => p.id !== id) }));
@@ -518,7 +639,7 @@ export class Room {
 
   // only each player's public fields (never the IP)
   public(p) {
-    return { id: p.id, name: p.name, gender: p.gender, color: p.color || "", cap: p.cap ?? -1, x: p.x, z: p.z, dir: p.dir, step: p.step, seat: p.seat ?? -1, hold: p.hold | 0, admin: !!p.admin };
+    return { id: p.id, name: p.name, gender: p.gender, color: p.color || "", cap: p.cap ?? -1, x: p.x, z: p.z, dir: p.dir, step: p.step, seat: p.seat ?? -1, hold: p.hold | 0, ground: !!p.ground, fish: p.fish || null, admin: !!p.admin, prs: p.prs | 0, n: p.acct ?? -1 };
   }
   players() {
     return this.openSockets()
@@ -559,7 +680,7 @@ export class Room {
     const p = ws.deserializeAttachment();
     if (!p) return;
     if (!p.joinedAt && m.t !== "hello") return;
-    const type = m.t === "pos" ? "pos" : m.t === "chat" ? "chat" : m.t === "sit" ? "sit" : "other";
+    const type = m.t === "pos" ? "pos" : m.t === "chat" || m.t === "dm" ? "chat" : m.t === "sit" ? "sit" : m.t === "github-start" ? "github" : SOCIAL.includes(m.t) ? "social" : "other";
     // the seat the room really has for this player, tagged with the request it answers
     const seatReply = () => ws.send(JSON.stringify({ t: "seat", id: p.id, seat: p.seat ?? -1, n: Number.isSafeInteger(m.n) ? m.n : 0 }));
     if (!this.allowed(p, type)) {
@@ -593,15 +714,18 @@ export class Room {
       p.cap = cap(m.cap);
       ws.serializeAttachment(p);
       this.broadcast({ t: "gender", id: p.id, gender: p.gender, cap: p.cap }, ws);
+      await this.saveLook(p);
     } else if (m.t === "color") {
       p.color = nameColor(m.color);
       ws.serializeAttachment(p);
       this.broadcast({ t: "color", id: p.id, color: p.color }, ws);
+      await this.saveLook(p);
     } else if (m.t === "name") {
       p.name = this.nameFor(ws, m.name);
       ws.serializeAttachment(p);
       this.broadcast({ t: "name", id: p.id, name: p.name }, ws);
       await this.rememberName(p);
+      await this.saveLook(p);
     } else if (m.t === "pos") {
       p.x = number(m.x);
       p.z = number(m.z);
@@ -615,6 +739,11 @@ export class Room {
       // with the seat the room really has for them
       const seat = Number.isInteger(m.seat) && m.seat >= 0 && m.seat < MAX_SEATS ? m.seat : -1;
       if (seat >= 0 && this.players().some((q) => q.id !== p.id && q.seat === seat)) {
+        seatReply();
+        return;
+      }
+      // nobody gets into the roller coaster's sleigh while it is out on the track
+      if (seat >= COASTER_SEATS[0] && seat < COASTER_SEATS[1] && seat !== p.seat && !coasterBoarding(Date.now())) {
         seatReply();
         return;
       }
@@ -632,11 +761,54 @@ export class Room {
       const fed = { at: now, until: now + CAPY_SIT_MS, lost: c.lost + (c.until - c.at) };
       await this.state.storage.put("capy", fed);
       this.broadcast({ t: "capy", ...fed, phrase: Math.floor(Math.random() * 1000) });
+    } else if (m.t === "stone") {
+      // only relayed (nothing kept): 1 to 6 touches, each a pair of finite numbers in the town
+      if (!Array.isArray(m.pts) || m.pts.length < 1 || m.pts.length > 6) return;
+      const pts = m.pts.map((q) => (Array.isArray(q) && q.length === 2 ? q.map(number) : null));
+      if (pts.some((q) => !q)) return;
+      this.broadcast({ t: "stone", id: p.id, pts }, ws);
+    } else if (m.t === "ground") {
+      // kept on the player, so whoever joins later sees them sitting there
+      p.ground = m.on === true;
+      ws.serializeAttachment(p);
+      this.broadcast({ t: "ground", id: p.id, on: p.ground }, ws);
+    } else if (m.t === "fish") {
+      // the fishing line is out (where the bobber floats, in the town) or back in. Kept on the
+      // player, so whoever joins later sees it; the timer itself stays in that player's browser
+      p.fish = m.on === true ? [number(m.x), number(m.z)] : null;
+      ws.serializeAttachment(p);
+      this.broadcast({ t: "fish", id: p.id, fish: p.fish }, ws);
+    } else if (m.t === "cat") {
+      if (typeof m.id !== "string" || !CAT_IDS.includes(m.id)) return;
+      const now = Date.now();
+      const cats = (await this.state.storage.get("cats")) || {};
+      const c = cats[m.id] || { at: 0, until: 0, lost: 0 };
+      if (now < c.until + CAT_REST_MS) return;
+      // a cat riding someone's head cannot be fed until it hops back down
+      const rides = (await this.state.storage.get("cat-rides")) || {};
+      if (rides[m.id]?.playerId && rides[m.id].until > now) return;
+      const fed = { at: now, until: now + CAT_SIT_MS, lost: c.lost + (c.until - c.at) };
+      cats[m.id] = fed;
+      await this.state.storage.put("cats", cats);
+      this.broadcast({ t: "cat", id: m.id, ...fed, phrase: Math.floor(Math.random() * 1000) });
     } else if (m.t === "hold") {
-      // what the player holds; the client draws it on someone seated, and the coffee also on someone standing still
-      p.hold = [1, 2, 3].includes(m.item) ? m.item : 0;
+      // what the player holds; the client draws it on someone seated, and the coffee or cigarette also on someone standing still
+      p.hold = [1, 2, 3, 4].includes(m.item) ? m.item : 0;
       ws.serializeAttachment(p);
       this.broadcast({ t: "hold", id: p.id, item: p.hold }, ws);
+    } else if (m.t === "github-start") {
+      await this.githubStart(ws);
+    } else if (m.t === "github-poll") {
+      await this.githubPoll(ws);
+    } else if (m.t === "github") {
+      await this.githubResume(ws, m.session);
+    } else if (m.t === "github-out") {
+      if (typeof m.session === "string" && GH_SESSION.test(m.session)) {
+        try { await this.accounts.closeSession(await sessionKey(m.session)); } catch {}
+      }
+      await this.setContributor(ws, null);
+    } else if (m.t === "dm" || SOCIAL.includes(m.t)) {
+      await this.socialMessage(ws, p, m);
     } else if (m.t === "auth") {
       if (!(await this.isAdmin(ws, p, m.password))) return;
       // everyone sees who the admin is (badge over the name, colour in the chat)
@@ -672,10 +844,162 @@ export class Room {
       if (s.repeats > REPEAT_LIMIT) return this.strike(ws, p.ip);
       s.lastText = text;
       s.lastAt = now;
-      const msg = { id: p.id, name: p.name, text, at: now, ...(p.color && { color: p.color }), ...(p.admin && { admin: true }) };
+      const msg = { id: p.id, name: p.name, text, at: now, ...(p.color && { color: p.color }), ...(p.admin && { admin: true }), ...(p.prs > 0 && { prs: p.prs }), ...(p.acct != null && { n: p.acct }) };
       this.broadcast({ t: "chat", ...msg });
       this.stat("chat", p);
       await this.saveHistory([...(await this.history()), msg]);
+    }
+  }
+
+  // ---- contributors (GitHub login) ----
+  // Step 1 of the device flow: GitHub gives a short code the player types at github.com/login/device.
+  async githubStart(ws) {
+    const fail = (msg) => ws.send(JSON.stringify({ t: "github-fail", msg }));
+    const id = ws.deserializeAttachment()?.id;
+    if (!this.env.GITHUB_CLIENT_ID || !this.accounts.on) return fail("github login is not set up on this server");
+    if (!id || this.ghBusy.has(id)) return;
+    this.ghBusy.add(id);
+    let r = null;
+    try {
+      const res = await fetch(GH_WEB + "/login/device/code", {
+        method: "POST",
+        headers: { ...GH_HEADERS, "Content-Type": "application/json" },
+        // user:email: the account keeps the player's verified e-mail (worker/accounts.js); nothing else is asked for
+        body: JSON.stringify({ client_id: this.env.GITHUB_CLIENT_ID, scope: "user:email" }),
+      });
+      r = await res.json();
+    } catch {} finally { this.ghBusy.delete(id); }
+    if (typeof r?.device_code !== "string" || r.device_code.length > 100 || typeof r.user_code !== "string") return fail("github did not answer, try again");
+    // the calls above took a while: read the player again, not a copy from before
+    const p = ws.deserializeAttachment();
+    if (!p || p.left) return;
+    const every = Math.min(30, Math.max(5, r.interval | 0));
+    p.ghDevice = r.device_code;
+    p.ghUntil = Date.now() + Math.min(900, Math.max(60, r.expires_in | 0)) * 1000;
+    ws.serializeAttachment(p);
+    ws.send(JSON.stringify({ t: "github-code", code: cleanText(r.user_code, 12), url: GH_WEB + "/login/device", every, until: p.ghUntil }));
+  }
+  // Step 2: ask GitHub if the code was typed. Then the token says who the player is, reads the pull
+  // requests once and is thrown away; the browser keeps a session of the room's own.
+  async githubPoll(ws) {
+    const first = ws.deserializeAttachment();
+    if (!first?.ghDevice || this.ghBusy.has(first.id)) return;
+    const end = (msg) => {
+      const p = ws.deserializeAttachment();
+      if (p) {
+        delete p.ghDevice;
+        delete p.ghUntil;
+        ws.serializeAttachment(p);
+      }
+      if (msg) ws.send(JSON.stringify({ t: "github-fail", msg }));
+    };
+    if (Date.now() > first.ghUntil) return end("the code expired, type /github again");
+    this.ghBusy.add(first.id);
+    try {
+      const r = await (await fetch(GH_WEB + "/login/oauth/access_token", {
+        method: "POST",
+        headers: { ...GH_HEADERS, "Content-Type": "application/json" },
+        body: JSON.stringify({ client_id: this.env.GITHUB_CLIENT_ID, device_code: first.ghDevice, grant_type: "urn:ietf:params:oauth:grant-type:device_code" }),
+      })).json();
+      if (r?.error === "authorization_pending" || r?.error === "slow_down") return;
+      if (typeof r?.access_token !== "string") return end(r?.error === "access_denied" ? "github login cancelled" : "github login failed, type /github again");
+      const auth = { ...GH_HEADERS, Authorization: "Bearer " + r.access_token };
+      const user = await (await fetch(GH_API + "/user", { headers: auth })).json();
+      const login = typeof user?.login === "string" ? user.login.toLowerCase() : "";
+      if (!GH_LOGIN.test(login)) return end("github login failed, type /github again");
+      const githubId = Number.isSafeInteger(user.id) && user.id > 0 ? user.id : null;
+      let email = null;
+      try { email = primaryEmail(await (await fetch(GH_API + "/user/emails?per_page=100", { headers: auth })).json()); } catch {}
+      await this.readContributors(auth);
+      // the account (made now, on a first login) and a session of the room's own for this browser
+      let account;
+      const session = [...crypto.getRandomValues(new Uint8Array(24))].map((b) => b.toString(16).padStart(2, "0")).join("");
+      try {
+        account = await this.accounts.signIn({ login, githubId, email });
+        await this.accounts.openSession(await sessionKey(session), account.n);
+      } catch {
+        return end("could not open your account, type /github again");
+      }
+      end();
+      const prs = await this.setContributor(ws, account);
+      ws.send(JSON.stringify({ t: "github-ok", session, login, prs }));
+    } catch {
+      // GitHub is slow or down: the player keeps asking until the code expires
+    } finally {
+      this.ghBusy.delete(first.id);
+    }
+  }
+  // A browser that logged in before comes back with its session.
+  async githubResume(ws, session) {
+    if (typeof session !== "string" || !GH_SESSION.test(session) || !this.accounts.on) return;
+    let account;
+    try {
+      account = await this.accounts.session(await sessionKey(session));
+    } catch {
+      return; // the accounts database did not answer: a guest for now, the browser keeps its session
+    }
+    if (!account) return void ws.send(JSON.stringify({ t: "github-out" }));
+    await this.setContributor(ws, account);
+  }
+  // Whose connection this is: its account (worker/accounts.js; null = nobody) and how many merged pull
+  // requests its GitHub login has; everyone is told.
+  async setContributor(ws, account) {
+    const login = account?.login || "";
+    const counts = login ? await this.contributors() : {};
+    const p = ws.deserializeAttachment();
+    if (!p || p.left) return 0;
+    const before = p.prs | 0;
+    const was = p.acct ?? -1;
+    p.gh = login;
+    p.prs = Math.min(9999, counts[login] | 0);
+    if (account) p.acct = account.n;
+    else delete p.acct;
+    ws.serializeAttachment(p);
+    if (p.prs !== before) this.broadcast({ t: "contrib", id: p.id, prs: p.prs });
+    const now = p.acct ?? -1;
+    if (now !== was) {
+      this.broadcast({ t: "acct", id: p.id, n: now });
+      if (was >= 0) await this.presence(was, false);
+    }
+    if (account) await this.accountAttached(ws, account, now !== was);
+    else if (was >= 0) ws.send(JSON.stringify({ t: "account", n: -1 }));
+    return p.prs;
+  }
+  // { login: merged pull requests }, from storage; read again from GitHub in the background when it gets old
+  // or after a deploy
+  async contributors() {
+    const saved = (await this.state.storage.get("contributors")) || { counts: {}, at: 0 };
+    // old, or counted by another deploy: a deploy often follows a merge, so the first read after one is fresh
+    const stale = Date.now() - saved.at > GH_COUNTS_FRESH_MS || (saved.v || "") !== (this.env.VERSION?.id || "");
+    if (stale && Date.now() - this.ghTriedAt > GH_RETRY_MS) this.state.waitUntil(this.readContributors().catch(() => {}));
+    return saved.counts;
+  }
+  // Counts the merged pull requests of GITHUB_REPO per author. With a player's token on a login, without one
+  // otherwise (public data; GitHub allows few such calls an hour, hence the cache). A failed read keeps the old counts.
+  async readContributors(headers = GH_HEADERS) {
+    const repo = this.env.GITHUB_REPO || "";
+    if (!GH_REPO.test(repo)) return;
+    this.ghTriedAt = Date.now();
+    const counts = {};
+    for (let page = 1; page <= GH_PAGES; page++) {
+      const res = await fetch(`${GH_API}/repos/${repo}/pulls?state=closed&per_page=100&page=${page}`, { headers });
+      if (!res.ok) return;
+      const list = await res.json();
+      if (!Array.isArray(list)) return;
+      for (const pr of list) {
+        const login = typeof pr?.user?.login === "string" ? pr.user.login.toLowerCase() : "";
+        if (pr?.merged_at && GH_LOGIN.test(login)) counts[login] = (counts[login] || 0) + 1;
+      }
+      if (list.length < 100) break;
+    }
+    await this.state.storage.put("contributors", { counts, at: Date.now(), v: this.env.VERSION?.id || "" });
+    // players already in the room get their new count
+    for (const ws of this.openSockets()) {
+      const p = ws.deserializeAttachment();
+      if (!p?.gh || p.left || (p.prs | 0) === (counts[p.gh] | 0)) continue;
+      p.prs = Math.min(9999, counts[p.gh] | 0);
+      ws.serializeAttachment(p);
+      this.broadcast({ t: "contrib", id: p.id, prs: p.prs });
     }
   }
 
@@ -849,7 +1173,52 @@ export class Room {
       if (now - lastSeen > HEARTBEAT_TIMEOUT_MS) stale.push(ws);
     }
     for (const ws of stale) this.leave(ws, 1000, "heartbeat timeout");
+    await this.maybeStartCatRide(Date.now());
     if (this.openSockets().length > 0) await this.state.storage.setAlarm(Date.now() + HEARTBEAT_CHECK_MS);
+  }
+  // Server-only cat-on-head lottery: picks a random online player on the heartbeat alarm,
+  // avoiding players already carrying another cat and launching at most one new ride per tick.
+  async maybeStartCatRide(now) {
+    const players = this.players();
+    if (!players.length) return;
+    const rides = (await this.state.storage.get("cat-rides")) || {};
+    const cats = (await this.state.storage.get("cats")) || {};
+    const occupied = new Set(
+      Object.values(rides)
+        .filter((r) => r?.playerId && r.until > now)
+        .map((r) => r.playerId),
+    );
+    const available = players.filter((p) => !occupied.has(p.id));
+    if (!available.length) return;
+    let changed = false;
+    for (const id of CAT_IDS) {
+      const r = rides[id];
+      if (r && now < r.until + CAT_RIDE_EVERY_MS) continue;
+      if (cats[id]?.until > now) continue;
+      if (Math.random() > CAT_RIDE_CHANCE) continue;
+      const pick = available[Math.floor(Math.random() * available.length)];
+      const ride = { playerId: pick.id, at: now, until: now + CAT_RIDE_MS };
+      rides[id] = ride;
+      changed = true;
+      this.broadcast({ t: "cat-ride", id, ...ride, phrase: Math.floor(Math.random() * 1000) });
+      break;
+    }
+    if (changed) await this.state.storage.put("cat-rides", rides);
+  }
+  async clearCatRideFor(playerId) {
+    const rides = await this.state.storage.get("cat-rides");
+    if (!rides || typeof rides !== "object") return;
+    const now = Date.now();
+    let changed = false;
+    for (const id of CAT_IDS) {
+      const r = rides[id];
+      if (r?.playerId === playerId && r.until > now) {
+        rides[id] = { playerId: null, at: r.at, until: now };
+        changed = true;
+        this.broadcast({ t: "cat-ride", id, playerId: null, at: now, until: now });
+      }
+    }
+    if (changed) await this.state.storage.put("cat-rides", rides);
   }
   async leaveByBeacon(req) {
     const bytes = req.headers.get("Content-Length");
@@ -893,12 +1262,18 @@ export class Room {
       if (p.joinedAt) this.stat("leave", p, [Math.round((Date.now() - p.joinedAt) / 1000)]);
       for (const k of this.buckets.keys()) if (k.startsWith(p.id + "|")) this.buckets.delete(k);
       safeClose(ws, code, reason);
-      if (p.joinedAt) this.broadcast({ t: "left", id: p.id }, ws);
+      if (p.joinedAt) {
+        this.broadcast({ t: "left", id: p.id }, ws);
+        this.clearCatRideFor(p.id).catch(() => {});
+        if (p.acct != null) this.presence(p.acct, false).catch(() => {});
+      }
     } else {
       safeClose(ws, code, reason);
     }
   }
 }
+
+installSocial(Room, { cleanText });
 
 export default {
   // once a day: archive yesterday's numbers in the room's storage (see Room.archive)

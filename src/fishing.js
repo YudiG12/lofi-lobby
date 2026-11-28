@@ -1,6 +1,7 @@
 /**
  * Fishing pomodoro: cast at the pond's edge, choose how many minutes to focus, and when the time
- * is up a fish bites (a sound plays) and you have PULL_WINDOW to pull it in. Client-only.
+ * is up a fish bites (a sound plays) and you have PULL_WINDOW to pull it in. The timer is yours
+ * alone; the room only passes on that your line is out and where the bobber is, so the others see it.
  */
 import * as THREE from "three";
 import "./fishing.css";
@@ -166,26 +167,14 @@ const clock = (ms) => {
 };
 
 /**
- * Creates the fishing line: rod, line and bobber in the scene, the minutes box, the catch card and
- * the timer. A line that is out is kept in localStorage, so it survives a reload.
+ * One trainer's rod, line and bobber in the scene (yours, or another player's whose line is out).
  * @param {object} o
  * @param {THREE.Scene} o.scene
- * @param {HTMLButtonElement} o.button HUD button that shows the time left
- * @param {(text: string) => void} o.say bubble over your trainer (only you see it)
- * @param {(mesh: THREE.Mesh) => void} o.feetDepth gives the rod the same depth as your trainer
  * @param {THREE.Camera} o.camera
- * @param {(dir: string) => {shift: number, drop: number} | null} o.shape where your trainer's body is on its frame (null while its sheet loads)
+ * @param {(mesh: THREE.Mesh) => void} o.feetDepth gives the rod the same depth as its trainer
+ * @param {(dir: string) => {shift: number, drop: number, key: string} | null} o.shape where the trainer's body is on its frame (null while its sheet loads)
  */
-export function createFishing({ scene, button, say, feetDepth, camera, shape }) {
-  let state = load("fishing", { phase: "idle" });
-  if (state?.phase !== "out") state = { phase: "idle" };
-  let confirmUntil = 0,
-    lastPlop = 0;
-  const setState = (s) => save("fishing", (state = s));
-
-  /** @returns {"idle" | "focus" | "bite"} */
-  const phase = (now = Date.now()) => (state.phase !== "out" ? "idle" : now < state.end ? "focus" : "bite");
-
+export function createFishingGear({ scene, camera, feetDepth, shape }) {
   const rods = {};
   const rodTex = rodArt("down").tex;
   const rod = new THREE.Mesh(
@@ -228,8 +217,8 @@ gl_Position.xy = (cell / uRes * 2.0 - 1.0) * gl_Position.w;`,
     new THREE.MeshBasicMaterial({ map: pixelTexture(RING_ROWS, { o: "#cfe6ff" }), transparent: true, opacity: 0, depthWrite: false }),
   );
   ripple.rotation.x = -Math.PI / 2;
-  const gear = [rod, line, bobber, ripple];
-  gear.forEach((o) => ((o.visible = false), scene.add(o)));
+  const parts = [rod, line, bobber, ripple];
+  parts.forEach((o) => ((o.visible = false), scene.add(o)));
   // where the bobber lands: rings that open and fade on the water, like the rain's splashes
   const SPLASH_SIZES = [2.4, 3.4, 4.4],
     SPLASH_GAP = 0.12,
@@ -275,21 +264,23 @@ gl_Position.xy = (cell / uRes * 2.0 - 1.0) * gl_Position.w;`,
    * trainer and turns with it; the line runs from the rod's tip to the bobber. Right after a cast
    * the rod goes up and the bobber flies out to the water.
    * @param {number} now Date.now()
-   * @param {THREE.Mesh} body your trainer's sprite
+   * @param {THREE.Mesh} body the trainer's sprite
    * @param {string} dir the way the trainer faces now
+   * @param {"idle" | "focus" | "bite"} p
+   * @param {{x: number, y: number, z: number}} [target] where the bobber floats (not needed while idle)
+   * @param {boolean} [sound] play the plop when the bobber lands (your own line)
    */
-  function draw(now, body, dir) {
-    const p = phase(now);
-    gear.forEach((o) => (o.visible = p !== "idle"));
+  function draw(now, body, dir, p, target, sound) {
+    parts.forEach((o) => (o.visible = p !== "idle"));
     if (p === "idle") return splashes.forEach((m) => (m.visible = false));
     const t = now / 1000;
     const a = (now - castAt) / CAST_MS;
     const windUp = a < WIND_UP,
       flying = a < 1;
-    const { x: tx, y: ty, z: tz } = state.target;
+    const { x: tx, y: ty, z: tz } = target;
 
     const sh = shape(dir);
-    const key = dir + (windUp ? "b" : "");
+    const key = dir + (windUp ? "b" : "") + (sh?.key || ""); // per sheet: a trainer can change
     const art = rods[key] || rodArt(dir, windUp, sh);
     if (sh) rods[key] = art;
     rod.material.map = rod.material.emissiveMap = art.tex;
@@ -308,7 +299,7 @@ gl_Position.xy = (cell / uRes * 2.0 - 1.0) * gl_Position.w;`,
       const e = (a - WIND_UP) / (1 - WIND_UP);
       bobber.position.lerpVectors(_tip, _p.set(tx, ty + 0.06, tz), e).y += Math.sin(Math.PI * e) * 2;
     } else {
-      if (!landed) (landed = true), (landAt = now), tone(700, 180, 0, 0.16, 0.1);
+      if (!landed) (landed = true), (landAt = now), sound && tone(700, 180, 0, 0.16, 0.1);
       const tug = p === "bite" ? Math.max(0, Math.sin(t * 9)) * 0.28 : 0;
       bobber.position.set(tx, ty + 0.06 + Math.sin(t * 1.8) * 0.04 - tug, tz);
     }
@@ -358,6 +349,52 @@ gl_Position.xy = (cell / uRes * 2.0 - 1.0) * gl_Position.w;`,
     line.geometry.setDrawRange(0, n);
     pos.needsUpdate = true;
   }
+
+  return {
+    draw,
+    /** Starts the throw: the rod goes up and the bobber flies out. */
+    cast() {
+      castAt = Date.now();
+      landed = false;
+    },
+    /** Takes everything out of the scene (the trainer left). */
+    dispose() {
+      for (const o of [...parts, ...splashes]) scene.remove(o), o.geometry.dispose(), o.material.dispose();
+      for (const t of [rodTex, bobberTex, ripple.material.map, ...Object.values(rods).map((r) => r.tex)]) t.dispose();
+    },
+  };
+}
+
+/**
+ * Creates the fishing line: rod, line and bobber in the scene, the minutes box, the catch card and
+ * the timer. A line that is out is kept in localStorage, so it survives a reload.
+ * @param {object} o
+ * @param {THREE.Scene} o.scene
+ * @param {HTMLButtonElement} o.button HUD button that shows the time left
+ * @param {(text: string) => void} o.say bubble over your trainer (only you see it)
+ * @param {(mesh: THREE.Mesh) => void} o.feetDepth gives the rod the same depth as your trainer
+ * @param {THREE.Camera} o.camera
+ * @param {(dir: string) => {shift: number, drop: number} | null} o.shape where your trainer's body is on its frame (null while its sheet loads)
+ * @param {(target: {x: number, y: number, z: number} | null) => void} [o.onChange] the line went out (where the bobber is) or came back in (null)
+ */
+export function createFishing({ scene, button, say, feetDepth, camera, shape, onChange }) {
+  let state = load("fishing", { phase: "idle" });
+  if (state?.phase !== "out") state = { phase: "idle" };
+  let confirmUntil = 0,
+    lastPlop = 0;
+  const setState = (s) => (save("fishing", (state = s)), onChange?.(s.phase === "out" ? s.target : null));
+
+  /** @returns {"idle" | "focus" | "bite"} */
+  const phase = (now = Date.now()) => (state.phase !== "out" ? "idle" : now < state.end ? "focus" : "bite");
+
+  const gear = createFishingGear({ scene, camera, feetDepth, shape });
+  /**
+   * Places your rod, line and bobber for this frame (hidden while idle).
+   * @param {number} now Date.now()
+   * @param {THREE.Mesh} body your trainer's sprite
+   * @param {string} dir the way the trainer faces now
+   */
+  const draw = (now, body, dir) => gear.draw(now, body, dir, phase(now), state.target, true);
 
   const picker = Object.assign(document.createElement("form"), { id: "fish-time", className: "glass", hidden: true });
   picker.innerHTML =
@@ -415,8 +452,7 @@ gl_Position.xy = (cell / uRes * 2.0 - 1.0) * gl_Position.w;`,
     unlockAudio();
     card.hidden = true;
     setState({ phase: "out", end: Date.now() + minutes * MIN, minutes, ...spot });
-    castAt = Date.now();
-    landed = false;
+    gear.cast();
     tone(500, 260, 0, 0.12, 0.12);
     say(`line's out: ${minutes} min of focus`);
   }

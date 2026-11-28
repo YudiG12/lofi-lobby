@@ -1,12 +1,21 @@
 import * as THREE from "three";
 import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader.js";
+import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { connectRadioToServer, receiveCommand } from "./radio.js";
+import { setupSocial } from "./social.js";
 import { createBoard, setupWall } from "./board.js";
+import { createStones } from "./stones.js";
+import { addSitFrames, sitFramePos } from "./ground-sit.js";
 import { createCapybara, CAPY_NEAR, CAPY_RADIUS, PHRASES as CAPY_PHRASES } from "./capybara.js";
 import { SCENES, HOME, isScene, portalAt } from "./scenes.js";
 import { createLake } from "./lake.js";
 import "./scenes.css";
-import { createFishing, FISH_NEAR, FISH_LEAVE } from "./fishing.js";
+import { createOwl } from "./owl.js";
+import { createFishing, createFishingGear, FISH_NEAR, FISH_LEAVE } from "./fishing.js";
+import { createCat, CATS, CAT_NEAR, CAT_SIT_MS, CAT_RIDE_MS, PHRASES as CAT_PHRASES, RIDE_PHRASES as CAT_RIDE_PHRASES } from "./cat.js";
+import { CAROUSEL, carouselSeat, createCarousel, inClearing, isCarouselSeat, onCarousel } from "./carousel.js";
+import { WHEEL, wheelSeat, createFerrisWheel, inWheelClearing, isWheelSeat, onWheel } from "./ferris-wheel.js";
+import { COASTER, coasterSeat, coasterCycle, coasterRiding, coasterBoardLeft, coasterBackIn, createCoaster, inCoasterClearing, isCoasterSeat, onCoaster } from "./roller-coaster.js";
 
 // ---- Asset config (change here to use other files) ----
 const TOWN = {
@@ -51,6 +60,34 @@ window.trainerFrame = () => {
   if (!img?.width || !(img instanceof HTMLCanvasElement)) return null;
   return { img, ...framePos(CHARACTER.cfg, "down", 0) };
 };
+// Any trainer's front frame, as a canvas of its own: the profile shows a player the way the town does
+// (their trainer and cap colour). One per look, drawn once.
+const looks = new Map();
+function trainerLook(gender, cap) {
+  const g = gender === "female" ? "female" : "male";
+  const c = capOf(cap) ?? SHEET_CAP[g];
+  if (!looks.has(g + c)) {
+    looks.set(g + c, new Promise((done) => {
+      const cut = (sheet, cfg) => {
+        const f = framePos(cfg, "down", 0);
+        const cv = Object.assign(document.createElement("canvas"), { width: f.w, height: f.h });
+        cv.getContext("2d").drawImage(sheet, f.x, f.y, f.w, f.h, 0, 0, f.w, f.h);
+        done(cv);
+      };
+      const drawn = () => cut(generateOriginalTrainer(g, c), GRID); // no sheet: the trainer drawn in code
+      if (!sheetAvailable(g)) return drawn();
+      const img = new Image();
+      img.onload = () => {
+        const t = { image: img, dispose() {} }; // removeBackground works on a texture: this stands in for one
+        removeBackground(t, CROP[g], g, c);
+        cut(t.image, CROP[g]);
+      };
+      img.onerror = drawn;
+      img.src = SHEETS[g];
+    }));
+  }
+  return looks.get(g + c);
+}
 // The cap lives in the top rows of a frame; lower down the same tones are something else (the
 // female's white scarf, bag and skirt). Where it ends is looked for frame by frame, between these two
 // rows: the first row with the fewest cap pixels, which is the gap between the beanie and the scarf
@@ -306,16 +343,18 @@ function prepareTown(fbx) {
     fbx.position.z -= c.z;
     fbx.position.y -= box2.min.y;
     townBox = new THREE.Box3().setFromObject(fbx);
+    clearFairGround(fbx);
     lobbyRoot.add(fbx);
     townMeshes = [];
     fbx.traverse((o) => o.isMesh && townMeshes.push(o));
     computePondBox();
+    placeFair(); // before the lamps, benches and capybara look for open ground around it
     fbx.traverse((o) => {
       if (o.isMesh && /mailbox|sign|fence/i.test(o.name))
         solidBoxes.push(new THREE.Box3().setFromObject(o));
     });
     placeLampPairs();
-    applyLook(dayAmount); // the pond pair's softer light
+    applyLook(currentLook); // the pond pair's softer light
     candles.position.y = groundHeight(candles.position.x, candles.position.z);
     candles.updateMatrixWorld(true);
     solidBoxes.push(new THREE.Box3().setFromObject(candles).expandByScalar(0.15)); // nobody steps on them: a very small gap around
@@ -324,8 +363,123 @@ function prepareTown(fbx) {
     board.position.y = groundHeight(board.position.x, board.position.z);
     placeCapybara();
     placeCapyWalk();
-    lobbyReady(fbx);
+    placeOwl();
+    mergeTown(fbx);
     markLampShadowsStale(); // the town, the lamps and everything around them just took their places
+    buildCatNavGrid();
+    lobbyReady(fbx); // last: if you are in another scene it steps back out of the town
+}
+
+// ---- The fair: carousel and Ferris wheel ----
+// The pines standing where the rides go (on each side of the pond, below it) come out of the town
+// as it loads. Here, and not earlier or later: after the scaling and townBox (they stand on the
+// town's edge, so earlier would shrink or move the town), and before townMeshes, since a hidden
+// mesh would still block the way and hold up the ground (rays ignore visibility).
+function clearFairGround(root) {
+  const pines = [];
+  const at = new THREE.Vector3();
+  root.traverse((o) => {
+    if (!o.isMesh || !/tree/i.test(o.name)) return;
+    new THREE.Box3().setFromObject(o).getCenter(at);
+    if (inClearing(at.x, at.z) || inWheelClearing(at.x, at.z) || inCoasterClearing(at.x, at.z)) pines.push(o);
+  });
+  for (const o of pines) o.removeFromParent();
+}
+const carousel = createCarousel();
+const wheel = createFerrisWheel();
+const coaster = createCoaster();
+let fairPlaced = false;
+function placeFair() {
+  carousel.root.position.y = groundHeight(CAROUSEL.x, CAROUSEL.z);
+  wheel.root.position.y = groundHeight(WHEEL.x, WHEEL.z);
+  coaster.root.position.y = groundHeight((COASTER.station.x0 + COASTER.station.x1) / 2, COASTER.station.z0 - 1);
+  for (const p of fairPosts) p.position.y = groundHeight(p.position.x, p.position.z);
+  if (!fairPlaced) lobbyRoot.add(carousel.root, wheel.root, coaster.root);
+  fairPlaced = true;
+}
+// the seats on a ride: their spot comes from the clock, they need no message while it turns
+const isRideSeat = (id) => isCarouselSeat(id) || isWheelSeat(id) || isCoasterSeat(id);
+// on the roller coaster while it is out on the track: no getting off until it is back at the station
+const strappedIn = () => isCoasterSeat(mySeat) && coasterRiding(roomNow());
+// solid ground of the rides, for everything that walks (you, the others' placement searches, the cats)
+const onRide = (x, z, r) => onCarousel(x, z, r) || onWheel(x, z, r) || onCoaster(x, z, r);
+
+// ---- Drawing the town in few draw calls ----
+// The town comes as ~1,300 meshes sharing one or a few materials, and each one would be a draw call
+// in every pass: the camera, the moon/sun's shadow and each of the 6 faces of each lamp's shadow.
+// Their geometry is baked into one mesh per material, shadow setting and stretch of town. The
+// originals stay where they are, hidden: collision, ground height, the water and the pond edge keep
+// raycasting them (a ray ignores visibility), so all of that works exactly as before.
+const TOWN_CHUNK = 25; // side of a stretch of town: the camera and each lamp still skip the ones they can't see
+const DRAWN_ATTRIBUTES = /^(position|normal|uv|color)$/;
+let townDrawn = []; // what is actually drawn: the merged meshes and whatever could not be merged
+function mergeTown(root) {
+  root.updateMatrixWorld(true);
+  const groups = new Map();
+  const center = new THREE.Vector3();
+  townDrawn = [];
+  root.traverse((o) => {
+    if (!o.isMesh || !o.visible) return;
+    const g = o.geometry;
+    if (Array.isArray(o.material) || !g.attributes.position || Object.keys(g.morphAttributes).length) {
+      townDrawn.push(o);
+      return;
+    }
+    new THREE.Box3().setFromObject(o).getCenter(center);
+    // geometries only merge with the same attributes, so they are part of the key
+    const attrs = Object.entries(g.attributes)
+      .filter(([n]) => DRAWN_ATTRIBUTES.test(n))
+      .map(([n, a]) => `${n}:${a.itemSize}:${a.array.constructor.name}:${a.normalized}`)
+      .sort()
+      .join();
+    const key = [o.material.uuid, o.castShadow, o.receiveShadow, o.renderOrder, attrs,
+      Math.floor(center.x / TOWN_CHUNK), Math.floor(center.z / TOWN_CHUNK)].join("|");
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(o);
+  });
+  for (const meshes of groups.values()) {
+    const indexed = meshes.every((o) => o.geometry.index);
+    const geos = meshes.map((o) => bakeGeometry(o, indexed));
+    const merged = mergeGeometries(geos);
+    geos.forEach((g) => g.dispose());
+    if (!merged) {
+      townDrawn.push(...meshes);
+      continue;
+    }
+    const first = meshes[0];
+    const mesh = new THREE.Mesh(merged, first.material);
+    mesh.name = "TownMerged";
+    mesh.castShadow = first.castShadow;
+    mesh.receiveShadow = first.receiveShadow;
+    mesh.renderOrder = first.renderOrder;
+    mesh.matrixAutoUpdate = false; // the geometry is already in world space
+    lobbyRoot.add(mesh);
+    townDrawn.push(mesh);
+    for (const o of meshes) o.visible = false;
+  }
+}
+// A copy of the mesh's geometry in world space, with only what drawing needs.
+function bakeGeometry(o, indexed) {
+  let g = o.geometry.clone();
+  for (const n of Object.keys(g.attributes)) if (!DRAWN_ATTRIBUTES.test(n)) g.deleteAttribute(n);
+  g.clearGroups();
+  if (!indexed && g.index) g = g.toNonIndexed();
+  g.applyMatrix4(o.matrixWorld);
+  // a mirrored mesh (negative scale) is drawn with its faces turned the other way; baked, its
+  // triangles must be turned around instead, or lights and shadows would see their backs
+  if (o.matrixWorld.determinant() < 0) {
+    if (g.index) {
+      const ix = g.index.array;
+      for (let i = 0; i < ix.length; i += 3) [ix[i + 1], ix[i + 2]] = [ix[i + 2], ix[i + 1]];
+    } else {
+      for (const a of Object.values(g.attributes)) {
+        const s = a.itemSize, v = a.array;
+        for (let t = 0; t < a.count; t += 3)
+          for (let k = 0; k < s; k++) [v[(t + 1) * s + k], v[(t + 2) * s + k]] = [v[(t + 2) * s + k], v[(t + 1) * s + k]];
+      }
+    }
+  }
+  return g;
 }
 
 // ---- Original village (default on the published site) ----
@@ -437,22 +591,16 @@ function loadOriginalTown() {
   prepareTown(createOriginalTown());
 }
 
+const townMaterial = new THREE.MeshLambertMaterial({ map: atlas, alphaTest: 0.5, side: THREE.DoubleSide });
 new FBXLoader(manager).load(
   TOWN.fbx,
   (fbx) => {
     fbx.traverse((o) => {
       if (!o.isMesh) return;
       o.castShadow = o.receiveShadow = true;
-      const mats = Array.isArray(o.material) ? o.material : [o.material];
-      o.material = mats.map(
-        (m) =>
-          new THREE.MeshLambertMaterial({
-            map: atlas,
-            alphaTest: 0.5,
-            side: THREE.DoubleSide,
-          }),
-      );
-      if (o.material.length === 1) o.material = o.material[0];
+      // every part of the town uses the same atlas: one material for all (the whole mesh, so
+      // no groups needed), which also lets them be drawn together (mergeTown)
+      o.material = townMaterial;
       // water surface: translucent blue, slightly shiny, and blocks movement
       // the water name may be on the mesh or on a parent group (e.g. MainTownPondWater)
       let waterName = "";
@@ -561,6 +709,24 @@ const LAMP_POSTS = [
   [10.5, 24],
 ];
 const lampPosts = LAMP_POSTS.map(([x, z]) => createLampPost(x, z));
+// Lamps around the rides, two on each side, their arm toward the ride. They stand where they are
+// put (not in pairs along the road) and their light casts no shadow: a shadowed point light is 6
+// shadow passes each time something moves near it, and the rides already glow.
+const FAIR_POSTS = [
+  [-27, 31, CAROUSEL],
+  [-11, 46, CAROUSEL],
+  [27, 31, WHEEL],
+  [11, 46, WHEEL],
+];
+const fairPosts = FAIR_POSTS.map(([x, z, ride]) => {
+  const p = createLampPost(x, z);
+  p.rotation.y = Math.atan2(-(ride.z - z), ride.x - x); // the arm (+x) toward the ride
+  const light = p.children.find((c) => c.isPointLight);
+  light.castShadow = false;
+  light.userData.dim = 0.8;
+  return p;
+});
+lampPosts.push(...fairPosts); // they light up at dusk like the others, and nobody walks through them
 const lampPostSolids = lampPosts.flatMap((p) => p.children.filter((c) => c.isMesh));
 // message wall: a cork board under the lamp light, in front of the lower-left house's window
 const BOARD_AT = [-7.5, 15];
@@ -623,7 +789,7 @@ function createBench(x, y, z, face) {
   benchBoxes.push(box); // and it hides whoever stands behind it (updateOcclusion)
 }
 // Each bench goes on the open spot nearest its wish (spiral search), so a town with another
-// layout still gets them. Seats stay under MAX_SEATS (16 = 8 benches).
+// layout still gets them. Bench seats stay under 16 (8 benches): 16..23 are the carousel horses.
 function placeBenches() {
   const clear = (x, z) =>
     isOpen(x, z, 2.6) &&
@@ -656,6 +822,14 @@ const BENCH_SPOTS = [
 ];
 // Where a seat is, and which way the sitter looks (null if that bench doesn't exist)
 function seatSpot(id) {
+  if (isRideSeat(id) && sceneId !== HOME) return null; // the rides are the town's
+  // a carousel horse: where it is right now, by the room's clock
+  if (isCarouselSeat(id)) return fairPlaced ? carouselSeat(id - CAROUSEL.firstSeat, roomNow(), carousel.root.position.y) : null;
+  // a Ferris wheel gondola: the same, up and down
+  if (isWheelSeat(id)) return fairPlaced ? wheelSeat(id - WHEEL.firstSeat, roomNow(), wheel.root.position.y) : null;
+  // a seat in the roller coaster's sleigh: at the station, or wherever it is on the track
+  if (isCoasterSeat(id)) return fairPlaced ? coasterSeat(id - COASTER.firstSeat, roomNow(), coaster.root.position.y) : null;
+  if (id >= benches.length * SEATS_PER_BENCH) return null;
   const b = benches[id >> 1];
   if (!b) return null;
   const [fx, fz] = FACING[b.face];
@@ -674,23 +848,200 @@ function seatSpot(id) {
 
 // ---- Day / night ----
 // Only for you, like mute: it changes how you see the town, not the room.
-// Each entry is [night, day]; switching blends between them in about a second.
-const LOOK = {
-  background: ["#070a18", "#9fcdf2"],
-  skyTop: ["#3a4a8a", "#d6ecff"],
-  skyGround: ["#0b0f1a", "#5c6a44"],
-  skyIntensity: [0.35, 1.1],
-  sunColor: ["#7f95d8", "#fff1d8"],
-  sunIntensity: [0.45, 1.9],
-  lampIntensity: [150, 0], // lamps off by day
-  glowOpacity: [0.35, 0],
-  lantern: ["#ffdf7a", "#d8cfa8"], // unlit glass
-  waterColor: ["#0b2d63", "#2a6db3"],
-  waterEmissive: ["#020c22", "#06223f"],
-  waterSpecular: ["#7a6440", "#ffffff"],
+// Cycles through night, day, or a client-side automatic cycle (night -> dawn -> day -> golden hour -> dusk -> night).
+const NIGHT_SPEC = {
+  daylight: 0,
+  background: "#070a18",
+  skyTop: "#3a4a8a",
+  skyGround: "#0b0f1a",
+  skyIntensity: 0.35,
+  sunColor: "#7f95d8",
+  sunIntensity: 0.45,
+  sunPos: [40, 80, 30],
+  lampIntensity: 150,
+  glowOpacity: 0.35,
+  lantern: "#ffdf7a",
+  waterColor: "#0b2d63",
+  waterEmissive: "#020c22",
+  waterSpecular: "#7a6440",
 };
-for (const k in LOOK)
-  if (typeof LOOK[k][0] === "string") LOOK[k] = LOOK[k].map((c) => new THREE.Color(c));
+const DAY_SPEC = {
+  daylight: 1,
+  background: "#9fcdf2",
+  skyTop: "#d6ecff",
+  skyGround: "#5c6a44",
+  skyIntensity: 1.1,
+  sunColor: "#fff1d8",
+  sunIntensity: 1.9,
+  sunPos: [40, 80, 30],
+  lampIntensity: 0,
+  glowOpacity: 0,
+  lantern: "#d8cfa8",
+  waterColor: "#2a6db3",
+  waterEmissive: "#06223f",
+  waterSpecular: "#ffffff",
+};
+const MOONSET_SPEC = {
+  daylight: 0.08,
+  background: "#161938",
+  skyTop: "#9da5de",
+  skyGround: "#282b4a",
+  skyIntensity: 0.68,
+  sunColor: "#8b98cf",
+  sunIntensity: 0,
+  sunPos: [18, 72, 30],
+  lampIntensity: 145,
+  glowOpacity: 0.33,
+  lantern: "#ffdf7a",
+  waterColor: "#0e2f66",
+  waterEmissive: "#040d24",
+  waterSpecular: "#856d4c",
+};
+const TWILIGHT_SPEC = {
+  daylight: 0.1,
+  background: "#201c40",
+  skyTop: "#b59ee6",
+  skyGround: "#2c2445",
+  skyIntensity: 0.72,
+  sunColor: "#9c7eb8",
+  sunIntensity: 0,
+  sunPos: [-58, 42, 28],
+  lampIntensity: 145,
+  glowOpacity: 0.33,
+  lantern: "#ffdf7a",
+  waterColor: "#102f66",
+  waterEmissive: "#060e26",
+  waterSpecular: "#967450",
+};
+// Duplicate keyframes at p = 0.185 and p = 0.815 reposition the directional light while
+// sunIntensity === 0 so shadows never sweep backwards between moon and sun.
+const CYCLE_SPECS = [
+  { p: 0.0, ...NIGHT_SPEC },
+  { p: 0.15, ...NIGHT_SPEC, sunPos: [28, 78, 30] },
+  { p: 0.185, ...MOONSET_SPEC },
+  { p: 0.185, ...MOONSET_SPEC, sunPos: [58, 42, 28] },
+  {
+    p: 0.23,
+    daylight: 0.3,
+    background: "#5e4b73",
+    skyTop: "#a888b0",
+    skyGround: "#362b3d",
+    skyIntensity: 0.74,
+    sunColor: "#f2a494",
+    sunIntensity: 0.55,
+    sunPos: [56, 46, 28],
+    lampIntensity: 105,
+    glowOpacity: 0.24,
+    lantern: "#ffdf7a",
+    waterColor: "#1d427d",
+    waterEmissive: "#0c1633",
+    waterSpecular: "#c9927a",
+  },
+  {
+    p: 0.28,
+    daylight: 0.68,
+    background: "#f2bfa0",
+    skyTop: "#ffdec4",
+    skyGround: "#665848",
+    skyIntensity: 0.9,
+    sunColor: "#ffd099",
+    sunIntensity: 1.38,
+    sunPos: [50, 58, 28],
+    lampIntensity: 20,
+    glowOpacity: 0.05,
+    lantern: "#ebd7aa",
+    waterColor: "#28609e",
+    waterEmissive: "#0e1f38",
+    waterSpecular: "#ffe0bd",
+  },
+  { p: 0.35, ...DAY_SPEC },
+  { p: 0.65, ...DAY_SPEC, sunPos: [-15, 78, 30] },
+  {
+    p: 0.72,
+    daylight: 0.72,
+    background: "#f0a975",
+    skyTop: "#ffd099",
+    skyGround: "#664d3b",
+    skyIntensity: 0.92,
+    sunColor: "#ffb86b",
+    sunIntensity: 1.45,
+    sunPos: [-35, 58, 28],
+    lampIntensity: 35,
+    glowOpacity: 0.08,
+    lantern: "#f2d896",
+    waterColor: "#265794",
+    waterEmissive: "#121a30",
+    waterSpecular: "#ffd094",
+  },
+  {
+    p: 0.78,
+    daylight: 0.35,
+    background: "#c96862",
+    skyTop: "#e88a78",
+    skyGround: "#3b2434",
+    skyIntensity: 0.76,
+    sunColor: "#ff7e52",
+    sunIntensity: 0.72,
+    sunPos: [-52, 46, 28],
+    lampIntensity: 110,
+    glowOpacity: 0.25,
+    lantern: "#ffdf7a",
+    waterColor: "#1d386e",
+    waterEmissive: "#12122b",
+    waterSpecular: "#e89264",
+  },
+  { p: 0.815, ...TWILIGHT_SPEC },
+  { p: 0.815, ...TWILIGHT_SPEC, sunPos: [52, 74, 30] },
+  { p: 0.85, ...NIGHT_SPEC, sunPos: [52, 74, 30] },
+  { p: 1.0, ...NIGHT_SPEC },
+];
+const LOOK_COLORS = [
+  "background",
+  "skyTop",
+  "skyGround",
+  "sunColor",
+  "lantern",
+  "waterColor",
+  "waterEmissive",
+  "waterSpecular",
+];
+const LOOK_NUMS = ["daylight", "skyIntensity", "sunIntensity", "lampIntensity", "glowOpacity"];
+function makeLook(spec) {
+  const out = { p: spec.p ?? 0, sunPos: new THREE.Vector3(...spec.sunPos) };
+  for (const k of LOOK_COLORS) out[k] = new THREE.Color(spec[k]);
+  for (const k of LOOK_NUMS) out[k] = spec[k];
+  return out;
+}
+function copyLook(dst, src) {
+  dst.sunPos.copy(src.sunPos);
+  for (const k of LOOK_COLORS) dst[k].copy(src[k]);
+  for (const k of LOOK_NUMS) dst[k] = src[k];
+}
+function lerpLook(dst, a, b, t) {
+  dst.sunPos.copy(a.sunPos).lerp(b.sunPos, t);
+  for (const k of LOOK_COLORS) dst[k].copy(a[k]).lerp(b[k], t);
+  for (const k of LOOK_NUMS) dst[k] = a[k] + (b[k] - a[k]) * t;
+}
+const NIGHT_LOOK = makeLook(NIGHT_SPEC);
+const DAY_LOOK = makeLook(DAY_SPEC);
+const CYCLE = CYCLE_SPECS.map(makeLook);
+function sampleCycle(p, dst) {
+  const phase = ((p % 1) + 1) % 1;
+  for (let i = 0; i < CYCLE.length - 1; i++) {
+    const a = CYCLE[i],
+      b = CYCLE[i + 1];
+    if (b.p > a.p && phase >= a.p && phase <= b.p) {
+      lerpLook(dst, a, b, (phase - a.p) / (b.p - a.p));
+      return dst;
+    }
+  }
+  copyLook(dst, CYCLE[CYCLE.length - 1]);
+  return dst;
+}
+const currentLook = makeLook(NIGHT_SPEC);
+const fromLook = makeLook(NIGHT_SPEC);
+const targetLook = makeLook(NIGHT_SPEC);
+
 const lampLights = lampPosts.flatMap((p) => p.children.filter((c) => c.isPointLight));
 const lampGlows = lampPosts.flatMap((p) => p.children.filter((c) => c.isSprite));
 
@@ -772,14 +1123,15 @@ let candleLight = 0; // steady strength; the flicker plays around it each frame
 candles.add(benchGlow);
 candles.position.set(0, 0, 23.6);
 lobbyRoot.add(candles);
-const mixNum = ([a, b], t) => a + (b - a) * t;
-const mixColor = (target, [a, b], t) => target.copy(a).lerp(b, t);
 const OVERCAST_SKY = new THREE.Color("#7d8794");
 const OVERCAST_LIGHT = new THREE.Color("#a3adbb");
 let rainAmount = 0; // 0 = dry, 1 = full rain (eased in the loop)
-// t: 0 = night, 1 = day
-function applyLook(t) {
-  mixColor(scene.background, LOOK.background, t);
+let dayAmount = 0;
+function applyLook(look) {
+  const t = look.daylight;
+  dayAmount = t;
+  sun.position.copy(look.sunPos);
+  scene.background.copy(look.background);
   // overcast: by day the rain greys the sky; at night it only dims a little
   const overcast = rainAmount * t;
   scene.background.lerp(OVERCAST_SKY, 0.65 * overcast);
@@ -789,35 +1141,98 @@ function applyLook(t) {
   const closed = Math.max(rainAmount, 1 - t);
   scene.fog.near = 50 - 12 * closed;
   scene.fog.far = 140 - 22 * closed;
-  mixColor(skyLight.color, LOOK.skyTop, t);
-  skyLight.color.lerp(OVERCAST_LIGHT, 0.5 * overcast);
-  mixColor(skyLight.groundColor, LOOK.skyGround, t);
+  skyLight.color.copy(look.skyTop).lerp(OVERCAST_LIGHT, 0.5 * overcast);
+  skyLight.groundColor.copy(look.skyGround);
   const gloom = 1 - (0.2 + 0.2 * t) * closed;
-  skyLight.intensity = mixNum(LOOK.skyIntensity, t) * gloom;
-  mixColor(sun.color, LOOK.sunColor, t);
-  sun.intensity = mixNum(LOOK.sunIntensity, t) * gloom;
-  for (const l of lampLights) l.intensity = mixNum(LOOK.lampIntensity, t) * (l.userData.dim ?? 1);
-  candleLight = mixNum(LOOK.lampIntensity, t) * 0.06;
-  for (const g of lampGlows) g.material.opacity = mixNum(LOOK.glowOpacity, t);
-  mixColor(lightMaterial.color, LOOK.lantern, t);
-  mixColor(waterMaterial.color, LOOK.waterColor, t);
-  mixColor(waterMaterial.emissive, LOOK.waterEmissive, t);
-  mixColor(waterMaterial.specular, LOOK.waterSpecular, t);
+  skyLight.intensity = look.skyIntensity * gloom;
+  sun.color.copy(look.sunColor);
+  sun.intensity = look.sunIntensity * gloom;
+  for (const l of lampLights) l.intensity = look.lampIntensity * (l.userData.dim ?? 1);
+  candleLight = look.lampIntensity * 0.06;
+  for (const g of lampGlows) g.material.opacity = look.glowOpacity;
+  lightMaterial.color.copy(look.lantern);
+  waterMaterial.color.copy(look.waterColor);
+  waterMaterial.emissive.copy(look.waterEmissive);
+  waterMaterial.specular.copy(look.waterSpecular);
 }
-let isDay = false;
-try { isDay = localStorage.getItem("time-of-day") === "day"; } catch {}
-let dayAmount = isDay ? 1 : 0; // eased toward isDay in the loop
-applyLook(dayAmount);
+
+const TIME_MODES = ["night", "day", "auto"];
+const DEFAULT_CYCLE_MS = 10 * 60 * 1000;
+let cycleDurationMs = DEFAULT_CYCLE_MS;
+const lookBlendSec = () => Math.min(1, Math.max(0.25, (cycleDurationMs / 1000) * 0.05));
+const AUTO_START_PHASE = 0.63; // late day so switching from day -> auto starts smoothly before golden hour
+let timeMode = "night";
+try {
+  const savedMode = localStorage.getItem("time-of-day");
+  if (TIME_MODES.includes(savedMode)) timeMode = savedMode;
+} catch {}
+let cycleEpoch = Date.now() - AUTO_START_PHASE * cycleDurationMs;
+try {
+  const raw = localStorage.getItem("time-of-day-epoch");
+  const savedEpoch = raw === null || raw === "" ? NaN : Number(raw);
+  if (Number.isFinite(savedEpoch)) cycleEpoch = savedEpoch;
+} catch {}
+let lookBlend = 1;
+const cyclePhase = () => (((Date.now() - cycleEpoch) / cycleDurationMs) % 1 + 1) % 1;
+function setCycleDuration(ms) {
+  const p = cyclePhase();
+  cycleDurationMs = ms;
+  cycleEpoch = Date.now() - p * cycleDurationMs;
+  if (timeMode === "auto") {
+    try { localStorage.setItem("time-of-day-epoch", String(cycleEpoch)); } catch {}
+  }
+}
+function fillTargetLook() {
+  if (timeMode === "night") copyLook(targetLook, NIGHT_LOOK);
+  else if (timeMode === "day") copyLook(targetLook, DAY_LOOK);
+  else sampleCycle(cyclePhase(), targetLook);
+}
+fillTargetLook();
+copyLook(currentLook, targetLook);
+applyLook(currentLook);
+
 const dayNightBtn = document.querySelector("#day-night");
+const DAY_NIGHT_META = {
+  night: {
+    label: "make it day",
+    icon: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>',
+  },
+  day: {
+    label: "auto cycle",
+    icon: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>',
+  },
+  auto: {
+    label: "make it night",
+    icon: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/><circle cx="12" cy="12" r="2.5"/></svg>',
+  },
+};
 function drawDayNight() {
-  const label = isDay ? "make it night" : "make it day";
-  dayNightBtn.innerHTML = isDay ? '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>' : '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>';
+  const { label, icon } = DAY_NIGHT_META[timeMode];
+  dayNightBtn.innerHTML = icon;
+  dayNightBtn.classList.toggle("on", timeMode === "auto");
   dayNightBtn.setAttribute("aria-label", label);
 }
 function toggleDayNight() {
-  isDay = !isDay;
-  try { localStorage.setItem("time-of-day", isDay ? "day" : "night"); } catch {}
+  copyLook(fromLook, currentLook);
+  lookBlend = 0;
+  timeMode = TIME_MODES[(TIME_MODES.indexOf(timeMode) + 1) % TIME_MODES.length];
+  if (timeMode === "auto") {
+    cycleEpoch = Date.now() - AUTO_START_PHASE * cycleDurationMs;
+    try { localStorage.setItem("time-of-day-epoch", String(cycleEpoch)); } catch {}
+  }
+  try { localStorage.setItem("time-of-day", timeMode); } catch {}
   drawDayNight();
+}
+function updateTimeOfDay(dt) {
+  if (timeMode !== "auto" && lookBlend >= 1) return;
+  fillTargetLook();
+  if (lookBlend < 1) {
+    lookBlend = Math.min(1, lookBlend + dt / lookBlendSec());
+    lerpLook(currentLook, fromLook, targetLook, lookBlend);
+  } else {
+    copyLook(currentLook, targetLook);
+  }
+  applyLook(currentLook);
 }
 drawDayNight();
 dayNightBtn.addEventListener("click", (e) => {
@@ -826,8 +1241,50 @@ dayNightBtn.addEventListener("click", (e) => {
 });
 addEventListener("keydown", (e) => {
   const typing = ["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName);
-  if (!typing && !e.repeat && e.key.toLowerCase() === "n") toggleDayNight();
+  if (!typing && !e.repeat && !e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === "n") toggleDayNight();
 });
+
+// ---- Frames per second ----
+// Beside the player count, for whoever wants to see how the game runs on their machine: P (or a tap on
+// the count, on phones) shows or hides it, and it is remembered. Counted over half a second; the title
+// adds the slowest frame of that half second and the draw calls of the last frame.
+const elFps = document.querySelector("#fps");
+const FPS_EVERY_MS = 500;
+const fpsCount = { frames: 0, since: performance.now(), last: performance.now(), worst: 0 };
+let fpsOn = false;
+try { fpsOn = localStorage.getItem("fps") === "1"; } catch {}
+elFps.hidden = !fpsOn;
+function setFps(on) {
+  fpsOn = on;
+  elFps.hidden = !on;
+  try { localStorage.setItem("fps", on ? "1" : "0"); } catch {}
+  Object.assign(fpsCount, { frames: 0, since: performance.now(), last: performance.now(), worst: 0 });
+  if (on) elFps.textContent = "… fps";
+}
+function countFrame() {
+  if (!fpsOn) return;
+  const now = performance.now();
+  const frame = now - fpsCount.last;
+  fpsCount.last = now;
+  // back from a hidden tab (no frames meanwhile): start the count again
+  if (frame > 1000) return void Object.assign(fpsCount, { frames: 0, since: now, worst: 0 });
+  fpsCount.frames++;
+  fpsCount.worst = Math.max(fpsCount.worst, frame);
+  const span = now - fpsCount.since;
+  if (span < FPS_EVERY_MS) return;
+  const fps = Math.round((fpsCount.frames * 1000) / span);
+  elFps.textContent = `${fps} fps`;
+  elFps.classList.toggle("slow", fps < 45 && fps >= 25);
+  elFps.classList.toggle("bad", fps < 25);
+  elFps.title = `${(span / fpsCount.frames).toFixed(1)} ms a frame, slowest ${fpsCount.worst.toFixed(1)} ms · ${renderer.info.render.calls} draw calls`;
+  Object.assign(fpsCount, { frames: 0, since: now, worst: 0 });
+}
+document.querySelector("#online").addEventListener("click", () => setFps(!fpsOn));
+addEventListener("keydown", (e) => {
+  const typing = ["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName) || document.activeElement?.isContentEditable;
+  if (!typing && !e.repeat && !e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === "p") setFps(!fpsOn);
+});
+
 
 // Rain: thin streaks in a box that follows the player, splashes where they land (rings on the
 // pond), shiny wet ground and a little fog.
@@ -836,7 +1293,7 @@ let isRaining = false;
 try { isRaining = localStorage.getItem("weather") === "rain"; } catch {}
 if (isRaining) {
   rainAmount = 1;
-  applyLook(dayAmount); // first frame already overcast
+  applyLook(currentLook); // first frame already overcast
 }
 const RAIN = { count: MOBILE ? 600 : 1800, radius: 40, height: 40, fall: 38, wind: 5 };
 const rainDrops = new Float32Array(RAIN.count * 3); // x, y, z of each drop's head
@@ -952,10 +1409,10 @@ let wetReady = false;
 // Wet look: the town's materials become shiny (Phong) and a bit darker while it rains,
 // so the ground catches the lamps and the sky like a wet street. No extra meshes.
 function prepareWet() {
-  if (wetReady || !townMeshes.length) return;
+  if (wetReady || !townDrawn.length) return;
   wetReady = true;
   const swapped = new Map();
-  for (const o of townMeshes) {
+  for (const o of townDrawn) {
     const swap = (m) => {
       if (!m || m === waterMaterial || !m.isMeshLambertMaterial) return m;
       if (!swapped.has(m)) {
@@ -991,18 +1448,20 @@ function applyWet() {
   }
 }
 
+const RAIN_NIGHT = new THREE.Color("#b9c8e0");
+const RAIN_DAY = new THREE.Color("#e8eef6");
 function updateRain(dt) {
   const target = isRaining ? 1 : 0;
   if (rainAmount !== target) {
     rainAmount += Math.sign(target - rainAmount) * Math.min(dt * 0.7, Math.abs(target - rainAmount));
-    applyLook(dayAmount);
+    applyLook(currentLook);
     applyWet();
   }
   if (isRaining) prepareWet();
   rainMesh.visible = splashMesh.visible = rainAmount > 0;
   if (!rainMesh.visible) return;
   rainUniforms.uOpacity.value = 0.45 * rainAmount;
-  rainUniforms.uColor.value.set(dayAmount > 0.5 ? "#e8eef6" : "#b9c8e0");
+  rainUniforms.uColor.value.copy(RAIN_NIGHT).lerp(RAIN_DAY, dayAmount);
   surfaceBudget = 40;
   const { radius, height, fall, wind } = RAIN;
   const top = pos.y + height;
@@ -1128,7 +1587,7 @@ function placeFireflies() {
   firefliesPlaced = true;
 }
 function updateFireflies() {
-  const opacity = (1 - dayAmount) * (1 - rainAmount);
+  const opacity = THREE.MathUtils.clamp(1 - dayAmount * 2, 0, 1) * (1 - rainAmount);
   fireflyMesh.visible = firefliesPlaced && opacity > 0.01;
   if (!fireflyMesh.visible) return;
   const t = waterUniforms.uTime.value;
@@ -1211,7 +1670,7 @@ function groundHeight(x, z) {
 // A point is "open" if the ground is flat within radius r (nothing tall nearby)
 function isOpen(x, z, r) {
   // a lamp post doesn't sit right next to a mailbox/sign/fence or in the pond
-  if (insideSolid(x, z, r + 1.5) || inPond(x, z)) return false;
+  if (insideSolid(x, z, r + 1.5) || inPond(x, z) || onRide(x, z, r + 1.5)) return false;
   const y = groundHeight(x, z);
   for (let a = 0; a < 8; a++) {
     const ang = (a / 8) * Math.PI * 2;
@@ -1230,7 +1689,7 @@ const ROAD_CENTER_X = 0;
 const OFFSET = 4.6; // ideal distance from the road center to each post (on the grass, right by the dirt)
 const OFFSET_MIN = 3.8; // the closest it can get (edge of the dirt)
 function placeLampPairs() {
-  for (let i = 0; i < lampPosts.length; i += 2) {
+  for (let i = 0; i < LAMP_POSTS.length; i += 2) { // the road's pairs; the fair's posts stay put
     const a = lampPosts[i],
       b = lampPosts[i + 1];
     const z0 = a.position.z;
@@ -1294,6 +1753,19 @@ function placeLampPost(p) {
       }
     }
   }
+}
+
+// ---- Owl (on the message wall's roof; flies to the two nearest lamp posts and back) ----
+const owl = createOwl();
+lobbyRoot.add(owl.mesh);
+// perches: the top of the wall's roof and the caps of the two lamp posts closest to the wall
+function placeOwl() {
+  const b = board.position;
+  const posts = [...lampPosts].sort((p, q) => p.position.distanceTo(b) - q.position.distanceTo(b)).slice(0, 2);
+  owl.setPerches(
+    [new THREE.Vector3(b.x, b.y + 6.85, b.z), ...posts.map((p) => p.position.clone().add(new THREE.Vector3(0, 9.55, 0)))],
+    performance.now(),
+  );
 }
 
 // ---- Capybara (middle of town; E feeds it) ----
@@ -1376,6 +1848,520 @@ function capyWasFed(m) {
   if (Number.isInteger(m.phrase)) showBubble(capy.mesh, CAPY_PHRASES[Math.abs(m.phrase) % CAPY_PHRASES.length]);
 }
 
+// ---- Cats (free-roaming across walkable town, synced by the room clock) ----
+function makeCatEntry(cfg) {
+  const sprite = createCat(cfg.palette);
+  sprite.mesh.position.set(0, 0, 5);
+  lobbyRoot.add(sprite.mesh);
+  return {
+    ...cfg,
+    sprite,
+    mesh: sprite.mesh,
+    feet: useFeetDepth(sprite.mesh),
+    fed: { at: 0, until: 0, lost: 0 },
+    leg: null,
+    pose: "sit",
+    dir: "down",
+    ride: null,
+    rideAnim: null,
+    hopOff: null,
+    afterRide: null,
+    lastRideAt: null,
+    ridingMesh: null,
+    ridingFeet: null,
+  };
+}
+const cats = CATS.map(makeCatEntry);
+const CAT_NAV_STEP = 2;
+const CAT_LEG_MS = 26000;
+const CAT_MIN_SIT_MS = 4500;
+const CAT_DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+let catNav = { nodes: [], buildMs: 0 };
+
+function buildCatNavGrid() {
+  const t0 = performance.now();
+  const nodes = [];
+  if (!townMeshes.length) {
+    catNav = { nodes, buildMs: performance.now() - t0 };
+    return;
+  }
+  const groundCache = new Map();
+  const sampleGround = (x, z) => {
+    const key = `${Math.round(x * 2)},${Math.round(z * 2)}`;
+    let hit = groundCache.get(key);
+    if (hit) return hit;
+    ray.set(new THREE.Vector3(x, 200, z), DOWN);
+    const hits = ray.intersectObjects(townMeshes, false);
+    const water = hits.length > 0 && (waterMeshes.has(hits[0].object) || edgeMeshes.has(hits[0].object));
+    const floorHits = hits.filter((h) => !edgeMeshes.has(h.object));
+    hit = {
+      hasHit: hits.length > 0 && floorHits.length > 0,
+      water,
+      topY: floorHits.length ? floorHits[0].point.y : 0,
+      groundY: hits.length ? hits[hits.length - 1].point.y : 0,
+    };
+    groundCache.set(key, hit);
+    return hit;
+  };
+  const pointFree = (x, z, refY = null) => {
+    if (
+      x < townBox.min.x + 1.5 ||
+      x > townBox.max.x - 1.5 ||
+      z < townBox.min.z + 1.5 ||
+      z > townBox.max.z - 1.5
+    )
+      return false;
+    if (insideSolid(x, z, BODY_RADIUS * 0.9, BODY_RADIUS * 1.7)) return false;
+    if (onRide(x, z, BODY_RADIUS)) return false; // cats walk around the rides, not through them
+    if (
+      inPond(x, z) ||
+      inPond(x - BODY_RADIUS, z) ||
+      inPond(x + BODY_RADIUS, z) ||
+      inPond(x, z - BODY_RADIUS) ||
+      inPond(x, z + BODY_RADIUS)
+    )
+      return false;
+    if (Math.abs(x - board.position.x) < 3.8 + BODY_RADIUS * 0.6 && Math.abs(z - board.position.z) < 0.5 + BODY_RADIUS * 0.6)
+      return false;
+    for (const p of lampPosts)
+      if (Math.hypot(p.position.x - x, p.position.z - z) < POST_RADIUS + BODY_RADIUS * 0.6) return false;
+    const center = sampleGround(x, z);
+    if (!center.hasHit || center.water) return false;
+    const base = refY ?? center.groundY;
+    const pts = [[0, 0], [BODY_RADIUS, 0], [-BODY_RADIUS, 0], [0, BODY_RADIUS], [0, -BODY_RADIUS]];
+    return pts.every(([ox, oz]) => {
+      const s = ox === 0 && oz === 0 ? center : sampleGround(x + ox, z + oz);
+      return s.hasHit && !s.water && s.topY - base <= MAX_STEP && Math.abs(s.topY - center.groundY) <= MAX_STEP;
+    });
+  };
+  let startX = 0,
+    startZ = 0,
+    found = pointFree(0, 0);
+  if (!found) {
+    search: for (let r = CAT_NAV_STEP; r <= 20; r += CAT_NAV_STEP) {
+      for (let gx = -r; gx <= r; gx += CAT_NAV_STEP) {
+        for (let gz = -r; gz <= r; gz += CAT_NAV_STEP) {
+          if (pointFree(gx, gz)) {
+            startX = gx;
+            startZ = gz;
+            found = true;
+            break search;
+          }
+        }
+      }
+    }
+  }
+  if (found) {
+    const byCell = new Map();
+    const cellKey = (x, z) => `${Math.round(x / CAT_NAV_STEP)},${Math.round(z / CAT_NAV_STEP)}`;
+    const addNode = (x, z) => {
+      const y = sampleGround(x, z).groundY;
+      const idx = nodes.length;
+      nodes.push({ x, z, y, adj: [] });
+      byCell.set(cellKey(x, z), idx);
+      return idx;
+    };
+    const startIdx = addNode(startX, startZ);
+    const queue = [startIdx];
+    for (let head = 0; head < queue.length; head++) {
+      const u = queue[head];
+      const nu = nodes[u];
+      for (let d = 0; d < CAT_DIRS.length; d++) {
+        const [dx, dz] = CAT_DIRS[d];
+        const nx = nu.x + dx * CAT_NAV_STEP;
+        const nz = nu.z + dz * CAT_NAV_STEP;
+        const key = cellKey(nx, nz);
+        let v = byCell.get(key);
+        const mx = (nu.x + nx) * 0.5;
+        const mz = (nu.z + nz) * 0.5;
+        if (!pointFree(nx, nz, nu.y) || !pointFree(mx, mz, nu.y)) continue;
+        const ny = sampleGround(nx, nz).groundY;
+        if (Math.abs(ny - nu.y) > MAX_STEP) continue;
+        if (v === undefined) {
+          v = addNode(nx, nz);
+          queue.push(v);
+        }
+        nu.adj.push([v, d]);
+      }
+    }
+  }
+  catNav = { nodes, buildMs: performance.now() - t0 };
+  const fallbackY = groundHeight(0, 5);
+  for (const cat of cats) {
+    cat.leg = null;
+    if (!nodes.length) cat.mesh.position.set(0, fallbackY, 5);
+  }
+}
+
+function catHash(a, b) {
+  let h = Math.imul(a ^ 0x9e3779b9, 0x85ebca6b) ^ Math.imul(b ^ 0xc2b2ae35, 0x27d4eb2f);
+  h ^= h >>> 16;
+  h = Math.imul(h, 0x7feb352d);
+  h ^= h >>> 15;
+  h = Math.imul(h, 0x846ca68b);
+  h ^= h >>> 16;
+  return h >>> 0;
+}
+
+function findCatPath(startIdx, endIdx) {
+  const nodes = catNav.nodes;
+  if (startIdx === endIdx) return [nodes[startIdx]];
+  const n = nodes.length;
+  const parent = new Int32Array(n).fill(-1);
+  const parentDir = new Int8Array(n).fill(-1);
+  const queue = new Int32Array(n);
+  let head = 0,
+    tail = 0;
+  parent[startIdx] = startIdx;
+  queue[tail++] = startIdx;
+  while (head < tail) {
+    const u = queue[head++];
+    if (u === endIdx) break;
+    const adj = nodes[u].adj;
+    const pref = parentDir[u];
+    // Expand the straight-ahead neighbor first so paths make clean L-turns across plazas.
+    for (let pass = pref >= 0 ? 0 : 1; pass < 2; pass++) {
+      for (let i = 0; i < adj.length; i++) {
+        const [v, d] = adj[i];
+        if ((pass === 0) !== (d === pref) || parent[v] !== -1) continue;
+        parent[v] = u;
+        parentDir[v] = d;
+        queue[tail++] = v;
+        if (v === endIdx) {
+          head = tail;
+          break;
+        }
+      }
+      if (head === tail) break;
+    }
+  }
+  if (parent[endIdx] === -1) return [nodes[startIdx]];
+  const path = [];
+  for (let cur = endIdx; ; cur = parent[cur]) {
+    path.push(nodes[cur]);
+    if (cur === startIdx) break;
+  }
+  path.reverse();
+  return path;
+}
+
+function getCatLeg(cat, slot) {
+  if (cat.leg && cat.leg.slot === slot) return cat.leg;
+  const nodes = catNav.nodes;
+  const startIdx = cat.afterRide?.nextSlot === slot ? cat.afterRide.nodeIdx : catHash(cat.seed, slot) % nodes.length;
+  const endIdx = catHash(cat.seed, slot + 1) % nodes.length;
+  const path = findCatPath(startIdx, endIdx);
+  const cumDist = [0];
+  let totalDist = 0;
+  for (let i = 1; i < path.length; i++) {
+    totalDist += Math.hypot(path[i].x - path[i - 1].x, path[i].z - path[i - 1].z);
+    cumDist.push(totalDist);
+  }
+  const walkMs = totalDist > 0 ? Math.min(CAT_LEG_MS - CAT_MIN_SIT_MS, (totalDist / cat.speed) * 1000) : 0;
+  return (cat.leg = { slot, path, cumDist, totalDist, walkMs });
+}
+
+const CAT_HEAD_OFFSET_Y = 3.85;
+const CAT_GROUND_SCALE = 3.5;
+const CAT_PERCH_SCALE = 2.8;
+const CAT_HOP_MS = 450;
+const CAT_APPROACH_MAX_MS = 2800;
+const CAT_APPROACH_SPEED = 8.5;
+
+function nearestCatNode(x, z) {
+  const nodes = catNav.nodes;
+  let bestIdx = 0;
+  let bestD = Infinity;
+  for (let i = 0; i < nodes.length; i++) {
+    const d = Math.hypot(nodes[i].x - x, nodes[i].z - z);
+    if (d < bestD) {
+      bestD = d;
+      bestIdx = i;
+    }
+  }
+  return bestIdx;
+}
+
+function resolveRideTarget(playerId) {
+  if (!playerId) return null;
+  if (playerId === myId || playerId === "me") {
+    return {
+      mesh: sprite,
+      feet: myFeet,
+      baseY: pos.y,
+      grounded: onGround,
+      dir: mySeat >= 0 ? (seatSpot(mySeat)?.dir || dir) : dir,
+      name: NAME,
+    };
+  }
+  const o = others.get(playerId);
+  if (!o) return null;
+  return {
+    mesh: o.mesh,
+    feet: o.feet,
+    baseY: o.mesh.position.y + (o.mesh.userData.lift || 0),
+    grounded: !!o.ground,
+    dir: o.seat >= 0 ? (seatSpot(o.seat)?.dir || o.dir) : o.dir,
+    name: o.name || "trainer",
+  };
+}
+
+const headCatLift = (mesh) => (cats.some((c) => c.ridingMesh === mesh) ? 2.2 : 0);
+
+function catSlotAt(cat, t) {
+  const eating = t >= cat.fed.at && t < cat.fed.until;
+  const activeMs = (t < cat.fed.at ? t : eating ? cat.fed.at : t - (cat.fed.until - cat.fed.at)) - cat.fed.lost;
+  return Math.floor(activeMs / CAT_LEG_MS);
+}
+
+function measurePath(path) {
+  const cumDist = [0];
+  let totalDist = 0;
+  for (let i = 1; i < path.length; i++) {
+    totalDist += Math.hypot(path[i].x - path[i - 1].x, path[i].z - path[i - 1].z);
+    cumDist.push(totalDist);
+  }
+  return { cumDist, totalDist };
+}
+
+function samplePathPoint(path, cumDist, totalDist, dist) {
+  let seg = 1;
+  while (seg < cumDist.length - 1 && cumDist[seg] < dist) seg++;
+  const a = path[seg - 1];
+  const b = path[seg];
+  const segLen = cumDist[seg] - cumDist[seg - 1];
+  const frac = segLen > 0 ? (dist - cumDist[seg - 1]) / segLen : 0;
+  const dx = b.x - a.x;
+  const dz = b.z - a.z;
+  return {
+    x: a.x + dx * frac,
+    y: a.y + (b.y - a.y) * frac,
+    z: a.z + dz * frac,
+    dir: Math.abs(dx) >= Math.abs(dz) ? (dx >= 0 ? "right" : "left") : dz >= 0 ? "down" : "up",
+  };
+}
+
+function finishLanding(cat, t, landIdx) {
+  const nodes = catNav.nodes;
+  if (nodes.length) {
+    const land = nodes[landIdx];
+    cat.mesh.position.set(land.x, land.y, land.z);
+    const slot = catSlotAt(cat, t);
+    cat.afterRide = { landSlot: slot, nextSlot: slot + 1, nodeIdx: landIdx };
+  }
+  cat.leg = null;
+  cat.ride = null;
+  cat.rideAnim = null;
+  cat.hopOff = null;
+  cat.ridingMesh = null;
+  cat.ridingFeet = null;
+  cat.mesh.scale.setScalar(CAT_GROUND_SCALE);
+  cat.mesh.renderOrder = 10;
+}
+
+function startHopOff(cat, t) {
+  const nodes = catNav.nodes;
+  const m = cat.mesh.position;
+  const landIdx = nodes.length ? nearestCatNode(m.x, m.z) : 0;
+  if (m.y > groundHeight(m.x, m.z) + 0.4 || cat.ridingMesh) {
+    cat.hopOff = { at: t, until: t + CAT_HOP_MS, from: m.clone(), landIdx };
+  } else {
+    finishLanding(cat, t, landIdx);
+  }
+  cat.ride = null;
+  cat.rideAnim = null;
+}
+
+function walkCat(cat, t) {
+  const m = cat.mesh.position;
+  const nodes = catNav.nodes;
+
+  if (cat.hopOff) {
+    const u = Math.min(1, Math.max(0, (t - cat.hopOff.at) / Math.max(1, cat.hopOff.until - cat.hopOff.at)));
+    if (u >= 1) {
+      finishLanding(cat, t, cat.hopOff.landIdx);
+    } else {
+      const land = nodes[cat.hopOff.landIdx] || { x: cat.hopOff.from.x, y: groundHeight(cat.hopOff.from.x, cat.hopOff.from.z), z: cat.hopOff.from.z };
+      m.set(
+        THREE.MathUtils.lerp(cat.hopOff.from.x, land.x, u),
+        THREE.MathUtils.lerp(cat.hopOff.from.y, land.y, u) + 2.6 * 4 * u * (1 - u),
+        THREE.MathUtils.lerp(cat.hopOff.from.z, land.z, u),
+      );
+      cat.mesh.scale.setScalar(THREE.MathUtils.lerp(CAT_PERCH_SCALE, CAT_GROUND_SCALE, u));
+      cat.mesh.renderOrder = 12;
+      cat.ridingMesh = null;
+      cat.ridingFeet = null;
+      cat.pose = "sit";
+      cat.sprite.setPose("sit");
+      return;
+    }
+  }
+
+  if (cat.ride) {
+    const target = resolveRideTarget(cat.ride.playerId);
+    if (!target) {
+      startHopOff(cat, t);
+      return;
+    }
+    const rideDuration = Math.max(1, cat.ride.until - cat.ride.at);
+    if (!cat.rideAnim || cat.rideAnim.at !== cat.ride.at) {
+      const startPos = m.clone();
+      const approachPath = nodes.length
+        ? findCatPath(nearestCatNode(startPos.x, startPos.z), nearestCatNode(target.mesh.position.x, target.mesh.position.z))
+        : [{ x: startPos.x, y: startPos.y, z: startPos.z }];
+      const { cumDist, totalDist } = measurePath(approachPath);
+      const rawApproach = totalDist > 0 ? Math.min(CAT_APPROACH_MAX_MS, (totalDist / CAT_APPROACH_SPEED) * 1000) : 0;
+      const approachEnd = Math.min(rawApproach, Math.max(0, rideDuration - CAT_HOP_MS * 2));
+      const hopOnEnd = Math.min(approachEnd + CAT_HOP_MS, Math.max(approachEnd, rideDuration - CAT_HOP_MS));
+      const hopOffStart = Math.max(hopOnEnd, rideDuration - CAT_HOP_MS);
+      cat.rideAnim = {
+        at: cat.ride.at,
+        startPos,
+        approachPath,
+        cumDist,
+        totalDist,
+        approachEnd,
+        hopOnEnd,
+        hopOffStart,
+        hopOffFrom: null,
+        landIdx: null,
+      };
+    }
+    const anim = cat.rideAnim;
+    const elapsed = Math.max(0, t - cat.ride.at);
+    const hx = target.mesh.position.x;
+    const hy = target.baseY + (target.grounded ? CAT_HEAD_OFFSET_Y - 0.47 : CAT_HEAD_OFFSET_Y);
+    const hz = target.mesh.position.z;
+
+    if (t >= cat.ride.until) {
+      const landIdx = anim.landIdx ?? (nodes.length ? nearestCatNode(hx, hz) : 0);
+      finishLanding(cat, t, landIdx);
+    } else if (elapsed < anim.approachEnd) {
+      const pt = samplePathPoint(anim.approachPath, anim.cumDist, anim.totalDist, (elapsed / anim.approachEnd) * anim.totalDist);
+      m.set(pt.x, pt.y, pt.z);
+      cat.mesh.scale.setScalar(CAT_GROUND_SCALE);
+      cat.mesh.renderOrder = 10;
+      cat.ridingMesh = null;
+      cat.ridingFeet = null;
+      cat.dir = pt.dir;
+      cat.pose = "walk";
+      cat.sprite.setDir(cat.dir);
+      cat.sprite.setPose("walk");
+      return;
+    } else if (elapsed < anim.hopOnEnd) {
+      const from = anim.approachPath[anim.approachPath.length - 1] || anim.startPos;
+      const u = (elapsed - anim.approachEnd) / Math.max(1, anim.hopOnEnd - anim.approachEnd);
+      m.set(
+        THREE.MathUtils.lerp(from.x, hx, u),
+        THREE.MathUtils.lerp(from.y, hy, u) + 3.2 * 4 * u * (1 - u),
+        THREE.MathUtils.lerp(from.z, hz, u),
+      );
+      cat.mesh.scale.setScalar(THREE.MathUtils.lerp(CAT_GROUND_SCALE, CAT_PERCH_SCALE, u));
+      cat.mesh.renderOrder = 12;
+      cat.ridingMesh = target.mesh;
+      cat.ridingFeet = target.feet;
+      cat.dir = target.dir;
+      cat.pose = "perch";
+      cat.sprite.setDir(cat.dir);
+      cat.sprite.setPose("perch");
+      return;
+    } else if (elapsed < anim.hopOffStart) {
+      m.set(hx, hy, hz);
+      cat.mesh.scale.setScalar(CAT_PERCH_SCALE);
+      cat.mesh.renderOrder = 12;
+      cat.ridingMesh = target.mesh;
+      cat.ridingFeet = target.feet;
+      cat.dir = target.dir;
+      cat.pose = "perch";
+      cat.sprite.setDir(cat.dir);
+      cat.sprite.setPose("perch");
+      return;
+    } else {
+      if (!anim.hopOffFrom) {
+        anim.hopOffFrom = { x: hx, y: hy, z: hz };
+        anim.landIdx = nodes.length ? nearestCatNode(hx, hz) : 0;
+      }
+      const land = nodes[anim.landIdx] || { x: hx, y: groundHeight(hx, hz), z: hz };
+      const u = Math.min(1, (elapsed - anim.hopOffStart) / Math.max(1, rideDuration - anim.hopOffStart));
+      m.set(
+        THREE.MathUtils.lerp(anim.hopOffFrom.x, land.x, u),
+        THREE.MathUtils.lerp(anim.hopOffFrom.y, land.y, u) + 2.6 * 4 * u * (1 - u),
+        THREE.MathUtils.lerp(anim.hopOffFrom.z, land.z, u),
+      );
+      cat.mesh.scale.setScalar(THREE.MathUtils.lerp(CAT_PERCH_SCALE, CAT_GROUND_SCALE, u));
+      cat.mesh.renderOrder = 12;
+      cat.ridingMesh = null;
+      cat.ridingFeet = null;
+      cat.pose = "sit";
+      cat.sprite.setPose("sit");
+      return;
+    }
+  }
+
+  cat.mesh.scale.setScalar(CAT_GROUND_SCALE);
+  cat.mesh.renderOrder = 10;
+  cat.ridingMesh = null;
+  cat.ridingFeet = null;
+
+  const eating = t >= cat.fed.at && t < cat.fed.until;
+  if (!nodes.length) {
+    cat.pose = eating ? "eat" : "sit";
+    cat.sprite.setPose(cat.pose);
+    return;
+  }
+  const activeMs = (t < cat.fed.at ? t : eating ? cat.fed.at : t - (cat.fed.until - cat.fed.at)) - cat.fed.lost;
+  const slot = Math.floor(activeMs / CAT_LEG_MS);
+  if (cat.afterRide) {
+    if (slot === cat.afterRide.landSlot) {
+      const p = nodes[cat.afterRide.nodeIdx];
+      m.set(p.x, p.y, p.z);
+      cat.pose = eating ? "eat" : "sit";
+      cat.sprite.setPose(cat.pose);
+      return;
+    }
+    if (slot > cat.afterRide.nextSlot) cat.afterRide = null;
+  }
+  const inSlotMs = ((activeMs % CAT_LEG_MS) + CAT_LEG_MS) % CAT_LEG_MS;
+  const leg = getCatLeg(cat, slot);
+  if (leg.totalDist === 0 || inSlotMs >= leg.walkMs) {
+    const end = leg.path[leg.path.length - 1];
+    m.set(end.x, end.y, end.z);
+    cat.pose = eating ? "eat" : "sit";
+    cat.sprite.setPose(cat.pose);
+    return;
+  }
+  const pt = samplePathPoint(leg.path, leg.cumDist, leg.totalDist, (inSlotMs / leg.walkMs) * leg.totalDist);
+  m.set(pt.x, pt.y, pt.z);
+  cat.dir = pt.dir;
+  cat.pose = eating ? "eat" : "walk";
+  cat.sprite.setDir(cat.dir);
+  cat.sprite.setPose(cat.pose);
+}
+
+function catWasFed(m) {
+  const cat = cats.find((c) => c.id === m.id);
+  if (!cat || ![m.at, m.until, m.lost].every(Number.isFinite)) return;
+  cat.fed = { at: m.at, until: m.until, lost: m.lost };
+  if (Number.isInteger(m.phrase)) showBubble(cat.mesh, CAT_PHRASES[Math.abs(m.phrase) % CAT_PHRASES.length]);
+}
+
+function catRideUpdate(m) {
+  const cat = cats.find((c) => c.id === m.id);
+  if (!cat || sceneId !== HOME) return; // the cats are the town's: no head to hop on elsewhere
+  const now = roomNow();
+  if (!m.playerId || !(m.until > m.at) || m.until <= now) {
+    if (cat.ride) startHopOff(cat, now);
+    return;
+  }
+  cat.ride = { playerId: m.playerId, at: m.at, until: m.until };
+  cat.hopOff = null;
+  cat.rideAnim = null;
+  if (Number.isInteger(m.phrase) && cat.lastRideAt !== m.at) {
+    cat.lastRideAt = m.at;
+    showBubble(cat.mesh, CAT_RIDE_PHRASES[Math.abs(m.phrase) % CAT_RIDE_PHRASES.length]);
+  }
+}
+
 // ---- Collision ----
 const BODY_RADIUS = 0.9; // character "width"
 const MAX_STEP = 1.2; // height difference it can climb
@@ -1391,6 +2377,7 @@ function isFree(x, z, currentY) {
   )
     return false;
   if (insideSolid(x, z, BODY_RADIUS * 0.8, BODY_RADIUS * 1.6)) return false;
+  if (onRide(x, z, BODY_RADIUS * 0.5)) return false; // the carousel is round, so not a box: you can walk all around it
   // pond: straight box (with the body width), not following the irregular stones
   if (
     inPond(x - BODY_RADIUS, z) ||
@@ -1506,6 +2493,13 @@ addEventListener("keydown", (e) => {
 // (4 directions x 4 steps, 32px frames, 2px gap).
 // male: green cap, orange jacket, purple backpack.
 // female: coral beanie, long hair, teal coat, skirt, yellow bag.
+// a trainer's sheet with its sitting-on-the-ground frames drawn under it (src/ground-sit.js); the row's
+// place rides on the canvas
+function withSitFrames(cv, cfg) {
+  const { canvas, row } = addSitFrames(cv, cfg, framePos);
+  canvas.sitRow = row;
+  return canvas;
+}
 function generateOriginalTrainer(gender = "male", cap = null) {
   const fem = gender === "female";
   const {
@@ -1610,7 +2604,7 @@ function generateOriginalTrainer(gender = "male", cap = null) {
       }
     }
   });
-  return cv;
+  return withSitFrames(cv, GRID);
 }
 // Lit "billboard" plane: receives lamp light and casts a shadow
 // with the sprite's cutout (alphaTest on the depth materials too).
@@ -1675,7 +2669,10 @@ function removeBackground(t, cfg = CHARACTER.cfg, gender = GENDER, cap = myCap()
   }
   recolorCap(d.data, cv.width, gender, cap);
   ctx.putImageData(d, 0, 0);
-  t.image = cv;
+  // the sitting row makes the image taller, and a texture already on the GPU can't change size:
+  // dispose of it so the next frame uploads a new one with the new image
+  t.dispose();
+  t.image = withSitFrames(cv, cfg);
   t.needsUpdate = true;
 }
 
@@ -1716,6 +2713,7 @@ gl_Position.z = (feetClip.z / feetClip.w) * gl_Position.w;`,
 }
 const myFeet = useFeetDepth(sprite);
 const capyFeet = useFeetDepth(capy.mesh);
+const owlFeet = useFeetDepth(owl.mesh);
 const _toCam = new THREE.Vector3();
 const occlusionRay = new THREE.Ray();
 const _hit = new THREE.Vector3();
@@ -1746,7 +2744,16 @@ function setFeet(feet, x, y, z) {
 function updateOcclusion() {
   setFeet(myFeet, pos.x + slide.x, pos.y, pos.z + slide.z);
   setFeet(capyFeet, capy.mesh.position.x, capy.mesh.position.y, capy.mesh.position.z);
+  setFeet(owlFeet, owl.mesh.position.x, owl.mesh.position.y, owl.mesh.position.z);
   for (const o of others.values()) setFeet(o.feet, o.mesh.position.x, o.mesh.position.y, o.mesh.position.z);
+  // After trainers: a perched cat shares its rider's depth nudged slightly forward so it sits
+  // over the cap without Z-fighting while still hiding behind walls/benches in front of the rider.
+  for (const cat of cats) {
+    if (cat.ridingFeet) {
+      _toCam.copy(camera.position).sub(cat.ridingFeet).normalize();
+      cat.feet.copy(cat.ridingFeet).addScaledVector(_toCam, 0.05);
+    } else setFeet(cat.feet, cat.mesh.position.x, cat.mesh.position.y, cat.mesh.position.z);
+  }
 }
 
 // ---- Movement ----
@@ -1756,9 +2763,15 @@ addEventListener("game:pause", (e) => {
   gamePaused = e.detail;
   if (gamePaused) Object.keys(keys).forEach((k) => (keys[k] = false));
 });
+// typing anywhere (the chat, a private chat's window, a name, the wall): the keys are letters, not steps
+const inTextField = (el = document.activeElement) => ["INPUT", "TEXTAREA"].includes(el?.tagName) || !!el?.isContentEditable;
 addEventListener("keydown", (e) => {
-  if (["msg", "name-input", "enter-name"].includes(document.activeElement?.id)) return; // typing: don't walk
+  if (inTextField()) return;
   keys[e.key.toLowerCase()] = true;
+});
+// a key held while a text field takes the focus would never be released for the game: let go of all
+addEventListener("focusin", (e) => {
+  if (inTextField(e.target)) Object.keys(keys).forEach((k) => (keys[k] = false));
 });
 addEventListener("keyup", (e) => (keys[e.key.toLowerCase()] = false));
 
@@ -1854,7 +2867,7 @@ let mySeat = -1;
 // in your hand while you stand still (it goes away while you walk). Pixel art drawn
 // in code on the trainer's own 32px frame, on a plane that sits exactly over the trainer and takes
 // the same depth (its feet), so it is covered and uncovered together with the body.
-const HELD = ["nothing", "a laptop", "a coffee", "a book"];
+const HELD = ["nothing", "a laptop", "a coffee", "a book", "a cigarette"];
 // each view: [colour, x, y, w, h, glows, puff, only] rectangles on the 32x32 frame, drawn for a body
 // whose middle is on column 16 (front and back views) or whose front edge is on column 22 (side view,
 // looking right); bodyShape() measures the real sprite and the art moves to fit it.
@@ -1883,6 +2896,15 @@ const HELD_ART = {
     ["skin", 22, 27, 2, 1], ["#f4ead2", 24, 23, 1, 2, 0, undefined, 1], ["#f4ead2", 25, 22, 1, 1, 0, undefined, 1]],
   // from behind the body hides it: only the cover's corners show past the elbows
   "3up": [["#7a2430", 8, 25, 1, 2], ["#7a2430", 24, 25, 1, 2]],
+  // cigarette from the front: between the fingers of the hand at the side, the ember glowing at its
+  // tip (brighter on one frame, a drag) and a thin trail of smoke rising and swaying past the shoulder
+  "4down": [["skin", 21, 24, 2, 2], ["#f4f1ea", 23, 24, 3, 1], ["#d9a35b", 22, 24, 1, 1], ["#ff6a2a", 26, 24, 1, 1, 1],
+    ["#ffd36b", 26, 24, 1, 1, 1, undefined, 1], ["#b8b8c6", 26, 22, 1, 1, 1, 0], ["#9c9cac", 26, 22, 1, 1, 1, 2]],
+  // from the side: the hand in front of the chest, below the chin, a short cigarette pointing forward
+  "4right": [["skin", 22, 25, 1, 1], ["#f4f1ea", 23, 25, 1, 1], ["#ff6a2a", 24, 25, 1, 1, 1],
+    ["#ffd36b", 24, 25, 1, 1, 1, undefined, 1], ["#b8b8c6", 24, 23, 1, 1, 1, 0], ["#9c9cac", 24, 23, 1, 1, 1, 2]],
+  // from behind the body hides it: only the ember past the elbow and the smoke above it
+  "4up": [["#ff6a2a", 24, 24, 1, 1, 1], ["#b8b8c6", 24, 22, 1, 1, 1, 0], ["#9c9cac", 24, 22, 1, 1, 1, 2]],
 };
 const FACE_LIGHT = [0.34, 0.22, 0.4, 0.28]; // how strong the screen's light is on each frame
 const FLICKER = [0, 1, 0, 2, 3, 1, 2, 0]; // uneven, like a screen changing
@@ -1927,9 +2949,9 @@ function bodyShape(tex, cfg, d) {
 }
 const heldTex = {};
 function heldTextures(item, d, shape) {
-  const tick = Math.floor(performance.now() / (item === 1 ? 260 : item === 2 ? 320 : 400));
-  // the screen's light, steam rising, or a page turning about every 4 seconds
-  const frame = item === 1 ? FLICKER[tick % 8] : item === 2 ? tick % 4 : +(tick % 10 === 9);
+  const tick = Math.floor(performance.now() / (item === 1 ? 260 : item === 2 ? 320 : item === 4 ? 420 : 400));
+  // the screen's light, steam or smoke rising, or a page turning about every 4 seconds
+  const frame = item === 1 ? FLICKER[tick % 8] : item === 2 || item === 4 ? tick % 4 : +(tick % 10 === 9);
   const key = item + d + frame + (shape?.key || "");
   if (heldTex[key]) return heldTex[key];
   const art = HELD_ART[item + (d === "left" ? "right" : d)] || HELD_ART[item + "down"];
@@ -1973,9 +2995,10 @@ function createHeld(feet) {
   return mesh;
 }
 // which way the item is drawn for a trainer, or null when it doesn't show: anything on a bench,
-// and the coffee while standing still
+// and the coffee or the cigarette while standing still
 const COFFEE = 2;
-const heldDir = (item, seat, still, d) => (!item ? null : seat ? seat.dir : item === COFFEE && still ? d : null);
+const ON_FOOT = [COFFEE, 4]; // what stays in your hand on your feet
+const heldDir = (item, seat, still, d) => (!item ? null : seat ? seat.dir : ON_FOOT.includes(item) && still ? d : null);
 // put the item over its trainer, seen from direction d (or hide it: d is null)
 function showHeld(mesh, body, cfg, item, d) {
   mesh.visible = !!(item && d);
@@ -1988,7 +3011,7 @@ function showHeld(mesh, body, cfg, item, d) {
 }
 const myHeld = createHeld(myFeet);
 let myHold = 0;
-try { myHold = [1, 2, 3].includes(+localStorage.getItem("hold")) ? +localStorage.getItem("hold") : 0; } catch {}
+try { myHold = [1, 2, 3, 4].includes(+localStorage.getItem("hold")) ? +localStorage.getItem("hold") : 0; } catch {}
 const sendHold = () => ws?.readyState === 1 && ws.send(JSON.stringify({ t: "hold", item: myHold }));
 const holdBtn = document.querySelector("#hold");
 // the button shows what you hold (the cup, unlit, when your hands are empty)
@@ -1998,12 +3021,18 @@ const HELD_ICONS = [
   '<path d="M20 16V7a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v9m16 0H4m16 0 1.28 2.55a1 1 0 0 1-.9 1.45H3.62a1 1 0 0 1-.9-1.45L4 16"/>',
   CUP_ICON,
   '<path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/>',
+  '<path d="M17 12H3a1 1 0 0 0-1 1v2a1 1 0 0 0 1 1h14"/><path d="M18 8c0-2.5-2-2.5-2-5"/><path d="M21 16a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1"/><path d="M22 8c0-2.5-2-2.5-2-5"/><path d="M7 12v4"/>',
 ];
 let holdIcon = 0;
-// Q on a bench goes through everything; standing, it only picks the coffee up and puts it away
-const nextHold = () => (mySeat >= 0 ? (myHold + 1) % HELD.length : myHold === COFFEE ? 0 : COFFEE);
+// Q on a bench goes through everything; standing, it goes coffee, cigarette, empty hands
+const FOOT_CYCLE = [0, ...ON_FOOT];
+function nextHold() {
+  if (mySeat >= 0) return (myHold + 1) % HELD.length;
+  const i = FOOT_CYCLE.indexOf(myHold);
+  return i < 0 ? COFFEE : FOOT_CYCLE[(i + 1) % FOOT_CYCLE.length]; // a laptop or a book in hand gives way to the coffee
+}
 function updateHoldButton() {
-  const shown = mySeat >= 0 || myHold === COFFEE ? myHold : 0; // a laptop or a book waits for a bench
+  const shown = mySeat >= 0 || ON_FOOT.includes(myHold) ? myHold : 0; // a laptop or a book waits for a bench
   holdBtn.hidden = false;
   holdBtn.classList.toggle("on", shown > 0);
   holdBtn.setAttribute("aria-label", "hold " + HELD[nextHold()]);
@@ -2023,6 +3052,42 @@ holdBtn.addEventListener("click", (e) => {
   e.currentTarget.blur(); // give the keyboard back to the game
 });
 
+// ---- Sitting on the ground (C, or the button in the top card) ----
+// You sit down facing the way you stand; everyone sees it, also whoever joins later. Walking, sitting on
+// a bench or pressing C again gets you up.
+let onGround = false,
+  lastGround = 0;
+const sendGround = () => ws?.readyState === 1 && ws.send(JSON.stringify({ t: "ground", on: onGround }));
+const groundBtn = document.querySelector("#ground-sit");
+function setGround(on) {
+  const now = performance.now();
+  if (on && (gamePaused || mySeat >= 0 || now - lastGround < 350)) return; // stays under the server's rate limit
+  if (on === onGround) return;
+  lastGround = now;
+  onGround = on;
+  groundBtn.classList.toggle("on", on);
+  groundBtn.setAttribute("aria-label", on ? "stand up" : "sit on the ground");
+  sendGround();
+}
+// the sitting frame facing `d` (false if this texture has none yet)
+function setSitFrameTex(tex, d) {
+  const img = tex.image,
+    row = img?.sitRow;
+  if (!row) return false;
+  const { x, y, w, h } = sitFramePos(row, d);
+  tex.repeat.set(w / img.width, h / img.height);
+  tex.offset.set(x / img.width, 1 - (y + h) / img.height);
+  return true;
+}
+groundBtn.addEventListener("click", (e) => {
+  setGround(!onGround);
+  e.currentTarget.blur(); // give the keyboard back to the game
+});
+addEventListener("keydown", (e) => {
+  if (typing() || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.key.toLowerCase() === "c") setGround(!onGround);
+});
+
 // each sit/stand is numbered and the server's corrections carry the number back, so a late
 // answer to an older request can't stand you up from the seat you have now
 let sitN = 0;
@@ -2031,17 +3096,24 @@ const seatTaken = (id) => [...others.values()].some((o) => o.seat === id);
 function nearestFreeSeat() {
   let best = -1,
     bestD = SIT_RANGE;
-  for (let id = 0; id < benches.length * SEATS_PER_BENCH; id++) {
+  const consider = (id) => {
     const s = seatSpot(id);
+    if (!s || s.board === false) return; // a gondola is boarded only near the bottom
     const d = Math.hypot(s.x - pos.x, s.z - pos.z);
     if (d < bestD && !seatTaken(id)) (best = id), (bestD = d);
-  }
+  };
+  for (let id = 0; id < benches.length * SEATS_PER_BENCH; id++) consider(id);
+  for (let i = 0; i < CAROUSEL.seats; i++) consider(CAROUSEL.firstSeat + i);
+  for (let i = 0; i < WHEEL.seats; i++) consider(WHEEL.firstSeat + i);
+  for (let i = 0; i < COASTER.seats; i++) consider(COASTER.firstSeat + i); // only while it is at the station (board)
   return best;
 }
 function sit(id) {
   const s = seatSpot(id);
   if (!s) return;
+  setGround(false);
   mySeat = id;
+  if (isCoasterSeat(id)) myRide = coasterCycle(roomNow()); // the ride you board: off when the next cycle begins
   const [ox, oz] = [pos.x, pos.z];
   pos.set(s.x, s.y, s.z);
   glideFrom(ox, oz);
@@ -2051,6 +3123,9 @@ function sit(id) {
 // Stand up on the nearest free spot around the bench, starting from the way you walked off
 // (or its front), then tell the room
 function standUp(notify = true, way = null) {
+  if (isCarouselSeat(mySeat)) return getOffCarousel(notify);
+  if (isWheelSeat(mySeat)) return getOffWheel(notify);
+  if (isCoasterSeat(mySeat)) return getOffCoaster(notify);
   const s = seatSpot(mySeat);
   const side = mySeat & 1 ? 1 : -1;
   mySeat = -1;
@@ -2076,6 +3151,78 @@ function standUp(notify = true, way = null) {
   }
   if (notify) sendSeat();
 }
+// Off a horse: onto the grass just outside the base, beside where the horse is now, then further
+// around it (another rider may be getting off there too)
+function getOffCarousel(notify) {
+  const s = seatSpot(mySeat);
+  mySeat = -1;
+  if (s) {
+    const from = Math.atan2(s.x - CAROUSEL.x, s.z - CAROUSEL.z); // its angle, as carouselSeat measures it
+    search: for (let d = CAROUSEL.base + 1; d <= CAROUSEL.base + 4; d += 0.5)
+      for (let i = 0; i < 24; i++) {
+        const a = from + (i % 2 ? 1 : -1) * Math.ceil(i / 2) * (Math.PI / 12);
+        const x = CAROUSEL.x + Math.sin(a) * d,
+          z = CAROUSEL.z + Math.cos(a) * d;
+        const ground = groundHeight(x, z);
+        if (isFree(x, z, ground)) {
+          const [ox, oz] = [pos.x, pos.z];
+          pos.set(x, ground, z);
+          glideFrom(ox, oz);
+          break search;
+        }
+      }
+  }
+  if (notify) sendSeat();
+}
+// Off the roller coaster's sleigh: onto the grass north of the station, by your seat, then further along
+let myRide = -1; // the coaster cycle you boarded in
+function getOffCoaster(notify) {
+  const s = seatSpot(mySeat);
+  mySeat = -1;
+  if (s) {
+    const z = COASTER.exitZ;
+    const S = COASTER.station;
+    const x0 = Math.max(S.x0, Math.min(S.x1, s.x));
+    search: for (let d = 0; d <= 8; d += 0.5)
+      for (const x of [x0 + d, x0 - d]) {
+        const ground = groundHeight(x, z);
+        if (isFree(x, z, ground)) {
+          const [ox, oz] = [pos.x, pos.z];
+          pos.set(x, ground, z);
+          glideFrom(ox, oz);
+          break search;
+        }
+      }
+  }
+  if (notify) sendSeat();
+}
+// The ride is over once its cycle is: everyone gets off at the station, so the next riders can board.
+// Checked every frame, and every second too, since a tab in the background draws no frames
+function leaveFinishedRide() {
+  if (isCoasterSeat(mySeat) && coasterCycle(roomNow()) > myRide) standUp();
+}
+setInterval(leaveFinishedRide, 1000);
+// Off a gondola: onto the grass in front of the wheel, below where it is (from up high too: the
+// glide brings you down), then further along
+function getOffWheel(notify) {
+  const s = seatSpot(mySeat);
+  mySeat = -1;
+  if (s) {
+    const z = WHEEL.z + WHEEL.halfDepth + 1.4;
+    const x0 = Math.max(WHEEL.x - WHEEL.west, Math.min(WHEEL.x + WHEEL.east, s.x));
+    search: for (let d = 0; d <= 6; d += 0.5)
+      for (const x of [x0 + d, x0 - d]) {
+        const ground = groundHeight(x, z);
+        if (isFree(x, z, ground)) {
+          const [ox, oz] = [pos.x, pos.z];
+          pos.set(x, ground, z);
+          glideFrom(ox, oz);
+          break search;
+        }
+      }
+  }
+  if (notify) sendSeat();
+}
 const MOVE_KEYS = { w: "up", arrowup: "up", s: "down", arrowdown: "down", a: "left", arrowleft: "left", d: "right", arrowright: "right" };
 // at most one sit or stand per SIT_COOLDOWN ms, so mashing E stays under the server's rate limit
 const SIT_COOLDOWN = 350;
@@ -2084,6 +3231,7 @@ const toggleSit = () => {
   const now = performance.now();
   if (gamePaused || now - lastToggle < SIT_COOLDOWN) return;
   lastToggle = now;
+  if (strappedIn()) return; // strapped in until the sleigh is back
   if (mySeat >= 0) return standUp();
   const id = nearestFreeSeat();
   if (id >= 0) sit(id);
@@ -2092,8 +3240,9 @@ addEventListener("keydown", (e) => {
   const typing = ["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName);
   const k = e.key.toLowerCase();
   if (!typing && !e.repeat && !e.ctrlKey && !e.metaKey && k === "q") cycleHold();
+  if (!typing && !e.repeat && !e.ctrlKey && !e.metaKey && k === "e") (mySeat >= 0 || (!nearBoard() && !nearCapy() && !nearCat())) && toggleSit();
   // a quick tap on a move key can end before the next frame: stand up right away
-  if (!typing && !gamePaused && mySeat >= 0 && MOVE_KEYS[k]) {
+  if (!typing && !gamePaused && mySeat >= 0 && !strappedIn() && MOVE_KEYS[k]) {
     dir = MOVE_KEYS[k];
     standUp(true, FACING[dir]);
   }
@@ -2152,6 +3301,7 @@ function changeName(newName) {
   } catch {}
   if (MULTIPLAYER && ws?.readyState === 1)
     ws.send(JSON.stringify({ t: "name", name: NAME }));
+  if (MULTIPLAYER) wall.rename();
 }
 // the enter/pause screen has its own name field: fill it in and apply it on enter
 window.applyName = changeName;
@@ -2266,6 +3416,7 @@ function createOther(p) {
         () => {
           failedSheets.add(g);
           o.cfg = GRID;
+          tex.dispose(); // a different size from the sheet: a new texture on the GPU
           tex.image = generateOriginalTrainer(g, cap);
           tex.needsUpdate = true;
         },
@@ -2303,32 +3454,50 @@ function createOther(p) {
     step: p.step || 0,
     seat: Number.isInteger(p.seat) ? p.seat : -1,
     hold: p.hold | 0,
+    ground: !!p.ground, // on joining: someone already sitting on the ground
+    fish: fishTarget(p.fish), // on joining: someone whose line is already out
     name: p.name,
     gender: g,
+    cap, // for the profile
     color: p.color,
     admin: !!p.admin,
+    prs: p.prs | 0, // merged pull requests: the contributor badge
+    n: Number.isInteger(p.n) ? p.n : -1, // account number (-1: no account), for the profile
   };
   mesh.position.copy(o.target);
   others.set(p.id, o);
   updateCount();
   return o;
 }
+// Another player's line, as the room sent it ([x, z] of the bobber, or nothing): null if it isn't out
+// or isn't two numbers. Its height is found later, on the water (waterY).
+const fishTarget = (v) => (Array.isArray(v) && v.length === 2 && v.every(Number.isFinite) ? { x: v[0], y: null, z: v[1] } : null);
+// that player's rod, line and bobber, made the first time they are needed
+const otherGear = (o) =>
+  (o.gear ??= createFishingGear({
+    scene,
+    camera,
+    feetDepth: (mesh) => useFeetDepth(mesh, o.feet, 12),
+    shape: (d) => bodyShape(o.tex, o.cfg, d),
+  }));
 function removeOther(id) {
   const o = others.get(id);
   if (!o) return;
   scene.remove(o.mesh);
   if (o.held) scene.remove(o.held), o.held.material.dispose();
+  o.gear?.dispose();
   o.tex.dispose();
   others.delete(id);
   updateCount();
 }
 function updateCount() {
-  const el = document.querySelector("#place small");
+  const el = document.querySelector("#online");
   if (el)
     el.textContent = `${others.size + 1} online`;
 }
 
 let meAdmin = false; // the server confirmed this connection is the admin
+let myPrs = 0; // my merged pull requests, once the server knows my GitHub login (/github)
 let deployed = ""; // the deploy this tab first connected to
 let pendingPassword = ""; // typed after /admin, saved only if the server accepts it
 let kicked = false; // kicked or banned: stay out instead of reconnecting
@@ -2347,10 +3516,15 @@ function connect() {
     sock.send(JSON.stringify({ t: "hello", v: 1, name: NAME, gender: GENDER, color: COLOR, cap: myCap(), x: pos.x, z: pos.z, dir }));
     if (mySeat >= 0) sendSeat(); // reconnected while sitting
     if (myHold) sendHold();
+    if (onGround) sendGround(); // reconnected while sitting on the ground
+    if (fishing.spot()) sendFish(fishing.spot().target); // reconnected (or reloaded) with the line out
     // a saved admin logs in again quietly, so everyone sees the admin badge
     let password = "";
     try { password = localStorage.getItem("admin-password") || ""; } catch {}
     if (password) sock.send(JSON.stringify({ t: "auth", password, quiet: true }));
+    // and so does a contributor who logged in with GitHub before
+    const session = githubSession();
+    if (session) sock.send(JSON.stringify({ t: "github", session }));
   };
   sock.onmessage = (ev) => {
     if (ws !== sock || ev.data === "pong") return;
@@ -2371,11 +3545,16 @@ function connect() {
     else if (m.t === "state") m.players.forEach(createOther);
     else if (m.t === "joined") createOther(m.player);
     else if (m.t === "left") removeOther(m.id);
-    else if (m.t === "chat") receiveChat(m.id, m.name, m.text, m.admin, m.color);
+    else if (m.t === "chat") receiveChat(m.id, m.name, m.text, m.admin, m.color, m.prs, m.n);
+    else if (social.onMessage(m)) {} // accounts, profiles, friends and private chat (src/social.js)
+    else if (m.t === "acct") {
+      const o = others.get(m.id);
+      if (o) o.n = m.n;
+    }
     else if (m.t === "history") {
       // what was said before we arrived (also on reconnect, so start clean)
       elMsgs.replaceChildren();
-      m.messages.forEach((c) => addToHistory(c.name, c.text, c.id, c.admin, c.color));
+      m.messages.forEach((c) => addToHistory(c.name, c.text, c.id, c.admin, c.color, c.prs, c.n));
       elMsgs.scrollTop = elMsgs.scrollHeight;
     }
     else if (m.t === "radio") receiveCommand(m.command);
@@ -2384,6 +3563,9 @@ function connect() {
     else if (m.t === "note-del") wall.onNoteDeleted(m.id, m.total);
     else if (m.t === "note-like") wall.onNoteLiked(m.id, m.likes);
     else if (m.t === "capy") capyWasFed(m);
+    else if (m.t === "stone") stoneThrown(m);
+    else if (m.t === "cat") catWasFed(m);
+    else if (m.t === "cat-ride") catRideUpdate(m);
     else if (m.t === "error" || m.t === "notice") addToHistory("system", m.msg);
     else if (m.t === "rename") {
       // the server refused our name and gave us another one
@@ -2397,6 +3579,26 @@ function connect() {
       if (m.id === myId) meAdmin = true;
       const o = others.get(m.id);
       if (o) o.admin = true;
+    }
+    else if (m.t === "contrib") {
+      if (m.id === myId) myPrs = m.prs | 0;
+      const o = others.get(m.id);
+      if (o) o.prs = m.prs | 0;
+    }
+    else if (m.t === "github-code") showGithubCode(m);
+    else if (m.t === "github-ok") {
+      try { localStorage.setItem("github-session", m.session); } catch {}
+      closeGithubLogin();
+      addToHistory("system", m.prs > 0 ? `github ok: ${m.login}, ${prsText(m.prs)} merged` : `github ok: ${m.login}, no merged PR yet (the badge comes with the first one)`);
+    }
+    else if (m.t === "github-fail") {
+      closeGithubLogin();
+      addToHistory("system", m.msg);
+    }
+    else if (m.t === "github-out") {
+      // the server no longer knows this session: this browser has to log in again
+      try { localStorage.removeItem("github-session"); } catch {}
+      social.sessionEnded();
     }
     else if (m.t === "admin-ok") {
       // the server accepted the password typed after /admin: keep it and reload to show the controls
@@ -2429,6 +3631,8 @@ function connect() {
           gender: m.gender,
           cap: m.cap,
           admin: o.admin,
+          prs: o.prs,
+          n: o.n,
         };
         removeOther(m.id);
         createOther(p);
@@ -2436,6 +3640,15 @@ function connect() {
     } else if (m.t === "hold") {
       const o = others.get(m.id);
       if (o) o.hold = m.item | 0;
+    } else if (m.t === "ground") {
+      const o = others.get(m.id);
+      if (o) o.ground = !!m.on;
+    } else if (m.t === "fish") {
+      // someone's line went out (where the bobber floats) or came back in
+      const o = others.get(m.id);
+      if (!o) return;
+      o.fish = fishTarget(m.fish);
+      if (o.fish && !document.hidden) otherGear(o).cast(); // seen live: the throw is shown
     } else if (m.t === "seat") {
       // the server says who sits where. About you, it only answers a refused or dropped sit:
       // you're not on the seat you asked for, so stand up; or the room still has you seated
@@ -2529,16 +3742,24 @@ function updateOthers(dt) {
       m.position.set(seat.x, seat.y, seat.z);
       o.target.set(seat.x, 0, seat.z);
     } else m.position.y = topHeight(m.position.x, m.position.z);
+    m.castShadow = !isRideSeat(o.seat); // see the loop: riders cast no shadow
     m.rotation.copy(sprite.rotation);
     // running uses the run frames of the same sheet, like your own trainer (not on the code-drawn fallback)
     const running = o.run && !seat && o.cfg === CROP[o.gender];
-    setFrameTex(o.tex, running ? RUN_CROP[o.gender] : o.cfg, seat ? seat.dir : o.dir, seat ? 0 : o.step);
+    // on the ground, facing the way they stood (walking or a bench gets them up)
+    if (o.ground && (seat || o.step)) o.ground = false;
+    const grounded = o.ground && setSitFrameTex(o.tex, o.dir);
+    if (!grounded) setFrameTex(o.tex, running ? RUN_CROP[o.gender] : o.cfg, seat ? seat.dir : o.dir, seat ? 0 : o.step);
     m.userData.lift = running && o.gender === "male" ? 0.8 : 0; // the male run frames sit higher in their cell
     m.position.y -= m.userData.lift;
     // standing still: on the standing frame, a moment after the last step arrived
     const still = !o.step && performance.now() - (o.movedAt || 0) > 300;
-    const hd = heldDir(o.hold, seat, still, o.dir);
+    const hd = grounded ? null : heldDir(o.hold, seat, still, o.dir); // the coffee is drawn for a standing body
     if (o.held || hd) showHeld((o.held ??= createHeld(o.feet)), m, o.cfg, o.hold, hd);
+    // their rod, line and bobber while their line is out (the bobber's height once the pond is loaded)
+    if (o.fish && o.fish.y === null) o.fish.y = waterY(o.fish.x, o.fish.z);
+    const fishes = o.fish && o.fish.y !== null;
+    if (fishes || o.gear) otherGear(o).draw(Date.now(), m, seat ? seat.dir : o.dir, fishes ? "focus" : "idle", o.fish);
   }
 }
 
@@ -2591,15 +3812,33 @@ function mentionText(el, parts) {
   );
 }
 
-function addToHistory(name, text, id, admin, color) {
+const prsText = (n) => `${n} PR${n === 1 ? "" : "s"}`;
+// Red 1–10, blue 11–20, black 21–50, then the purple Master Ball at 51+.
+// Highest threshold first; its index runs backwards through the four balls in the sprite sheet.
+const PR_TIERS = [{ from: 51 }, { from: 21 }, { from: 11 }, { from: 1 }];
+/** Fills el with the ball for prs merged pull requests and the count (nothing for 0). */
+function showPrs(el, prs) {
+  if (el.dataset.prs === String(prs)) return;
+  el.dataset.prs = prs;
+  el.replaceChildren();
+  el.title = prs > 0 ? `${prsText(prs)} merged` : "";
+  if (!(prs > 0)) return;
+  const tier = PR_TIERS.findIndex((t) => prs >= t.from);
+  const ball = Object.assign(document.createElement("i"), { ariaHidden: "true" });
+  ball.style.backgroundPosition = `${(PR_TIERS.length - 1 - tier) * (100 / (PR_TIERS.length - 1))}% 0`;
+  el.append(ball, prsText(prs));
+}
+function addToHistory(name, text, id, admin, color, prs = 0, n = -1) {
   const d = document.createElement("div");
   d.className = admin ? "m admin" : "m";
   const s = document.createElement("small");
   s.textContent = name;
+  if (prs > 0) showPrs(s.appendChild(Object.assign(document.createElement("span"), { className: "prs" })), prs);
   paintName(s, color);
-  if (IS_ADMIN && id && id !== myId && id !== "me") {
+  // a name opens that player's profile (the admin gets the kick and ban menu, with the profile in it)
+  if (id && name !== "system") {
     s.className = "mod";
-    s.addEventListener("click", (e) => openModMenu(e, id, name));
+    s.addEventListener("click", (e) => nameClicked(e, id, { name, color, prs, n }));
   }
   const t = document.createElement("span");
   if (name === "system") t.textContent = text; // textContent: no HTML from the chat
@@ -2640,7 +3879,17 @@ let IS_ADMIN = false;
 try { IS_ADMIN = !!localStorage.getItem("admin-password"); } catch {}
 const modMenu = Object.assign(document.createElement("div"), { id: "mod-menu", className: "glass", hidden: true });
 document.body.append(modMenu);
-function openModMenu(e, id, name) {
+// A click on a name: whose it is now (they may have logged in since that chat line), then the profile
+function nameClicked(e, id, seen) {
+  const mine = !id || id === myId || id === "me";
+  const o = mine ? null : others.get(id);
+  const who = mine
+    ? { ...seen, name: NAME, color: COLOR, gender: GENDER, cap: myCap(), n: social.myAccount(), online: true }
+    : { ...seen, ...(o && { name: o.name, color: o.color, gender: o.gender, cap: o.cap, n: o.n, online: true }) };
+  if (IS_ADMIN && !mine) return openModMenu(e, id, who.name, who);
+  social.openProfile(who.n ?? -1, who);
+}
+function openModMenu(e, id, name, who) {
   e.stopPropagation();
   let password = "";
   try { password = localStorage.getItem("admin-password") || ""; } catch {}
@@ -2650,6 +3899,11 @@ function openModMenu(e, id, name) {
   modMenu.replaceChildren(
     Object.assign(document.createElement("b"), { textContent: name }),
     Object.assign(document.createElement("small"), { className: "who", textContent: "…" }),
+    (() => {
+      const b = Object.assign(document.createElement("button"), { type: "button", textContent: "profile" });
+      b.addEventListener("click", () => ((modMenu.hidden = true), social.openProfile(who?.n ?? -1, who || { name })));
+      return b;
+    })(),
     ...["kick", "ban"].map((action) => {
       const b = Object.assign(document.createElement("button"), { type: "button", textContent: action });
       b.addEventListener("click", () => {
@@ -2662,7 +3916,7 @@ function openModMenu(e, id, name) {
     }),
   );
   modMenu.style.left = `${Math.min(e.clientX, innerWidth - 140)}px`;
-  modMenu.style.top = `${Math.min(e.clientY + 8, innerHeight - 110)}px`;
+  modMenu.style.top = `${Math.min(e.clientY + 8, innerHeight - 140)}px`;
   modMenu.hidden = false;
 }
 addEventListener("pointerdown", (e) => {
@@ -2679,32 +3933,34 @@ function showWho(m) {
 
 // ---- Name above each trainer ----
 const nameTags = new Map(); // mesh -> div
-function nameTag(mesh, name, id, admin, color) {
+function nameTag(mesh, name, id, admin, color, prs = 0) {
   let el = nameTags.get(mesh);
   if (!el) {
     el = Object.assign(document.createElement("div"), { className: "tag" });
     el.append(
       Object.assign(document.createElement("b"), { className: "badge", textContent: "admin" }),
+      Object.assign(document.createElement("b"), { className: "contrib" }),
       Object.assign(document.createElement("span"), { className: "who" }),
     );
-    if (IS_ADMIN && id) {
-      el.classList.add("mod");
-      el.addEventListener("click", (e) => openModMenu(e, id, el.lastChild.textContent));
-    }
+    // a name opens that player's profile (yours too); the admin gets the kick and ban menu first
+    el.classList.add("mod");
+    el.addEventListener("click", (e) => nameClicked(e, id || myId, { name: el.lastChild.textContent, color: el.dataset.color }));
     document.body.append(el);
     nameTags.set(mesh, el);
   }
   if (el.lastChild.textContent !== name) el.lastChild.textContent = name;
   if (el.dataset.color !== (color || "")) paintName(el, (el.dataset.color = color || ""));
   el.classList.toggle("admin", !!admin);
+  // contributor: a ball and the merged pull requests
+  showPrs(el.children[1], prs | 0);
 }
 function updateNameTags() {
-  nameTag(sprite, NAME, null, meAdmin, COLOR);
-  for (const [id, o] of others) nameTag(o.mesh, o.name || "trainer", id, o.admin, o.color);
+  nameTag(sprite, NAME, null, meAdmin, COLOR, myPrs);
+  for (const [id, o] of others) nameTag(o.mesh, o.name || "trainer", id, o.admin, o.color, o.prs);
   for (const [mesh, el] of nameTags) {
     if (!mesh.parent) { el.remove(); nameTags.delete(mesh); continue; }
     const baseY = mesh === sprite ? pos.y : mesh.position.y + (mesh.userData.lift || 0);
-    _v.set(mesh.position.x, baseY + mesh.scale.y * 0.92, mesh.position.z).project(camera);
+    _v.set(mesh.position.x, baseY + mesh.scale.y * 0.92 + headCatLift(mesh), mesh.position.z).project(camera);
     el.style.left = `${(_v.x * 0.5 + 0.5) * innerWidth}px`;
     el.style.top = `${(-_v.y * 0.5 + 0.5) * innerHeight}px`;
     el.style.display = _v.z < 1 ? "" : "none";
@@ -2718,8 +3974,27 @@ sitPrompt.addEventListener("click", (e) => {
   toggleSit();
   e.currentTarget.blur(); // give the keyboard back to the game
 });
+// The roller coaster's countdown over its station, for whoever is near it or riding: the seconds left
+// to board while the train waits, then the seconds until it is back
+const coasterSign = document.querySelector("#coaster-sign");
+const COASTER_SIGN_NEAR = 18;
+const COASTER_SIGN_AT = { x: (COASTER.station.x0 + COASTER.station.x1) / 2, z: COASTER.station.z1 };
+function updateCoasterSign() {
+  const near = Math.hypot(pos.x - COASTER_SIGN_AT.x, pos.z - COASTER_SIGN_AT.z) < COASTER_SIGN_NEAR || isCoasterSeat(mySeat);
+  const now = roomNow();
+  const board = coasterBoardLeft(now);
+  coasterSign.hidden = !fairPlaced || sceneId !== HOME || gamePaused || !near;
+  if (coasterSign.hidden) return;
+  const html = board ? `all aboard! leaves in <b>${board}s</b>` : `back at the station in <b>${coasterBackIn(now) || 1}s</b>`;
+  if (coasterSign.innerHTML !== html) coasterSign.innerHTML = html;
+  coasterSign.classList.toggle("go", !!board);
+  _v.set(COASTER_SIGN_AT.x, coaster.root.position.y + 7.4, COASTER_SIGN_AT.z).project(camera); // over the garland
+  coasterSign.hidden = _v.z > 1; // behind the camera
+  coasterSign.style.left = `${(_v.x * 0.5 + 0.5) * innerWidth}px`;
+  coasterSign.style.top = `${(-_v.y * 0.5 + 0.5) * innerHeight}px`;
+}
 function updateSitPrompt(seat) {
-  const s = seat >= 0 && !gamePaused && !typing() ? seatSpot(seat) : null;
+  const s = seat >= 0 && !gamePaused && !typing() && !nearBoard() && !nearCapy() && !nearCat() ? seatSpot(seat) : null;
   sitPrompt.hidden = !s;
   if (!s) return;
   _v.set(s.x, s.y + 5.2, s.z).project(camera); // above a standing trainer's name tag
@@ -2741,7 +4016,7 @@ function updateBubbles() {
     const baseY = owner === sprite ? pos.y : owner.position.y + (owner.userData.lift || 0);
     _v.set(
       owner.position.x,
-      baseY + owner.scale.y * 0.95,
+      baseY + owner.scale.y * 0.95 + headCatLift(owner),
       owner.position.z,
     ).project(camera);
     _v.y += 20 / (innerHeight / 2); // move above the name tag
@@ -2750,8 +4025,8 @@ function updateBubbles() {
   }
 }
 
-function receiveChat(id, name, text, admin, color) {
-  addToHistory(name, text, id, admin, color);
+function receiveChat(id, name, text, admin, color, prs, n) {
+  addToHistory(name, text, id, admin, color, prs, n);
   const owner = id === myId || id === "me" ? sprite : others.get(id)?.mesh;
   if (owner) showBubble(owner, text, owner !== sprite && mentionsMe(mentionParts(text)));
 }
@@ -2763,6 +4038,9 @@ document.querySelector("#chat form").addEventListener("submit", (e) => {
   const text = elInput.value.trim().slice(0, 140);
   elInput.value = "";
   if (/^\/admin$/i.test(text)) return openAdminLogin();
+  // contributors: /github proves your GitHub login, and the room shows your merged pull requests
+  if (/^\/github$/i.test(text)) return startGithubLogin();
+  if (/^\/github (out|logout)$/i.test(text)) return githubLogout();
   if (/^\/logout$/i.test(text)) {
     try { localStorage.removeItem("admin-password"); } catch {}
     location.reload();
@@ -2780,6 +4058,7 @@ document.querySelector("#chat form").addEventListener("submit", (e) => {
     ws.send(JSON.stringify({ t: "mod", action: "unban", password }));
     return;
   }
+  if (social.sendChat(text)) return; // a private chat's tab is open: it goes to that friend only
   if (MULTIPLAYER && ws?.readyState === 1)
     ws.send(JSON.stringify({ t: "chat", text }));
   else receiveChat("me", NAME, text, false, COLOR); // offline: show only to me
@@ -2814,6 +4093,48 @@ adminLogin.addEventListener("submit", (e) => {
 });
 adminLogin.querySelector("[data-cancel]").addEventListener("click", closeAdminLogin);
 adminPw.addEventListener("keydown", (e) => e.key === "Escape" && closeAdminLogin());
+// GitHub login (device flow): the room hands out a code, the player types it at github.com and the room
+// learns their login. No password or GitHub token ever reaches this page; it keeps a session of the room's.
+const githubLogin = document.querySelector("#github-login");
+let githubPoll = 0;
+function githubSession() {
+  try { return localStorage.getItem("github-session") || ""; } catch { return ""; }
+}
+function githubLogout() {
+  const session = githubSession();
+  try { localStorage.removeItem("github-session"); } catch {}
+  if (ws?.readyState === 1) ws.send(JSON.stringify({ t: "github-out", session }));
+  addToHistory("system", "github: logged out");
+}
+function startGithubLogin() {
+  if (!MULTIPLAYER || ws?.readyState !== 1) return addToHistory("system", "github login needs the room: you are offline");
+  ws.send(JSON.stringify({ t: "github-start" }));
+}
+function showGithubCode(m) {
+  closeGithubLogin();
+  githubLogin.querySelector("code").textContent = m.code;
+  githubLogin.querySelector("a").href = m.url;
+  githubLogin.hidden = false;
+  elInput.blur();
+  // ask the room now and then if the code was typed, until it says ok, fails or the code runs out
+  githubPoll = setInterval(() => {
+    if (Date.now() > m.until + 5000) return closeGithubLogin();
+    if (ws?.readyState === 1) ws.send(JSON.stringify({ t: "github-poll" }));
+  }, (m.every + 1) * 1000);
+}
+function closeGithubLogin() {
+  clearInterval(githubPoll);
+  githubLogin.hidden = true;
+}
+githubLogin.querySelector("[data-cancel]").addEventListener("click", closeGithubLogin);
+githubLogin.querySelector("[data-copy]").addEventListener("click", (e) => {
+  const button = e.currentTarget;
+  navigator.clipboard?.writeText(githubLogin.querySelector("code").textContent).then(() => {
+    button.textContent = "copied!";
+    button.classList.add("done");
+    setTimeout(() => (button.classList.remove("done"), (button.textContent = "copy")), 1500);
+  }, () => {});
+});
 elInput.addEventListener("focus", () => {
   Object.keys(keys).forEach((k) => (keys[k] = false));
   if (!MOBILE) elInput.placeholder = "Esc or empty Enter to walk…";
@@ -2891,6 +4212,19 @@ elInput.addEventListener("keydown", (e) => {
 
 // ---- Message wall ----
 const wall = setupWall({ getName: () => NAME, getGender: () => GENDER, isAdmin: () => IS_ADMIN });
+// accounts, profiles, friends and private chat
+const social = setupSocial({
+  send: (msg) => MULTIPLAYER && ws?.readyState === 1 && (ws.send(JSON.stringify(msg)), true),
+  paintName,
+  showPrs,
+  login: startGithubLogin,
+  logout: githubLogout,
+  say: (text) => addToHistory("system", text),
+  me: () => ({ name: NAME, color: COLOR, gender: GENDER, cap: myCap() }),
+  look: trainerLook,
+  elMsgs,
+  elInput,
+});
 // near the board: a prompt over it ("E" or tap to read)
 const wallPrompt = Object.assign(document.createElement("button"), { id: "wall-prompt", type: "button" });
 wallPrompt.innerHTML = MOBILE ? "tap to read the wall" : "<kbd>E</kbd> read the wall";
@@ -2923,8 +4257,46 @@ capyPrompt.addEventListener("click", (e) => {
   e.currentTarget.blur(); // give the keyboard back to the game
 });
 document.body.append(capyPrompt);
-const nearCapy = () =>
-  sceneId === HOME && mySeat < 0 && !nearBoard() && Math.hypot(pos.x - capy.mesh.position.x, pos.z - capy.mesh.position.z) < CAPY_NEAR;
+const catPrompt = Object.assign(document.createElement("button"), { id: "cat-prompt", type: "button" });
+catPrompt.innerHTML = MOBILE ? "tap to feed the cat" : "<kbd>E</kbd> feed the cat";
+const feedCat = (cat) => {
+  if (!cat) return;
+  if (CATS.some((c) => c.id === cat.id) && MULTIPLAYER && ws?.readyState === 1) return ws.send(JSON.stringify({ t: "cat", id: cat.id }));
+  const now = roomNow();
+  if (now < cat.fed.until) return;
+  catWasFed({ id: cat.id, at: now, until: now + CAT_SIT_MS, lost: cat.fed.lost + cat.fed.until - cat.fed.at, phrase: Math.floor(Math.random() * 1000) });
+};
+catPrompt.addEventListener("click", (e) => {
+  feedCat(nearCat());
+  e.currentTarget.blur(); // give the keyboard back to the game
+});
+document.body.append(catPrompt);
+// Pick at most one closest animal in interaction range so prompts and E never collide.
+function closestAnimal() {
+  // the capybara and the cats are the town's
+  if (sceneId !== HOME || mySeat >= 0 || nearBoard()) return null;
+  let best = null;
+  let bestDist = Infinity;
+  const capyDist = Math.hypot(pos.x - capy.mesh.position.x, pos.z - capy.mesh.position.z);
+  if (capyDist < CAPY_NEAR) {
+    best = { kind: "capy" };
+    bestDist = capyDist;
+  }
+  for (const cat of cats) {
+    if (cat.ride || cat.hopOff) continue; // on a player's head or hopping down: not feedable
+    const d = Math.hypot(pos.x - cat.mesh.position.x, pos.z - cat.mesh.position.z);
+    if (d < CAT_NEAR && d < bestDist) {
+      best = { kind: "cat", cat };
+      bestDist = d;
+    }
+  }
+  return best;
+}
+const nearCapy = () => closestAnimal()?.kind === "capy";
+const nearCat = () => {
+  const a = closestAnimal();
+  return a?.kind === "cat" ? a.cat : null;
+};
 function updateCapy() {
   if (sceneId !== HOME) return void capyPrompt.classList.remove("on");
   const t = roomNow();
@@ -2937,6 +4309,90 @@ function updateCapy() {
   _v.set(capy.mesh.position.x, capy.mesh.position.y + 5, capy.mesh.position.z).project(camera);
   capyPrompt.style.left = `${(_v.x * 0.5 + 0.5) * innerWidth}px`;
   capyPrompt.style.top = `${(-_v.y * 0.5 + 0.5) * innerHeight}px`;
+}
+// ---- Skipping stones (T by the pond) ----
+// You plan the throw (where the stone touches the water), see it at once, and the room sends it to
+// everyone; others animate the same path from your hand (src/stones.js).
+const stones = createStones(scene, { surfaceY: (x, z) => topHeight(x, z), camera });
+const STONE_NEAR = 4.5; // how close to the pond you must be
+const STONE_EVERY_MS = 1200;
+let lastStone = 0;
+const handOf = (p) => ({ x: p.x, y: p.y + 2.0, z: p.z });
+// distance from (x, z) to the pond, 0 inside it
+function pondDistance(x, z) {
+  if (!pondBox) return Infinity;
+  const dx = Math.max(pondBox.min.x - x, 0, x - pondBox.max.x),
+    dz = Math.max(pondBox.min.z - z, 0, z - pondBox.max.z);
+  return Math.hypot(dx, dz);
+}
+const nearPond = () => !gamePaused && pondDistance(pos.x, pos.z) < STONE_NEAR;
+// Toward the middle of the pond: the first touch a little past the water's edge, then up to four
+// skips, each shorter, bending a little, while they stay on the water. The last touch is where it sinks.
+function planThrow(x, z) {
+  const c = pondBox.getCenter(new THREE.Vector3());
+  let dx = c.x - x,
+    dz = c.z - z;
+  const n = Math.hypot(dx, dz) || 1;
+  (dx /= n), (dz /= n);
+  let ex = NaN,
+    ez = NaN;
+  for (let d = 0.5; d < 40; d += 0.5)
+    if (isWater(x + dx * d, z + dz * d) && isWater(x + dx * (d + 2), z + dz * (d + 2))) {
+      (ex = x + dx * (d + 2)), (ez = z + dz * (d + 2));
+      break;
+    }
+  if (Number.isNaN(ex)) return null;
+  const touches = [[ex, ez]];
+  const skips = 1 + Math.floor(Math.random() * 4);
+  let ang = Math.atan2(dz, dx);
+  for (const len of [2.4, 1.9, 1.4, 1.0].slice(0, skips)) {
+    ang += (Math.random() - 0.5) * 0.3;
+    const [px, pz] = touches.at(-1);
+    const nx = px + Math.cos(ang) * len,
+      nz = pz + Math.sin(ang) * len;
+    if (!isWater(nx, nz)) break; // the next hop would land on the bank: it sinks where it is
+    touches.push([nx, nz]);
+  }
+  return { touches: touches.map(([a, b]) => [Math.round(a * 100) / 100, Math.round(b * 100) / 100]), dx, dz };
+}
+function throwStone() {
+  const now = performance.now();
+  if (!nearPond() || mySeat >= 0 || now - lastStone < STONE_EVERY_MS) return;
+  const plan = planThrow(pos.x, pos.z);
+  if (!plan) return;
+  lastStone = now;
+  dir = Math.abs(plan.dx) > Math.abs(plan.dz) ? (plan.dx > 0 ? "right" : "left") : plan.dz > 0 ? "down" : "up"; // face the water
+  stones.launch(handOf(sprite.position), plan.touches);
+  if (ws?.readyState === 1) ws.send(JSON.stringify({ t: "stone", pts: plan.touches }));
+}
+// someone else threw one: the same path, from their hand
+function stoneThrown(m) {
+  // with the tab hidden nothing is drawn: a stone thrown now would wait, and all the stones thrown
+  // meanwhile would fly at once when you come back. It was thrown while you weren't looking: skip it
+  if (document.hidden) return;
+  const o = others.get(m.id);
+  const pts = Array.isArray(m.pts) ? m.pts.filter((p) => Array.isArray(p) && p.every(Number.isFinite)).slice(0, 6) : [];
+  if (o && pts.length) stones.launch(handOf(o.mesh.position), pts);
+}
+// "T skip a stone" over you while you stand by the pond
+const stonePrompt = Object.assign(document.createElement("button"), { id: "stone-prompt", type: "button" });
+stonePrompt.innerHTML = MOBILE ? "tap to skip a stone" : "<kbd>T</kbd> skip a stone";
+stonePrompt.addEventListener("click", (e) => {
+  throwStone();
+  e.currentTarget.blur(); // give the keyboard back to the game
+});
+document.body.append(stonePrompt);
+addEventListener("keydown", (e) => {
+  if (typing() || e.repeat || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.key.toLowerCase() === "t") throwStone();
+});
+function updateStonePrompt() {
+  const show = nearPond() && mySeat < 0 && !wall.isOpen() && !bubbles.has(sprite);
+  stonePrompt.classList.toggle("on", show);
+  if (!show) return;
+  _v.set(sprite.position.x, sprite.position.y + 6.2, sprite.position.z).project(camera);
+  stonePrompt.style.left = `${(_v.x * 0.5 + 0.5) * innerWidth}px`;
+  stonePrompt.style.top = `${(-_v.y * 0.5 + 0.5) * innerHeight}px`;
 }
 function updateWallPrompt() {
   const show = eNow === "wall";
@@ -3107,6 +4563,27 @@ function updatePortalHint() {
   portalHint.style.top = `${(-_v.y * 0.5 + 0.5) * innerHeight}px`;
 }
 
+function updateCats() {
+  // the cats are the town's: elsewhere they aren't drawn, fed or carried on a head
+  if (sceneId !== HOME) {
+    for (const cat of cats) cat.ridingMesh = cat.ridingFeet = null;
+    return void catPrompt.classList.remove("on");
+  }
+  const t = roomNow();
+  for (const cat of cats) {
+    walkCat(cat, t);
+    cat.sprite.update(t);
+    cat.mesh.rotation.set(camera.rotation.x * 0.5, 0, 0);
+  }
+  const active = nearCat();
+  const show = eNow === "cat" && !!active && !bubbles.has(active.mesh);
+  catPrompt.classList.toggle("on", show);
+  if (!show) return;
+  _v.set(active.mesh.position.x, active.mesh.position.y + 4.2, active.mesh.position.z).project(camera);
+  catPrompt.style.left = `${(_v.x * 0.5 + 0.5) * innerWidth}px`;
+  catPrompt.style.top = `${(-_v.y * 0.5 + 0.5) * innerHeight}px`;
+}
+
 const fishing = createFishing({
   scene,
   button: document.querySelector("#fish"),
@@ -3114,7 +4591,21 @@ const fishing = createFishing({
   feetDepth: (mesh) => useFeetDepth(mesh, myFeet, 12),
   camera,
   shape: (d) => bodyShape(sprite.material.map, CHARACTER.cfg, d),
+  onChange: (target) => sendFish(target),
 });
+// tells the room your line is out (where the bobber is) or back in, so the others see it; the
+// timer stays yours. A function declaration: createFishing above may call it while it starts
+// (a saved line whose fish got away while the tab was closed).
+function sendFish(target) {
+  if (ws?.readyState === 1) ws.send(JSON.stringify(target ? { t: "fish", on: true, x: target.x, z: target.z } : { t: "fish", on: false }));
+}
+const _waterFrom = new THREE.Vector3();
+/** @returns {number | null} the height of the water at (x, z), or null where there is none (or the town isn't loaded yet) */
+function waterY(x, z) {
+  ray.set(_waterFrom.set(x, 200, z), DOWN);
+  const hit = ray.intersectObjects([...waterMeshes], false)[0];
+  return hit ? hit.point.y : null;
+}
 /**
  * Where you could cast from: at the pond's edge (standing or seated), facing the water.
  * @returns {{x: number, z: number, d: number, face: string, seat: number} | null} d: distance to the pond's box
@@ -3134,7 +4625,6 @@ function fishSpot() {
   if ((fx * (cx - x) + fz * (cz - z)) / d < 0.5) return null;
   return { x, z, d, face, seat: mySeat };
 }
-const _castFrom = new THREE.Vector3();
 /** Casts from where you are now, if still at the edge; the bobber lands a few steps out. */
 function castHere(minutes) {
   const s = fishSpot();
@@ -3143,9 +4633,7 @@ function castHere(minutes) {
   const { min, max } = pondBox;
   const tx = THREE.MathUtils.clamp(s.x + fx * (s.d + 3.5), min.x + 1.5, max.x - 1.5),
     tz = THREE.MathUtils.clamp(s.z + fz * (s.d + 3.5), min.z + 1.5, max.z - 1.5);
-  ray.set(_castFrom.set(tx, 200, tz), DOWN);
-  const hit = ray.intersectObjects([...waterMeshes], false)[0];
-  fishing.cast({ x: s.x, z: s.z, face: s.face, seat: s.seat, target: { x: tx, y: hit ? hit.point.y : pos.y, z: tz } }, minutes);
+  fishing.cast({ x: s.x, z: s.z, face: s.face, seat: s.seat, target: { x: tx, y: waterY(tx, tz) ?? pos.y, z: tz } }, minutes);
 }
 /** @param {number} id seat @returns {number} distance from you to that seat */
 const seatDistance = (id) => {
@@ -3155,10 +4643,11 @@ const seatDistance = (id) => {
 
 let eNow = null;
 /**
- * What E does right now: the line if it is out, standing up if seated, then the wall, the capybara,
- * and last the pond's edge or the free seat, whichever is closer. Only that action's prompt shows.
+ * What E does right now: the line if it is out, standing up if seated, then the wall, the closest
+ * animal (capybara or cat), and last the pond's edge or the free seat, whichever is closer.
+ * Only that action's prompt shows.
  * @param {number} [seat] nearest free seat, if already known this frame
- * @returns {"fish" | "stand" | "wall" | "capy" | "cast" | "sit" | null}
+ * @returns {"fish" | "stand" | "wall" | "capy" | "cat" | "cast" | "sit" | null}
  */
 function eAction(seat = nearestFreeSeat()) {
   if (gamePaused || wall.isOpen()) return null;
@@ -3166,7 +4655,8 @@ function eAction(seat = nearestFreeSeat()) {
   if (p === "focus" || p === "bite") return "fish";
   if (mySeat >= 0) return "stand";
   if (nearBoard()) return "wall";
-  if (nearCapy()) return "capy";
+  const animal = closestAnimal();
+  if (animal) return animal.kind;
   const spot = fishSpot();
   if (spot && (seat < 0 || spot.d < seatDistance(seat))) return "cast";
   return seat >= 0 ? "sit" : null;
@@ -3177,6 +4667,7 @@ function doE(action = eAction()) {
   else if (action === "cast") fishSpot() && fishing.choose(castHere);
   else if (action === "wall") wall.show();
   else if (action === "capy") feedCapy();
+  else if (action === "cat") feedCat(nearCat());
   else if (action === "stand" || action === "sit") toggleSit();
 }
 addEventListener("keydown", (e) => {
@@ -3231,8 +4722,40 @@ function updateFishing() {
   fishPrompt.style.top = `${(-_v.y * 0.5 + 0.5) * innerHeight}px`;
 }
 
+if (import.meta.env.DEV) {
+  import("./debug.js").then(({ setupDebug }) => {
+    setupDebug({
+      THREE,
+      renderer,
+      scene,
+      cats,
+      baseCatCount: CATS.length,
+      createCat,
+      useFeetDepth,
+      bubbles,
+      getCatNav: () => catNav,
+      measureCats: updateCats,
+      getPlayerCount: () => others.size + 1,
+      roomNow,
+      getMyId: () => myId,
+      catRideMs: CAT_RIDE_MS,
+      catRideUpdate,
+      resolveRideTarget,
+      getTimeMode: () => timeMode,
+      getCyclePhase: cyclePhase,
+      getCycleDurationMs: () => cycleDurationMs,
+      setCycleDuration,
+      getLook: () => currentLook,
+      getRainAmount: () => rainAmount,
+      getLampIntensity: () => lampLights[0]?.intensity ?? 0,
+    });
+  });
+}
+
 function loop() {
+  const now = performance.now();
   const dt = Math.min(clock.getDelta(), 0.05);
+  countFrame();
   checkSavedPosition();
   savePosition(performance.now());
   waterUniforms.uTime.value += dt;
@@ -3243,12 +4766,9 @@ function loop() {
     f.visible = candleLight > 0.01;
     f.scale.y = 1 + 0.25 * Math.sin(waterUniforms.uTime.value * (11 + i * 3) + i);
   });
-  const dayTarget = isDay ? 1 : 0;
-  if (dayAmount !== dayTarget) {
-    dayAmount += Math.sign(dayTarget - dayAmount) * Math.min(dt, Math.abs(dayTarget - dayAmount));
-    applyLook(dayAmount);
-  }
+  updateTimeOfDay(dt);
   updateRain(dt);
+  stones.update(dt);
   updateFireflies();
   let dx = 0,
     dz = 0;
@@ -3279,7 +4799,17 @@ function loop() {
     dz = 0;
   }
   const run = keys.shift || stick.mag > 0.9;
+  leaveFinishedRide();
+  if (strappedIn()) (dx = 0), (dz = 0); // the move keys do nothing while the sleigh is out
   if (mySeat >= 0 && (dx || dz)) standUp(true, [dx, dz]); // any move key gets you up, off that way
+  const riding = isRideSeat(mySeat);
+  if (riding) {
+    // the horse or gondola carries you: follow it, facing the way the ride says
+    const s = seatSpot(mySeat);
+    pos.x = s.x;
+    pos.z = s.z;
+    dir = s.dir;
+  }
   const walking = dx || dz;
   if (walking) {
     const n = Math.hypot(dx, dz);
@@ -3294,8 +4824,11 @@ function loop() {
   checkPortal();
   const currentStep = walking ? Math.floor(tAnim) % CHARACTER.steps : 0;
   const running = Boolean(walking && run);
-  setFrame(dir, currentStep, running);
-  sendPosition(performance.now(), currentStep, running);
+  if (onGround && walking) setGround(false); // moving gets you up
+  const grounded = onGround && setSitFrameTex(sheetTex, dir); // facing the way you stood
+  if (!grounded) setFrame(dir, currentStep, running);
+  // a rider's spot comes from the seat and the clock in every browser: nothing to send while it turns
+  if (!riding) sendPosition(now, currentStep, running);
   const freeSeat = mySeat >= 0 ? -1 : nearestFreeSeat();
   eNow = eAction(freeSeat);
   updateHoldButton();
@@ -3317,20 +4850,33 @@ function loop() {
   camera.position.set(pos.x + slide.x, pos.y + 38, pos.z + 42 + slide.z);
   camera.lookAt(pos.x + slide.x, pos.y + 1, pos.z + slide.z);
   updateCapy();
+  owl.update(performance.now(), pos);
+  owl.mesh.rotation.set(camera.rotation.x * 0.5, 0, 0); // faces the camera like the trainers
   if (sceneId !== HOME) lake?.update(waterUniforms.uTime.value, 1 - dayAmount, mySeat === 0 || mySeat === 1 || seatTaken(0) || seatTaken(1));
   updatePortalHint();
   updateFishing();
+  updateCats();
   updateOcclusion();
   // facing the camera, tilted only halfway (the shadow looks like a standing body)
   sprite.rotation.set(camera.rotation.x * 0.5, 0, 0);
-  showHeld(myHeld, sprite, CHARACTER.cfg, myHold, heldDir(myHold, mySeat >= 0 ? seatSpot(mySeat) : null, !walking, dir));
+  showHeld(myHeld, sprite, CHARACTER.cfg, myHold, grounded ? null : heldDir(myHold, mySeat >= 0 ? seatSpot(mySeat) : null, !walking, dir));
 
-  updateLampShadows([sprite, capy.mesh, ...[...others.values()].map((o) => o.mesh)]);
+  carousel.update(roomNow(), dayAmount);
+  wheel.update(roomNow(), dayAmount);
+  coaster.update(roomNow(), dayAmount);
+  // Riders cast no shadow and are no lamp's concern: the lamps by the pond reach the rides, and
+  // someone going round would make them redraw their 6 shadow passes every frame, all night
+  sprite.castShadow = !riding;
+  const movers = [...others.values()].filter((o) => !isRideSeat(o.seat)).map((o) => o.mesh);
+  // (the town's animals move no shadow in another scene)
+  updateLampShadows([...(riding ? [] : [sprite]), ...(sceneId === HOME ? [capy.mesh, owl.mesh, ...cats.map((c) => c.mesh)] : []), ...movers]);
   renderer.render(scene, camera);
   updateNameTags();
   updateBubbles();
   updateSitPrompt(eNow === "sit" ? freeSeat : -1);
+  updateCoasterSign();
   updateWallPrompt();
+  updateStonePrompt();
   requestAnimationFrame(loop);
 }
 loop();

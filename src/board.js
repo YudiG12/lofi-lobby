@@ -535,5 +535,14 @@ export function setupWall({ getName, getGender, isAdmin }) {
   }
 
   load(); // the board in town shows the latest notes
-  return { show, close, isOpen: () => open, onNote, onNoteEdited, onNoteDeleted, onNoteLiked, NEAR };
+  // our name changed: the notes we wrote are signed again with it (only if this browser ever wrote one)
+  function rename() {
+    const key = wallKey();
+    if (!key) return;
+    fetch("/api/notes/name", {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: getName(), gender: getGender(), key }),
+    }).catch(() => {});
+  }
+  return { show, close, isOpen: () => open, rename, onNote, onNoteEdited, onNoteDeleted, onNoteLiked, NEAR };
 }
