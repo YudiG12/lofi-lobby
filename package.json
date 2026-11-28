@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "test": "node --test \"test/*.test.js\"",
     "dev": "vite",
     "dev:server": "wrangler dev --port 8787",
     "build": "vite build",

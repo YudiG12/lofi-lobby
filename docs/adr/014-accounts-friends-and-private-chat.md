@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Proposed |
+| **Status** | Proposed (where accounts are kept and what the login reads: superseded by [ADR 015](015-accounts-in-d1.md)) |
 | **Date** | 2026-11-27 |
 | **Deciders** | Yudi Ganeko |
 

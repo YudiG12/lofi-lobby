@@ -1,4 +1,5 @@
-// Room server: one Durable Object per room, everyone connected over WebSocket.
+// Room server: one Durable Object for the game, everyone connected over WebSocket. Each connection is in
+// one scene (/ws/<scene>) and sees that scene's players, chat and seats; the rest is shared.
 // Protocol (JSON):
 //   client -> server: { t: "hello", name, gender, color, cap, x, z, dir } | { t: "pos", x, z, dir, step, run }
 //                     { t: "chat", text } | { t: "name", name } | { t: "gender", gender, cap }
@@ -69,6 +70,8 @@
 //   POST /api/notes { name, gender, text, color, key }  one per NOTE_EVERY_MS per IP, banned IPs refused,
 //                                                  same cleaning and word filter as names and chat, no links
 //   PATCH /api/notes/<id> { text, color, key }  the writer edits their note
+//   PATCH /api/notes/name { name, gender, key }  the writer changed their name: their notes take the new one
+//     ("owned:<owner hash>" lists the ids of each wall key's notes; built from a scan the first time)
 //   POST /api/notes/<id>/claim  the admin takes a note nobody owns (written before wall keys existed)
 //   DELETE /api/notes/<id>  the writer (X-Wall-Key header) or the admin (password in the Authorization header)
 // A note belongs to whoever holds its "wall key" (random, kept in the writer's browser; the note stores its hash).
@@ -85,8 +88,14 @@
 // (CF_ACCOUNT_ID and CF_API_TOKEN secrets) for public/stats.html.
 
 const MAX_PLAYERS = 100;
-// v1 has a single room; any other name is refused so nobody can spin up extra rooms (and extra cost)
-const ROOMS = ["lobby"];
+// Scenes (src/scenes.js) share this one object: a connection carries its scene ("room") and only sees
+// that scene's players, chat and seats. Accounts, friends, private chat, bans, limits per IP, the
+// wall and the radio are the same everywhere, which is why the scenes are not separate objects.
+const roomOf = (p) => (ROOMS.includes(p?.room) ? p.room : HOME); // a socket from before scenes has none: the town
+const historyKey = (room) => (room === HOME ? "chat" : "chat:" + room);
+const SCENE_SEATS = { lago: 14 }; // the swing, two benches and two picnic tables (src/lake-layout.js)
+const seatsIn = (room) => (room === HOME ? MAX_SEATS : SCENE_SEATS[room] | 0);
+const TOWN_ONLY = ["capy", "cat", "ttt"]; // the capybara, cats and tic-tac-toe table live in the town (stones and fishing: any water)
 const MAX_BYTES = 1024;
 const COORD_LIMIT = 500;
 const ADMIN_ATTEMPTS = 20; // per IP, then locked for ADMIN_LOCK_MS (the "other" rate limit already caps tries at ~1/s)
@@ -140,7 +149,7 @@ const topKey = (likes, id) => `top:${String(likes).padStart(6, "0")}:${id}`;
 // rate buckets: capacity, refill per second
 const RATES = { pos: [30, 20], chat: [8, 1], sit: [20, 6], ttt: [15, 4], like: [30, 0.5], github: [4, 1 / 30], social: [20, 2], other: [10, 1] };
 // accounts, profiles, friends and private chat (worker/social.js); a private message spends the chat budget
-const SOCIAL = ["profile", "friend", "friends", "dm-open", "dm-read", "chat-invite", "chat-accept"];
+const SOCIAL = ["profile", "friend", "friends", "bio", "dm-open", "dm-read", "chat-invite", "chat-accept"];
 // contributors: a player proves their GitHub login (OAuth device flow, GITHUB_CLIENT_ID) and the room counts
 // their merged pull requests in GITHUB_REPO. GitHub's token is used once and never kept: the browser gets a
 // random session of the room's own, stored here only as a hash.
@@ -170,7 +179,10 @@ function safeClose(ws, code = 1000, reason = "") {
 
 import { badName, cleanChat, hasLink, normalize } from "./moderation.js";
 import { TTT_SEAT_X, TTT_SEAT_O, isTttSeat, createGame, syncSeats, applyMove, requestRematch } from "./tictactoe.js";
+import { HOME, ROOMS, roomOfPath } from "./rooms.js";
+import { renamedNotes, wallName } from "./notes.js";
 import { installSocial } from "./social.js";
+import { Accounts, primaryEmail } from "./accounts.js";
 
 const DIRS = ["down", "up", "left", "right"];
 const cleanText = (s, max) =>
@@ -273,6 +285,8 @@ export class Room {
     this.tttQueue = Promise.resolve();
     this.ghBusy = new Set(); // player ids with a GitHub call in flight
     this.ghTriedAt = 0; // last read of the pull requests, good or bad
+    // accounts and sessions, in D1; the repository's owner is account 0
+    this.accounts = new Accounts(env.DB, state.storage, String(env.GITHUB_REPO || "").split("/")[0].toLowerCase());
     this.state.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
   }
 
@@ -375,8 +389,7 @@ export class Room {
       if (hasLink(raw)) return json({ error: "links are not allowed on the wall" }, 400);
       const text = cleanChat(raw, NOTE_MAX);
       if (text === null) return json({ error: "note blocked" }, 400);
-      let name = cleanText(m.name, 16) || "trainer";
-      if (badName(name) || /admin|moderador|moderator|staff/.test(normalize(name))) name = "trainer";
+      const name = wallName(m.name);
       const at = Date.now();
       const lastKey = "note-at:" + ip;
       const [ban, last, count] = await Promise.all([this.state.storage.get("ban:" + ip), this.state.storage.get(lastKey), this.noteCount()]);
@@ -387,8 +400,31 @@ export class Room {
       const note = { name, gender: gender(m.gender), text, at, color: NOTE_COLORS.includes(m.color) ? m.color : "cream", ...(owner && { owner }) };
       const id = `note:${String(at).padStart(15, "0")}-${crypto.randomUUID().replace(/-/g, "").slice(0, 6)}`;
       await this.state.storage.put({ [id]: note, [lastKey]: at, "note-count": count + 1 });
+      if (owner) await this.ownNote(owner, id, true);
       this.broadcast({ t: "note", note: shown(id, note), total: count + 1 });
       return json({ note: shown(id, note, owner), total: count + 1 });
+    }
+    // the writer changed their name: every note of their wall key is signed with the new one
+    if (req.method === "PATCH" && url.pathname === "/api/notes/name") {
+      const bytes = req.headers.get("Content-Length");
+      if (!bytes || !(Number(bytes) <= 1024)) return json({ error: "bad request" }, 413);
+      let m;
+      try { m = JSON.parse(await req.text()); } catch { return json({ error: "bad request" }, 400); }
+      const owner = await ownerOf(m?.key);
+      if (!owner) return json({ error: "bad request" }, 400);
+      const now = Date.now();
+      const wait = (this.noteEdits.get(ip) || 0) + NOTE_EDIT_EVERY_MS - now;
+      if (wait > 0) return json({ error: `wait ${Math.ceil(wait / 1000)} s to edit again` }, 429);
+      this.noteEdits.set(ip, now);
+      if ((await this.state.storage.get("ban:" + ip)) > now) return json({ error: "you are banned" }, 403);
+      const ids = await this.ownedNotes(owner);
+      if (!ids.length) return json({ renamed: 0 });
+      const notes = new Map();
+      for (let i = 0; i < ids.length; i += 128) for (const e of await this.state.storage.get(ids.slice(i, i + 128))) notes.set(...e);
+      const changed = [...renamedNotes(notes, owner, wallName(m.name), gender(m.gender))];
+      for (let i = 0; i < changed.length; i += 128) await this.state.storage.put(Object.fromEntries(changed.slice(i, i + 128)));
+      for (const [id, note] of changed) this.broadcast({ t: "note-edit", note: shown(id, note) });
+      return json({ renamed: changed.length });
     }
     // the writer edits their own note: same cleaning as a new one, and a short wait between edits
     if (req.method === "PATCH" && del) {
@@ -427,6 +463,7 @@ export class Room {
       if (!owner) return json({ error: "bad request" }, 400);
       if (note.owner) return json({ error: "this note already has an owner" }, 409);
       await this.state.storage.put(claim[1], { ...note, owner });
+      await this.ownNote(owner, claim[1], true);
       return json({ note: shown(claim[1], { ...note, owner }, owner) });
     }
     if (req.method === "DELETE" && del) {
@@ -441,6 +478,7 @@ export class Room {
       let total = await this.noteCount();
       if (await this.state.storage.delete(del[1])) await this.state.storage.put("note-count", (total = Math.max(0, total - 1)));
       await this.state.storage.delete(["likes:" + del[1], topKey(note?.likes | 0, del[1])]); // its likes go with it
+      if (note?.owner) await this.ownNote(note.owner, del[1], false);
       this.broadcast({ t: "note-del", id: del[1], total });
       return json({ ok: true });
     }
@@ -477,6 +515,23 @@ export class Room {
     return { page, next: cursor };
   }
   // how many notes the wall holds (kept beside them, so nobody has to list them all)
+  // the ids of one wall key's notes. Notes from before this list existed are found once, by reading the wall.
+  async ownedNotes(owner) {
+    const key = "owned:" + owner;
+    let ids = await this.state.storage.get(key);
+    if (!Array.isArray(ids)) {
+      ids = [];
+      for (const [id, note] of await this.state.storage.list({ prefix: "note:" })) if (note?.owner === owner) ids.push(id);
+      // only a key that has notes gets a list: a made-up key must not leave anything in the room's storage
+      if (ids.length) await this.state.storage.put(key, ids);
+    }
+    return ids;
+  }
+  async ownNote(owner, id, on) {
+    const ids = await this.ownedNotes(owner); // a first write also takes in the older notes
+    const next = on ? [...new Set([...ids, id])] : ids.filter((x) => x !== id);
+    if (next.length !== ids.length) await this.state.storage.put("owned:" + owner, next);
+  }
   async noteCount() {
     let n = await this.state.storage.get("note-count");
     if (n == null) await this.state.storage.put("note-count", (n = (await this.state.storage.list({ prefix: "note:" })).size));
@@ -551,8 +606,9 @@ export class Room {
     const active = this.openSockets();
     if (active.length >= MAX_PLAYERS) return new Response("room is full", { status: 503 });
     const ip = req.headers.get("CF-Connecting-IP") || "local";
-    const ban = await this.state.storage.get("ban:" + ip);
-    if (ban > Date.now()) return new Response("banned", { status: 403 });
+    // the scene this connection is in (the Worker sets the header from the path; anything else is the town)
+    const room = roomOf({ room: req.headers.get("X-Room") });
+    if ((await this.state.storage.get("ban:" + ip)) > Date.now()) return new Response("banned", { status: 403 });
     const sameIp = active.filter((w) => w.deserializeAttachment()?.ip === ip).length;
     if (sameIp >= MAX_PER_IP) return new Response("too many connections", { status: 429 });
 
@@ -563,24 +619,25 @@ export class Room {
     // hibernation: the DO can sleep with connections open; each player's
     // state lives on its own socket (serializeAttachment)
     this.state.acceptWebSocket(server);
-    server.serializeAttachment({ id, leaveToken, connectedAt, name: "trainer", gender: "male", color: "", x: 0, z: 0, dir: "down", step: 0, seat: -1, ip,
+    server.serializeAttachment({ id, leaveToken, connectedAt, name: "trainer", gender: "male", color: "", x: 0, z: 0, dir: "down", step: 0, seat: -1, ip, room,
       country: String(req.cf?.country || "").slice(0, 2), visitor: await visitorOf(ip) });
     await this.ensureHeartbeatAlarm();
     // v: the deploy that is running. A tab that reconnects and sees another one reloads itself.
     server.send(JSON.stringify({ t: "you", id, v: this.env.VERSION?.id || "", now: Date.now(), token: leaveToken }));
     const radio = await this.state.storage.get("radio");
     if (radio) server.send(JSON.stringify({ t: "radio", command: radio }));
-    const capy = await this.state.storage.get("capy");
+    // the capybara and the cats live in the town
+    const capy = room === HOME && (await this.state.storage.get("capy"));
     if (capy) server.send(JSON.stringify({ t: "capy", ...capy }));
-    const cats = await this.state.storage.get("cats");
+    const cats = room === HOME && (await this.state.storage.get("cats"));
     if (cats && typeof cats === "object") {
       for (const id of CAT_IDS) {
         if (cats[id]) server.send(JSON.stringify({ t: "cat", id, ...cats[id] }));
       }
     }
-    const rides = await this.state.storage.get("cat-rides");
+    const rides = room === HOME && (await this.state.storage.get("cat-rides"));
     if (rides && typeof rides === "object") {
-      const online = new Set(this.players().map((q) => q.id));
+      const online = new Set(this.players(HOME).map((q) => q.id));
       for (const id of CAT_IDS) {
         const r = rides[id];
         if (r?.playerId && r.until > Date.now() && online.has(r.playerId)) {
@@ -588,13 +645,15 @@ export class Room {
         }
       }
     }
-    const messages = await this.history();
+    const messages = await this.history(room);
     if (messages.length) server.send(JSON.stringify({ t: "history", messages }));
-    server.send(JSON.stringify({ t: "state", players: this.players().filter((p) => p.id !== id) }));
-    await this.queueTtt(async () => {
-      const game = await this.syncTttAndBroadcast(server);
-      server.send(JSON.stringify({ t: "ttt", game }));
-    });
+    server.send(JSON.stringify({ t: "state", players: this.players(room).filter((p) => p.id !== id) }));
+    if (room === HOME) {
+      await this.queueTtt(async () => {
+        const game = await this.syncTttAndBroadcast(server);
+        server.send(JSON.stringify({ t: "ttt", game }));
+      });
+    }
     return new Response(null, { status: 101, webSocket: client });
   }
 
@@ -602,18 +661,21 @@ export class Room {
   public(p) {
     return { id: p.id, name: p.name, gender: p.gender, color: p.color || "", cap: p.cap ?? -1, x: p.x, z: p.z, dir: p.dir, step: p.step, seat: p.seat ?? -1, hold: p.hold | 0, ground: !!p.ground, fish: p.fish || null, admin: !!p.admin, prs: p.prs | 0, n: p.acct ?? -1 };
   }
-  players() {
+  // the players of one scene (every scene when `room` is left out)
+  players(room) {
     return this.openSockets()
       .map((ws) => ws.deserializeAttachment())
-      .filter((p) => p && p.joinedAt)
+      .filter((p) => p && p.joinedAt && (!room || roomOf(p) === room))
       .map((p) => this.public(p));
   }
 
-  broadcast(msg, except) {
+  // to one scene's players, or to everyone when `room` is left out (the wall, the radio)
+  broadcast(msg, except, room) {
     const s = JSON.stringify(msg);
     const dead = [];
     for (const ws of this.openSockets()) {
       if (ws === except) continue;
+      if (room && roomOf(ws.deserializeAttachment()) !== room) continue;
       try { ws.send(s); } catch { dead.push(ws); }
     }
     for (const ws of dead) this.leave(ws, 1000, "send failed");
@@ -628,7 +690,7 @@ export class Room {
 
   async loadAndSyncTtt() {
     const game = (await this.state.storage.get("ttt")) ?? createGame();
-    const players = this.players();
+    const players = this.players(HOME);
     const x = players.find((p) => p.seat === TTT_SEAT_X)?.id;
     const o = players.find((p) => p.seat === TTT_SEAT_O)?.id;
     return syncSeats(game, x, o);
@@ -637,7 +699,7 @@ export class Room {
   async saveTttAndBroadcast(game, except) {
     // Keep the last board revision in storage even when both chairs empty so a stale move can never match a later game.
     await this.state.storage.put("ttt", game);
-    this.broadcast({ t: "ttt", game }, except);
+    this.broadcast({ t: "ttt", game }, except, HOME);
   }
 
   async syncTttAndBroadcast(except) {
@@ -668,6 +730,10 @@ export class Room {
     const p = ws.deserializeAttachment();
     if (!p) return;
     if (!p.joinedAt && m.t !== "hello") return;
+    // what a player does is seen by the players of the same scene
+    const room = roomOf(p);
+    const say = (msg, except) => this.broadcast(msg, except, room);
+    if (room !== HOME && TOWN_ONLY.includes(m.t)) return;
     let type = "other";
     if (m.t === "pos" || m.t === "sit" || m.t === "ttt" || m.t === "chat") type = m.t;
     else if (m.t === "dm") type = "chat";
@@ -699,23 +765,23 @@ export class Room {
       p.joinedAt = Date.now();
       ws.serializeAttachment(p);
       this.stat("join", p);
-      this.broadcast({ t: "joined", player: this.public(p) }, ws);
+      say({ t: "joined", player: this.public(p) }, ws);
       await this.rememberName(p);
     } else if (m.t === "gender") {
       p.gender = gender(m.gender);
       p.cap = cap(m.cap);
       ws.serializeAttachment(p);
-      this.broadcast({ t: "gender", id: p.id, gender: p.gender, cap: p.cap }, ws);
+      say({ t: "gender", id: p.id, gender: p.gender, cap: p.cap }, ws);
       await this.saveLook(p);
     } else if (m.t === "color") {
       p.color = nameColor(m.color);
       ws.serializeAttachment(p);
-      this.broadcast({ t: "color", id: p.id, color: p.color }, ws);
+      say({ t: "color", id: p.id, color: p.color }, ws);
       await this.saveLook(p);
     } else if (m.t === "name") {
       p.name = this.nameFor(ws, m.name);
       ws.serializeAttachment(p);
-      this.broadcast({ t: "name", id: p.id, name: p.name }, ws);
+      say({ t: "name", id: p.id, name: p.name }, ws);
       await this.rememberName(p);
       await this.saveLook(p);
     } else if (m.t === "pos") {
@@ -725,27 +791,29 @@ export class Room {
       p.step = Math.abs(m.step | 0) % 4;
       ws.serializeAttachment(p);
       // run: the sender is running (others draw the run frames); not kept, the next pos says it again
-      this.broadcast({ t: "pos", id: p.id, x: p.x, z: p.z, dir: p.dir, step: p.step, ...(m.run && { run: 1 }) }, ws);
+      say({ t: "pos", id: p.id, x: p.x, z: p.z, dir: p.dir, step: p.step, ...(m.run && { run: 1 }) }, ws);
     } else if (m.t === "sit") {
-      const seat = Number.isInteger(m.seat) && m.seat >= 0 && m.seat < MAX_SEATS ? m.seat : -1;
+      // one player per seat; -1 stands up. A taken seat is refused back to the sender only,
+      // with the seat the room really has for them
+      const seat = Number.isInteger(m.seat) && m.seat >= 0 && m.seat < seatsIn(room) ? m.seat : -1;
       await this.queueTtt(async () => {
         const current = ws.deserializeAttachment();
         if (!current || current.left || ws.readyState !== 1) return;
         const prevSeat = current.seat ?? -1;
-        if (seat >= 0 && this.players().some((q) => q.id !== current.id && q.seat === seat)) {
+        if (seat >= 0 && this.players(room).some((q) => q.id !== current.id && q.seat === seat)) {
           seatReply(prevSeat);
           return;
         }
-        // Nobody boards the roller coaster while the train is out on the track.
-        if (seat >= COASTER_SEATS[0] && seat < COASTER_SEATS[1] && seat !== prevSeat && !coasterBoarding(Date.now())) {
+        // nobody gets into the roller coaster's sleigh while it is out on the track
+        if (room === HOME && seat >= COASTER_SEATS[0] && seat < COASTER_SEATS[1] && seat !== prevSeat && !coasterBoarding(Date.now())) {
           seatReply(prevSeat);
           return;
         }
         current.seat = seat;
         ws.serializeAttachment(current);
         // not back to the sender: it already moved, and a late echo would undo a quick sit/stand
-        this.broadcast({ t: "seat", id: current.id, seat }, ws);
-        if (isTttSeat(prevSeat) || isTttSeat(seat)) await this.syncTttAndBroadcast();
+        say({ t: "seat", id: current.id, seat }, ws);
+        if (room === HOME && (isTttSeat(prevSeat) || isTttSeat(seat))) await this.syncTttAndBroadcast();
       });
     } else if (m.t === "ttt") {
       const validAction =
@@ -771,24 +839,24 @@ export class Room {
       if (now < c.until + CAPY_REST_MS) return;
       const fed = { at: now, until: now + CAPY_SIT_MS, lost: c.lost + (c.until - c.at) };
       await this.state.storage.put("capy", fed);
-      this.broadcast({ t: "capy", ...fed, phrase: Math.floor(Math.random() * 1000) });
+      say({ t: "capy", ...fed, phrase: Math.floor(Math.random() * 1000) });
     } else if (m.t === "stone") {
       // only relayed (nothing kept): 1 to 6 touches, each a pair of finite numbers in the town
       if (!Array.isArray(m.pts) || m.pts.length < 1 || m.pts.length > 6) return;
       const pts = m.pts.map((q) => (Array.isArray(q) && q.length === 2 ? q.map(number) : null));
       if (pts.some((q) => !q)) return;
-      this.broadcast({ t: "stone", id: p.id, pts }, ws);
+      say({ t: "stone", id: p.id, pts }, ws);
     } else if (m.t === "ground") {
       // kept on the player, so whoever joins later sees them sitting there
       p.ground = m.on === true;
       ws.serializeAttachment(p);
-      this.broadcast({ t: "ground", id: p.id, on: p.ground }, ws);
+      say({ t: "ground", id: p.id, on: p.ground }, ws);
     } else if (m.t === "fish") {
       // the fishing line is out (where the bobber floats, in the town) or back in. Kept on the
       // player, so whoever joins later sees it; the timer itself stays in that player's browser
       p.fish = m.on === true ? [number(m.x), number(m.z)] : null;
       ws.serializeAttachment(p);
-      this.broadcast({ t: "fish", id: p.id, fish: p.fish }, ws);
+      say({ t: "fish", id: p.id, fish: p.fish }, ws);
     } else if (m.t === "cat") {
       if (typeof m.id !== "string" || !CAT_IDS.includes(m.id)) return;
       const now = Date.now();
@@ -801,12 +869,12 @@ export class Room {
       const fed = { at: now, until: now + CAT_SIT_MS, lost: c.lost + (c.until - c.at) };
       cats[m.id] = fed;
       await this.state.storage.put("cats", cats);
-      this.broadcast({ t: "cat", id: m.id, ...fed, phrase: Math.floor(Math.random() * 1000) });
+      say({ t: "cat", id: m.id, ...fed, phrase: Math.floor(Math.random() * 1000) });
     } else if (m.t === "hold") {
       // what the player holds; the client draws it on someone seated, and the coffee or cigarette also on someone standing still
       p.hold = [1, 2, 3, 4].includes(m.item) ? m.item : 0;
       ws.serializeAttachment(p);
-      this.broadcast({ t: "hold", id: p.id, item: p.hold }, ws);
+      say({ t: "hold", id: p.id, item: p.hold }, ws);
     } else if (m.t === "github-start") {
       await this.githubStart(ws);
     } else if (m.t === "github-poll") {
@@ -814,8 +882,10 @@ export class Room {
     } else if (m.t === "github") {
       await this.githubResume(ws, m.session);
     } else if (m.t === "github-out") {
-      if (typeof m.session === "string" && GH_SESSION.test(m.session)) await this.state.storage.delete(await sessionKey(m.session));
-      await this.setContributor(ws, "");
+      if (typeof m.session === "string" && GH_SESSION.test(m.session)) {
+        try { await this.accounts.closeSession(await sessionKey(m.session)); } catch {}
+      }
+      await this.setContributor(ws, null);
     } else if (m.t === "dm" || SOCIAL.includes(m.t)) {
       await this.socialMessage(ws, p, m);
     } else if (m.t === "auth") {
@@ -825,7 +895,7 @@ export class Room {
       if (!current || current.left || ws.readyState !== 1) return;
       current.admin = true;
       ws.serializeAttachment(current);
-      this.broadcast({ t: "admin", id: current.id });
+      say({ t: "admin", id: current.id });
       if (!m.quiet) ws.send(JSON.stringify({ t: "admin-ok" }));
     } else if (m.t === "who") {
       if (!(await this.isAdmin(ws, p, m.password))) return;
@@ -856,9 +926,9 @@ export class Room {
       s.lastText = text;
       s.lastAt = now;
       const msg = { id: p.id, name: p.name, text, at: now, ...(p.color && { color: p.color }), ...(p.admin && { admin: true }), ...(p.prs > 0 && { prs: p.prs }), ...(p.acct != null && { n: p.acct }) };
-      this.broadcast({ t: "chat", ...msg });
+      say({ t: "chat", ...msg });
       this.stat("chat", p);
-      await this.saveHistory([...(await this.history()), msg]);
+      await this.saveHistory([...(await this.history(room)), msg], room);
     }
   }
 
@@ -867,7 +937,7 @@ export class Room {
   async githubStart(ws) {
     const fail = (msg) => ws.send(JSON.stringify({ t: "github-fail", msg }));
     const id = ws.deserializeAttachment()?.id;
-    if (!this.env.GITHUB_CLIENT_ID) return fail("github login is not set up on this server");
+    if (!this.env.GITHUB_CLIENT_ID || !this.accounts.on) return fail("github login is not set up on this server");
     if (!id || this.ghBusy.has(id)) return;
     this.ghBusy.add(id);
     let r = null;
@@ -875,7 +945,8 @@ export class Room {
       const res = await fetch(GH_WEB + "/login/device/code", {
         method: "POST",
         headers: { ...GH_HEADERS, "Content-Type": "application/json" },
-        body: JSON.stringify({ client_id: this.env.GITHUB_CLIENT_ID }),
+        // user:email: the account keeps the player's verified e-mail (worker/accounts.js); nothing else is asked for
+        body: JSON.stringify({ client_id: this.env.GITHUB_CLIENT_ID, scope: "user:email" }),
       });
       r = await res.json();
     } catch {} finally { this.ghBusy.delete(id); }
@@ -917,11 +988,21 @@ export class Room {
       const user = await (await fetch(GH_API + "/user", { headers: auth })).json();
       const login = typeof user?.login === "string" ? user.login.toLowerCase() : "";
       if (!GH_LOGIN.test(login)) return end("github login failed, type /github again");
+      const githubId = Number.isSafeInteger(user.id) && user.id > 0 ? user.id : null;
+      let email = null;
+      try { email = primaryEmail(await (await fetch(GH_API + "/user/emails?per_page=100", { headers: auth })).json()); } catch {}
       await this.readContributors(auth);
+      // the account (made now, on a first login) and a session of the room's own for this browser
+      let account;
       const session = [...crypto.getRandomValues(new Uint8Array(24))].map((b) => b.toString(16).padStart(2, "0")).join("");
-      await this.state.storage.put(await sessionKey(session), { login, at: Date.now() });
+      try {
+        account = await this.accounts.signIn({ login, githubId, email });
+        await this.accounts.openSession(await sessionKey(session), account.n);
+      } catch {
+        return end("could not open your account, type /github again");
+      }
       end();
-      const prs = await this.setContributor(ws, login);
+      const prs = await this.setContributor(ws, account);
       ws.send(JSON.stringify({ t: "github-ok", session, login, prs }));
     } catch {
       // GitHub is slow or down: the player keeps asking until the code expires
@@ -931,16 +1012,21 @@ export class Room {
   }
   // A browser that logged in before comes back with its session.
   async githubResume(ws, session) {
-    if (typeof session !== "string" || !GH_SESSION.test(session)) return;
-    const saved = await this.state.storage.get(await sessionKey(session));
-    if (!GH_LOGIN.test(saved?.login || "")) return void ws.send(JSON.stringify({ t: "github-out" }));
-    await this.setContributor(ws, saved.login);
+    if (typeof session !== "string" || !GH_SESSION.test(session) || !this.accounts.on) return;
+    let account;
+    try {
+      account = await this.accounts.session(await sessionKey(session));
+    } catch {
+      return; // the accounts database did not answer: a guest for now, the browser keeps its session
+    }
+    if (!account) return void ws.send(JSON.stringify({ t: "github-out" }));
+    await this.setContributor(ws, account);
   }
-  // Whose connection this is on GitHub ("" = nobody): its account (made on the first login, worker/social.js)
-  // and how many merged pull requests that is; everyone is told.
-  async setContributor(ws, login) {
+  // Whose connection this is: its account (worker/accounts.js; null = nobody) and how many merged pull
+  // requests its GitHub login has; everyone is told.
+  async setContributor(ws, account) {
+    const login = account?.login || "";
     const counts = login ? await this.contributors() : {};
-    const account = login ? await this.accountOf(login, true) : null;
     const p = ws.deserializeAttachment();
     if (!p || p.left) return 0;
     const before = p.prs | 0;
@@ -950,10 +1036,10 @@ export class Room {
     if (account) p.acct = account.n;
     else delete p.acct;
     ws.serializeAttachment(p);
-    if (p.prs !== before) this.broadcast({ t: "contrib", id: p.id, prs: p.prs });
+    if (p.prs !== before) this.broadcast({ t: "contrib", id: p.id, prs: p.prs }, null, roomOf(p));
     const now = p.acct ?? -1;
     if (now !== was) {
-      this.broadcast({ t: "acct", id: p.id, n: now });
+      this.broadcast({ t: "acct", id: p.id, n: now }, null, roomOf(p));
       if (was >= 0) await this.presence(was, false);
     }
     if (account) await this.accountAttached(ws, account, now !== was);
@@ -994,7 +1080,7 @@ export class Room {
       if (!p?.gh || p.left || (p.prs | 0) === (counts[p.gh] | 0)) continue;
       p.prs = Math.min(9999, counts[p.gh] | 0);
       ws.serializeAttachment(p);
-      this.broadcast({ t: "contrib", id: p.id, prs: p.prs });
+      this.broadcast({ t: "contrib", id: p.id, prs: p.prs }, null, roomOf(p));
     }
   }
 
@@ -1047,7 +1133,7 @@ export class Room {
     const ips = new Set([target.ip]);
     // a banned player's messages leave the history too
     const gone = new Set(sockets.map((w) => w.deserializeAttachment()).filter((q) => q && ips.has(q.ip)).map((q) => q.id));
-    await this.saveHistory((await this.history()).filter((m) => !gone.has(m.id)));
+    for (const room of ROOMS) await this.saveHistory((await this.history(room)).filter((m) => !gone.has(m.id)), room);
     const until = Date.now() + (action === "ban" ? BAN_MS : KICK_MS);
     for (const ip of ips) await this.state.storage.put("ban:" + ip, until);
     const msg = action === "ban" ? "you were banned from the room" : "you were kicked, come back later";
@@ -1083,12 +1169,13 @@ export class Room {
   }
 
   // kept in storage so it survives the object sleeping (hibernation)
-  async history() {
-    const all = (await this.state.storage.get("chat")) || [];
+  // each scene has its own chat history ("chat" is the town's, as before there were scenes)
+  async history(room = HOME) {
+    const all = (await this.state.storage.get(historyKey(room))) || [];
     return all.filter((m) => m.at > Date.now() - HISTORY_MS);
   }
-  async saveHistory(messages) {
-    await this.state.storage.put("chat", messages.slice(-HISTORY_SIZE));
+  async saveHistory(messages, room = HOME) {
+    await this.state.storage.put(historyKey(room), messages.slice(-HISTORY_SIZE));
   }
 
   spamOf(ip, now) {
@@ -1150,7 +1237,7 @@ export class Room {
   // Server-only cat-on-head lottery: picks a random online player on the heartbeat alarm,
   // avoiding players already carrying another cat and launching at most one new ride per tick.
   async maybeStartCatRide(now) {
-    const players = this.players();
+    const players = this.players(HOME); // the cats only climb on someone who is in the town
     if (!players.length) return;
     const rides = (await this.state.storage.get("cat-rides")) || {};
     const cats = (await this.state.storage.get("cats")) || {};
@@ -1171,7 +1258,7 @@ export class Room {
       const ride = { playerId: pick.id, at: now, until: now + CAT_RIDE_MS };
       rides[id] = ride;
       changed = true;
-      this.broadcast({ t: "cat-ride", id, ...ride, phrase: Math.floor(Math.random() * 1000) });
+      this.broadcast({ t: "cat-ride", id, ...ride, phrase: Math.floor(Math.random() * 1000) }, null, HOME);
       break;
     }
     if (changed) await this.state.storage.put("cat-rides", rides);
@@ -1186,7 +1273,7 @@ export class Room {
       if (r?.playerId === playerId && r.until > now) {
         rides[id] = { playerId: null, at: r.at, until: now };
         changed = true;
-        this.broadcast({ t: "cat-ride", id, playerId: null, at: now, until: now });
+        this.broadcast({ t: "cat-ride", id, playerId: null, at: now, until: now }, null, HOME);
       }
     }
     if (changed) await this.state.storage.put("cat-rides", rides);
@@ -1239,7 +1326,7 @@ export class Room {
       for (const k of this.buckets.keys()) if (k.startsWith(p.id + "|")) this.buckets.delete(k);
       safeClose(ws, code, reason);
       if (p.joinedAt) {
-        this.broadcast({ t: "left", id: p.id }, ws);
+        this.broadcast({ t: "left", id: p.id }, ws, roomOf(p));
         this.clearCatRideFor(p.id).catch(() => {});
         if (p.acct != null) this.presence(p.acct, false).catch(() => {});
       }
@@ -1258,14 +1345,14 @@ installSocial(Room, { cleanText });
 export default {
   // once a day: archive yesterday's numbers in the room's storage (see Room.archive)
   async scheduled(event, env) {
-    await env.ROOM.get(env.ROOM.idFromName(ROOMS[0])).fetch("https://room/internal/archive");
+    await env.ROOM.get(env.ROOM.idFromName(HOME)).fetch("https://room/internal/archive");
   },
   async fetch(req, env) {
     const url = new URL(req.url);
     // stats: the room's Durable Object checks the admin password (same lockout as the game)
     if (url.pathname === "/api/stats") {
       if (req.method !== "GET") return new Response("method not allowed", { status: 405 });
-      return env.ROOM.get(env.ROOM.idFromName(ROOMS[0])).fetch(req);
+      return env.ROOM.get(env.ROOM.idFromName(HOME)).fetch(req);
     }
     // pagehide beacon: immediate cleanup when closing the tab or browser
     if (url.pathname === "/api/leave") {
@@ -1273,7 +1360,7 @@ export default {
       const origin = req.headers.get("Origin");
       const ok = [url.origin, ...(env.ALLOWED_ORIGINS || "").split(",").map((s) => s.trim()).filter(Boolean)];
       if (!origin || !ok.includes(origin)) return new Response("origin not allowed", { status: 403 });
-      return env.ROOM.get(env.ROOM.idFromName(ROOMS[0])).fetch(req);
+      return env.ROOM.get(env.ROOM.idFromName(HOME)).fetch(req);
     }
     // message wall: writes only from the site itself (same origin check as the WebSocket)
     if (url.pathname === "/api/notes" || url.pathname.startsWith("/api/notes/")) {
@@ -1282,12 +1369,12 @@ export default {
         const ok = [url.origin, ...(env.ALLOWED_ORIGINS || "").split(",").map((s) => s.trim()).filter(Boolean)];
         if (!origin || !ok.includes(origin)) return new Response("origin not allowed", { status: 403 });
       }
-      return env.ROOM.get(env.ROOM.idFromName(ROOMS[0])).fetch(req);
+      return env.ROOM.get(env.ROOM.idFromName(HOME)).fetch(req);
     }
-    // /ws/<room>  ->  that room's Durable Object. Everything else is the static site (assets).
-    const m = url.pathname.match(/^\/ws\/([a-z0-9-]{1,32})$/i);
-    if (!m) return env.ASSETS ? env.ASSETS.fetch(req) : new Response("lofi-lobby", { status: 404 });
-    if (!ROOMS.includes(m[1].toLowerCase())) return new Response("unknown room", { status: 404 });
+    // /ws/<scene>  ->  the room's Durable Object. Everything else is the static site (assets).
+    const room = roomOfPath(url.pathname);
+    if (room === "") return env.ASSETS ? env.ASSETS.fetch(req) : new Response("lofi-lobby", { status: 404 });
+    if (room === null) return new Response("unknown room", { status: 404 });
 
     // only accept connections from the site itself (or origins listed in ALLOWED_ORIGINS)
     const origin = req.headers.get("Origin");
@@ -1295,7 +1382,9 @@ export default {
     allowed.push(url.origin);
     if (!origin || !allowed.includes(origin)) return new Response("origin not allowed", { status: 403 });
 
-    const stub = env.ROOM.get(env.ROOM.idFromName(m[1].toLowerCase()));
-    return stub.fetch(req);
+    // one object for every scene: it is told which scene this connection is in
+    const fwd = new Request(req);
+    fwd.headers.set("X-Room", room);
+    return env.ROOM.get(env.ROOM.idFromName(HOME)).fetch(fwd);
   },
 };
