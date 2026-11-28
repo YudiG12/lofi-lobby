@@ -1,7 +1,7 @@
 // Room server: one Durable Object for the game, everyone connected over WebSocket. Each connection is in
 // one scene (/ws/<scene>) and sees that scene's players, chat and seats; the rest is shared.
 // Protocol (JSON):
-//   client -> server: { t: "hello", name, gender, color, cap, x, z, dir } | { t: "pos", x, z, dir, step, run }
+//   client -> server: { t: "hello", name, gender, color, cap, x, z, dir, key } | { t: "pos", x, z, dir, step, run }
 //                     { t: "chat", text } | { t: "name", name } | { t: "gender", gender, cap }
 //                     { t: "color", color }   (name colour: one of NAME_COLORS)
 //                     { t: "sit", seat, n }   (bench seat 0..15, carousel horse 16..23, Ferris wheel gondola 24..31, roller coaster 32..36 while it waits at the station, or -1 to stand; n numbers the request)
@@ -47,6 +47,8 @@
 //                     { t: "notice", msg } | { t: "rename", name } (your name was refused)
 //                     { t: "who", id, tag, names, sameTag } (admin only)
 //                     { t: "kicked", msg } (the server closes you; don't reconnect)
+//                     { t: "replaced" } (the same browser entered again, in another tab: the server closes this
+//                                        one; don't reconnect until the player asks to play here)
 //                     { t: "admin", id } (that player logged in as admin; players and chat also carry admin: true)
 //   POST /api/leave   { id, token } (pagehide beacon: closes that socket immediately using its per-connection token)
 //
@@ -166,6 +168,8 @@ const sessionKey = async (session) => {
 };
 const HEARTBEAT_CHECK_MS = 60_000;
 const HEARTBEAT_TIMEOUT_MS = 120_000; // > 60s background tab timer throttling
+// the random id a browser keeps for itself and sends on hello: one character per browser
+const PLAYER_KEY = /^[a-z0-9-]{16,64}$/i;
 const HELLO_TIMEOUT_MS = 15_000; // pre-hello sockets cannot hold room slots via edge pings
 const LEAVE_BYTES = 256;
 
@@ -722,7 +726,10 @@ export class Room {
       p.z = number(m.z);
       p.dir = DIRS.includes(m.dir) ? m.dir : "down";
       p.joinedAt = Date.now();
+      if (typeof m.key === "string" && PLAYER_KEY.test(m.key)) p.key = m.key; // never sent to anyone
       ws.serializeAttachment(p);
+      // the newest tab wins, in any scene: the same browser's other characters leave
+      if (p.key) this.replaceOthers(ws, p.key);
       this.stat("join", p);
       say({ t: "joined", player: this.public(p) }, ws);
       await this.rememberName(p);
@@ -1241,6 +1248,14 @@ export class Room {
     this.leave(ws, 1000, "error");
     await this.syncHeartbeatAlarm();
   }
+  replaceOthers(ws, key) {
+    for (const other of this.openSockets()) {
+      if (other === ws || other.deserializeAttachment()?.key !== key) continue;
+      try { other.send(JSON.stringify({ t: "replaced" })); } catch {}
+      this.leave(other, 4004, "replaced");
+    }
+  }
+
   leave(ws, code = 1000, reason = "") {
     if (this.leftSockets.has(ws)) {
       safeClose(ws, code, reason);

@@ -3502,6 +3502,24 @@ let myPrs = 0; // my merged pull requests, once the server knows my GitHub login
 let deployed = ""; // the deploy this tab first connected to
 let pendingPassword = ""; // typed after /admin, saved only if the server accepts it
 let kicked = false; // kicked or banned: stay out instead of reconnecting
+// one character per browser: every tab here sends the same random id, and the newest one takes over
+function newPlayerKey() {
+  const random = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, "0")).join("");
+  try {
+    let key = localStorage.getItem("player-key");
+    if (!key) localStorage.setItem("player-key", (key = random()));
+    return key;
+  } catch {
+    return random(); // no storage: this tab only
+  }
+}
+const PLAYER_KEY = newPlayerKey();
+let replaced = false; // another tab took the character over: out until "play here"
+addEventListener("game:pause", (e) => {
+  if (e.detail || !replaced) return;
+  replaced = kicked = false;
+  connect();
+});
 function connect() {
   clearTimeout(reconnectTimer);
   if (pageUnloading) return;
@@ -3514,7 +3532,7 @@ function connect() {
     pingTimer = setInterval(() => {
       if (sock.readyState === 1) sock.send("ping");
     }, PING_EVERY_MS);
-    sock.send(JSON.stringify({ t: "hello", v: 1, name: NAME, gender: GENDER, color: COLOR, cap: myCap(), x: pos.x, z: pos.z, dir }));
+    sock.send(JSON.stringify({ t: "hello", v: 1, name: NAME, gender: GENDER, color: COLOR, cap: myCap(), x: pos.x, z: pos.z, dir, key: PLAYER_KEY }));
     if (mySeat >= 0) sendSeat(); // reconnected while sitting
     if (myHold) sendHold();
     if (onGround) sendGround(); // reconnected while sitting on the ground
@@ -3609,6 +3627,9 @@ function connect() {
     } else if (m.t === "kicked") {
       kicked = true;
       addToHistory("system", m.msg);
+    } else if (m.t === "replaced") {
+      replaced = kicked = true;
+      dispatchEvent(new CustomEvent("game:replaced"));
     }
     else if (m.t === "name") {
       const o = others.get(m.id);

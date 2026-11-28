@@ -333,6 +333,7 @@
       <div class="look-pick"><small>cap colour</small>
         <div class="caps" id="cap-colors" role="radiogroup" aria-label="cap colour"></div></div>
     </div>
+    <small id="enter-replaced" role="status" hidden>your character is now in another tab</small>
     <button id="btn-enter">enter the room ▶</button>
     <button id="enter-login" type="button"></button>
     <small id="enter-founder" hidden><img src="/assets/badges/founder.svg" alt="" width="32" height="32" /><span>log in until <b>nov 30</b> and get the <b>founding member</b> medal</span></small>
@@ -471,7 +472,17 @@
     pauseScreen.hidden = false;
     btnEnter.textContent = "continue ▶";
   }
+  // another tab of this browser took the character over: stop the music here and offer to take it back
+  const replacedNote = document.querySelector("#enter-replaced");
+  addEventListener("game:replaced", () => {
+    if (radioPromise) pauseRadio(); // before the first entry the radio has nothing to pause
+    notifyGame(true);
+    pauseScreen.hidden = false;
+    replacedNote.hidden = false;
+    btnEnter.textContent = "play here ▶";
+  });
   function play() {
+    replacedNote.hidden = true;
     pauseScreen.hidden = true;
     notifyGame(false);
     if (radioPromise) {
