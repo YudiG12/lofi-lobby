@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { createTavern, TAVERN, inTavern } from "./tavern.js";
 import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader.js";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { connectRadioToServer, receiveCommand } from "./radio.js";
@@ -339,6 +340,8 @@ function prepareTown(fbx) {
     townMeshes = [];
     fbx.traverse((o) => o.isMesh && townMeshes.push(o));
     computePondBox();
+    tavernDoor.y = groundHeight(tavernDoor.x, tavernDoor.z);
+    tavernDoorReady = true;
     placeFair(); // before the lamps, benches and capybara look for open ground around it
     fbx.traverse((o) => {
       if (o.isMesh && /mailbox|sign|fence/i.test(o.name))
@@ -807,6 +810,7 @@ const BENCH_SPOTS = [
 ];
 // Where a seat is, and which way the sitter looks (null if that bench doesn't exist)
 function seatSpot(id) {
+  if (id >= TAVERN.firstSeat) return tavern.seats[id - TAVERN.firstSeat] ?? null;
   // a carousel horse: where it is right now, by the room's clock
   if (isCarouselSeat(id)) return fairPlaced ? carouselSeat(id - CAROUSEL.firstSeat, roomNow(), carousel.root.position.y) : null;
   // a Ferris wheel gondola: the same, up and down
@@ -1633,6 +1637,7 @@ const ray = new THREE.Raycaster();
 const DOWN = new THREE.Vector3(0, -1, 0);
 // Height of the highest surface at that point (ground, or top of house/tree/fence)
 function topHeight(x, z) {
+  if (inTavern(x, z)) return 0;
   if (!townMeshes.length) return 0;
   ray.set(new THREE.Vector3(x, 200, z), DOWN);
   // ignore the pond edge stones: they are walls, not floor
@@ -1643,6 +1648,7 @@ function topHeight(x, z) {
 }
 // Ground height: lowest surface (ignores roofs above)
 function groundHeight(x, z) {
+  if (inTavern(x, z)) return 0;
   if (!townMeshes.length) return 0;
   ray.set(new THREE.Vector3(x, 200, z), DOWN);
   const hits = ray.intersectObjects(townMeshes, false);
@@ -2349,6 +2355,7 @@ const BODY_RADIUS = 0.9; // character "width"
 const MAX_STEP = 1.2; // height difference it can climb
 const POST_RADIUS = 1.1;
 function isFree(x, z, currentY) {
+  if (insideTavern) return tavern.isWalkable(x, z);
   if (
     x < townBox.min.x ||
     x > townBox.max.x ||
@@ -2830,7 +2837,7 @@ function checkSavedPosition() {
 let lastSaved = 0,
   lastSavedState = "";
 function savePosition(now) {
-  if (mySeat >= 0 || now - lastSaved < 1000) return;
+  if (insideTavern || mySeat >= 0 || now - lastSaved < 1000) return;
   lastSaved = now;
   const state = JSON.stringify({ x: +pos.x.toFixed(2), z: +pos.z.toFixed(2), dir });
   if (state === lastSavedState) return;
@@ -3081,6 +3088,10 @@ function nearestFreeSeat() {
     const d = Math.hypot(s.x - pos.x, s.z - pos.z);
     if (d < bestD && !seatTaken(id)) (best = id), (bestD = d);
   };
+  if (insideTavern) {
+    for (let id = TAVERN.firstSeat; id < TAVERN.firstSeat + TAVERN.seats; id++) consider(id);
+    return best;
+  }
   for (let id = 0; id < benches.length * SEATS_PER_BENCH; id++) consider(id);
   for (let i = 0; i < CAROUSEL.seats; i++) consider(CAROUSEL.firstSeat + i);
   for (let i = 0; i < WHEEL.seats; i++) consider(WHEEL.firstSeat + i);
@@ -3238,6 +3249,7 @@ document.querySelector("#respawn").addEventListener("click", (e) => {
   }
   clearTimeout(respawnTimer);
   btn.classList.remove("confirm");
+  if (insideTavern) travelTavern(false);
   if (mySeat >= 0) standUp(); // free the seat first, or the room keeps you on the bench
   pos.set(0, 0, 0);
   lastSaved = 0;
@@ -4412,6 +4424,7 @@ function waterY(x, z) {
  * @returns {{x: number, z: number, d: number, face: string, seat: number} | null} d: distance to the pond's box
  */
 function fishSpot() {
+  if (insideTavern) return null;
   if (!pondBox) return null;
   const s = mySeat >= 0 ? seatSpot(mySeat) : null;
   const x = s ? s.x : pos.x,
@@ -4455,6 +4468,13 @@ function eAction(seat = nearestFreeSeat()) {
   const p = fishing.phase();
   if (p === "focus" || p === "bite") return "fish";
   if (mySeat >= 0) return "stand";
+  if (insideTavern) {
+    if (Math.hypot(pos.x - tavernExit.x, pos.z - tavernExit.z) < 2.8) return "tavern-exit";
+    if (seat >= 0 && seatDistance(seat) < 1.2) return "sit";
+    if (nearBartender() && !tavern.busy()) return "tavern-drink";
+    return seat >= 0 ? "sit" : null;
+  }
+  if (tavernDoorReady && Math.hypot(pos.x - tavernDoor.x, pos.z - tavernDoor.z) < 3.0) return "tavern-enter";
   if (nearBoard()) return "wall";
   const animal = closestAnimal();
   if (animal) return animal.kind;
@@ -4464,7 +4484,10 @@ function eAction(seat = nearestFreeSeat()) {
 }
 /** Runs an action from eAction (E, a prompt or the fish button). */
 function doE(action = eAction()) {
-  if (action === "fish") fishing.press();
+  if (action === "tavern-enter") travelTavern(true);
+  else if (action === "tavern-exit") travelTavern(false);
+  else if (action === "tavern-drink") setDrinkMenu(true);
+  else if (action === "fish") fishing.press();
   else if (action === "cast") fishSpot() && fishing.choose(castHere);
   else if (action === "wall") wall.show();
   else if (action === "capy") feedCapy();
@@ -4472,7 +4495,7 @@ function doE(action = eAction()) {
   else if (action === "stand" || action === "sit") toggleSit();
 }
 addEventListener("keydown", (e) => {
-  if (typing() || e.repeat || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (typing() || drinkMenuOpen || e.repeat || e.metaKey || e.ctrlKey || e.altKey) return;
   if (e.key.toLowerCase() === "e") doE();
 });
 const fishBtn = document.querySelector("#fish");
@@ -4553,6 +4576,111 @@ if (import.meta.env.DEV) {
   });
 }
 
+const tavern = createTavern(scene);
+let insideTavern = false;
+let tavernDoorReady = false;
+let tavernReturn = null;
+let drinkMenuOpen = false;
+const tavernDoor = new THREE.Vector3(10.2, 0, 14.15);
+const tavernExit = new THREE.Vector3(TAVERN.x, 0, 13.0);
+const tavernPrompt = document.querySelector("#tavern-prompt");
+const tavernGreeting = document.querySelector("#tavern-greeting");
+const drinkMenu = document.querySelector("#tavern-menu");
+const takeDrink = document.querySelector("#tavern-drink");
+const closeDrink = document.querySelector("#tavern-close");
+const tavernBackdrop = new THREE.Color("#241825");
+
+function nearBartender() {
+  return insideTavern && Math.abs(pos.x - TAVERN.x) < 4.7 && pos.z > -6 && pos.z < -1.3;
+}
+
+function setDrinkMenu(open) {
+  if (drinkMenuOpen === open) return;
+  drinkMenuOpen = open;
+  drinkMenu.hidden = !open;
+  if (open) takeDrink.focus();
+  if (!open && drinkMenu.contains(document.activeElement)) document.activeElement.blur();
+}
+
+function travelTavern(enter) {
+  if (enter === insideTavern) return;
+  if (enter && fishing.phase() !== "idle") return;
+  fishing.closePicker();
+  if (mySeat >= 0) standUp();
+  setGround(false);
+  setDrinkMenu(false);
+  tavern.cancelServing();
+  slide.x = 0;
+  slide.z = 0;
+  if (enter) {
+    tavernReturn = pos.clone();
+    localStorageSafePosition();
+    pos.set(TAVERN.x, 0, 11.3);
+    dir = "up";
+  } else {
+    pos.copy(tavernReturn);
+    dir = "down";
+  }
+  insideTavern = enter;
+}
+
+function localStorageSafePosition() {
+  lastSaved = 0;
+  savePosition(performance.now());
+}
+
+function updateTavern(dt) {
+  if (insideTavern && tavern.update(dt) && nearBartender()) {
+    myHold = COFFEE;
+    try { localStorage.setItem("hold", myHold); } catch {}
+    sendHold();
+  }
+  if (drinkMenuOpen && (!nearBartender() || gamePaused)) setDrinkMenu(false);
+  const show = !gamePaused && insideTavern;
+  tavernGreeting.hidden = !show;
+  if (show) {
+    tavernGreeting.textContent = tavern.busy() ? "One hot cocoa coming up!" : tavern.greeting();
+    positionTavernLabel(tavernGreeting, TAVERN.x, 4.85, -10);
+  }
+  const prompts = {
+    "tavern-enter": [tavernDoor, "enter the tavern"],
+    "tavern-exit": [tavernExit, "return to the village"],
+    "tavern-drink": [new THREE.Vector3(TAVERN.x, 0, -4.6), "talk to the bartender"],
+  };
+  const current = !typing() && !drinkMenuOpen && prompts[eNow];
+  tavernPrompt.hidden = !current;
+  if (!current) return;
+  const [spot, label] = current;
+  tavernPrompt.querySelector(".tavern-action").textContent = label;
+  tavernPrompt.querySelector(".tap").textContent = "tap to " + label;
+  positionTavernLabel(tavernPrompt, spot.x, spot.y + 4.6, spot.z);
+}
+
+function positionTavernLabel(label, x, y, z) {
+  _v.set(x, y, z).project(camera);
+  label.style.left = ((0.5 + _v.x * 0.5) * innerWidth) + "px";
+  label.style.top = ((0.5 - _v.y * 0.5) * innerHeight) + "px";
+}
+
+tavernPrompt.addEventListener("click", () => { doE(); tavernPrompt.blur(); });
+takeDrink.addEventListener("click", () => {
+  if (nearBartender()) tavern.startServing();
+  setDrinkMenu(false);
+});
+closeDrink.addEventListener("click", () => setDrinkMenu(false));
+addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && drinkMenuOpen) setDrinkMenu(false);
+});
+const bartenderRay = new THREE.Raycaster();
+const pointer = new THREE.Vector2();
+canvasEl.addEventListener("click", (event) => {
+  if (gamePaused || !nearBartender() || tavern.busy()) return;
+  const size = canvasEl.getBoundingClientRect();
+  pointer.set(2 * (event.clientX - size.left) / size.width - 1, 1 - 2 * (event.clientY - size.top) / size.height);
+  bartenderRay.setFromCamera(pointer, camera);
+  if (bartenderRay.intersectObject(tavern.bartender, true).length) setDrinkMenu(true);
+});
+
 function loop() {
   const now = performance.now();
   const dt = Math.min(clock.getDelta(), 0.05);
@@ -4595,7 +4723,7 @@ function loop() {
     // facing follows the stronger axis
     dir = Math.abs(dx) > Math.abs(dz) ? (dx > 0 ? "right" : "left") : dz > 0 ? "down" : "up";
   }
-  if (gamePaused || wall.isOpen()) {
+  if (gamePaused || wall.isOpen() || drinkMenuOpen) {
     dx = 0;
     dz = 0;
   }
@@ -4667,7 +4795,16 @@ function loop() {
   sprite.castShadow = !riding;
   const movers = [...others.values()].filter((o) => !isRideSeat(o.seat)).map((o) => o.mesh);
   updateLampShadows([...(riding ? [] : [sprite]), capy.mesh, owl.mesh, ...cats.map((c) => c.mesh), ...movers]);
+  updateTavern(dt);
+  const outdoorBackground = scene.background;
+  const outdoorFog = scene.fog;
+  if (insideTavern) {
+    scene.background = tavernBackdrop;
+    scene.fog = null;
+  }
   renderer.render(scene, camera);
+  scene.background = outdoorBackground;
+  scene.fog = outdoorFog;
   updateNameTags();
   updateBubbles();
   updateSitPrompt(eNow === "sit" ? freeSeat : -1);
