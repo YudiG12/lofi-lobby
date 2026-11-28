@@ -93,7 +93,7 @@ const roomOf = (p) => (ROOMS.includes(p?.room) ? p.room : HOME); // a socket fro
 const historyKey = (room) => (room === HOME ? "chat" : "chat:" + room);
 const SCENE_SEATS = { lago: 14 }; // the swing, two benches and two picnic tables (src/lake-layout.js)
 const seatsIn = (room) => (room === HOME ? MAX_SEATS : SCENE_SEATS[room] | 0);
-const TOWN_ONLY = ["capy", "cat", "stone", "fish"]; // the capybara, the cats and the pond are in the town
+const TOWN_ONLY = ["capy", "cat"]; // the capybara and the cats live in the town (stones and fishing: any water)
 const MAX_BYTES = 1024;
 const COORD_LIMIT = 500;
 const ADMIN_ATTEMPTS = 20; // per IP, then locked for ADMIN_LOCK_MS (the "other" rate limit already caps tries at ~1/s)

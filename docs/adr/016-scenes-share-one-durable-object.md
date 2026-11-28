@@ -31,8 +31,9 @@ A scene is **not a room**. Every scene is served by the same Durable Object (the
   seats (a seat number is taken or free within its scene; the lake has its own count).
 - **For the whole game:** accounts, friends, private chat and presence, bans and kicks, every limit
   per IP, the 100 players, the wall and the radio.
-- **The town's own things stay in the town:** the capybara, the cats, stones and fishing are refused
-  from another scene, and the cats only climb on someone who is in the town.
+- **The town's animals stay in the town:** feeding the capybara or a cat is refused from another
+  scene, and the cats only climb on someone who is in the town. Stones and fishing lines are relayed
+  within the scene they happen in.
 - A portal still closes the socket and opens one for the next scene: the client did not change.
 
 ## Alternatives considered

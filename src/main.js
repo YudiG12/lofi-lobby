@@ -9,6 +9,7 @@ import { addSitFrames, sitFramePos } from "./ground-sit.js";
 import { createCapybara, CAPY_NEAR, CAPY_RADIUS, PHRASES as CAPY_PHRASES } from "./capybara.js";
 import { SCENES, HOME, isScene, portalAt } from "./scenes.js";
 import { createLake } from "./lake.js";
+import { cellAt as lakeCellAt } from "./lake-layout.js";
 import "./scenes.css";
 import { createOwl } from "./owl.js";
 import { createFishing, createFishingGear, FISH_NEAR, FISH_LEAVE } from "./fishing.js";
@@ -4325,19 +4326,48 @@ function pondDistance(x, z) {
     dz = Math.max(pondBox.min.z - z, 0, z - pondBox.max.z);
   return Math.hypot(dx, dz);
 }
-const nearPond = () => !gamePaused && pondDistance(pos.x, pos.z) < STONE_NEAR;
+// Water at (x, z)? The town asks its meshes; the lake reads its map (no raycast), and its pier is floor.
+const wetAt = (x, z) => (sceneId === HOME ? isWater(x, z) : !!lake && lakeCellAt(x, z) === "~");
+// The lake's shore is no box: how far the water is from (x, z) going that way, Infinity past `max`.
+function lakeWaterAhead(x, z, fx, fz, max) {
+  for (let d = 0.2; d <= max; d += 0.2) if (wetAt(x + fx * d, z + fz * d)) return d;
+  return Infinity;
+}
+// Which way the lake's water is from (x, z), within `max`: the way you face if it is there, else the closest of 16.
+function lakeWaterWay(x, z, max, face) {
+  let best = null;
+  const [fx, fz] = FACING[face] || [0, 0];
+  if (lakeWaterAhead(x, z, fx, fz, max) < Infinity) return { dx: fx, dz: fz };
+  for (let i = 0; i < 16; i++) {
+    const a = (i / 16) * Math.PI * 2,
+      dx = Math.cos(a),
+      dz = Math.sin(a),
+      d = lakeWaterAhead(x, z, dx, dz, max);
+    if (d < (best?.d ?? Infinity)) best = { dx, dz, d };
+  }
+  return best;
+}
+const nearPond = () =>
+  !gamePaused && (sceneId === HOME ? pondDistance(pos.x, pos.z) < STONE_NEAR : !!lake && !!lakeWaterWay(pos.x, pos.z, STONE_NEAR, dir));
 // Toward the middle of the pond: the first touch a little past the water's edge, then up to four
 // skips, each shorter, bending a little, while they stay on the water. The last touch is where it sinks.
 function planThrow(x, z) {
-  const c = pondBox.getCenter(new THREE.Vector3());
-  let dx = c.x - x,
-    dz = c.z - z;
-  const n = Math.hypot(dx, dz) || 1;
-  (dx /= n), (dz /= n);
+  let dx, dz;
+  if (sceneId === HOME) {
+    const c = pondBox.getCenter(new THREE.Vector3());
+    (dx = c.x - x), (dz = c.z - z);
+    const n = Math.hypot(dx, dz) || 1;
+    (dx /= n), (dz /= n);
+  } else {
+    // the lake has no middle to aim at: out over the water, the way you face or the closest way
+    const way = lakeWaterWay(x, z, STONE_NEAR, dir);
+    if (!way) return null;
+    ({ dx, dz } = way);
+  }
   let ex = NaN,
     ez = NaN;
   for (let d = 0.5; d < 40; d += 0.5)
-    if (isWater(x + dx * d, z + dz * d) && isWater(x + dx * (d + 2), z + dz * (d + 2))) {
+    if (wetAt(x + dx * d, z + dz * d) && wetAt(x + dx * (d + 2), z + dz * (d + 2))) {
       (ex = x + dx * (d + 2)), (ez = z + dz * (d + 2));
       break;
     }
@@ -4350,7 +4380,7 @@ function planThrow(x, z) {
     const [px, pz] = touches.at(-1);
     const nx = px + Math.cos(ang) * len,
       nz = pz + Math.sin(ang) * len;
-    if (!isWater(nx, nz)) break; // the next hop would land on the bank: it sinks where it is
+    if (!wetAt(nx, nz)) break; // the next hop would land on the bank: it sinks where it is
     touches.push([nx, nz]);
   }
   return { touches: touches.map(([a, b]) => [Math.round(a * 100) / 100, Math.round(b * 100) / 100]), dx, dz };
@@ -4484,7 +4514,7 @@ function useWorld(id) {
     // built once the town is loaded: it borrows the town's pieces
     if (!lake && lobbyWorld) {
       lake = createLake(lakeKit());
-      applyLook(dayAmount);
+      applyLook(currentLook);
     }
     lobbyRoot.removeFromParent();
     pondBox = null;
@@ -4611,11 +4641,17 @@ function waterY(x, z) {
  * @returns {{x: number, z: number, d: number, face: string, seat: number} | null} d: distance to the pond's box
  */
 function fishSpot() {
-  if (!pondBox) return null;
+  if (sceneId === HOME ? !pondBox : !lake) return null;
   const s = mySeat >= 0 ? seatSpot(mySeat) : null;
   const x = s ? s.x : pos.x,
     z = s ? s.z : pos.z,
     face = s ? s.dir : dir;
+  if (sceneId !== HOME) {
+    // the lake: water straight ahead, close enough (the shore, or the pier's edge)
+    const [fx, fz] = FACING[face];
+    const d = lakeWaterAhead(x, z, fx, fz, FISH_NEAR);
+    return d < Infinity ? { x, z, d, face, seat: mySeat } : null;
+  }
   const { min, max } = pondBox;
   const cx = THREE.MathUtils.clamp(x, min.x, max.x),
     cz = THREE.MathUtils.clamp(z, min.z, max.z);
@@ -4630,9 +4666,17 @@ function castHere(minutes) {
   const s = fishSpot();
   if (!s) return;
   const [fx, fz] = FACING[s.face];
-  const { min, max } = pondBox;
-  const tx = THREE.MathUtils.clamp(s.x + fx * (s.d + 3.5), min.x + 1.5, max.x - 1.5),
+  let tx, tz;
+  if (sceneId === HOME) {
+    const { min, max } = pondBox;
+    tx = THREE.MathUtils.clamp(s.x + fx * (s.d + 3.5), min.x + 1.5, max.x - 1.5);
     tz = THREE.MathUtils.clamp(s.z + fz * (s.d + 3.5), min.z + 1.5, max.z - 1.5);
+  } else {
+    // a few steps out, or as far as the water goes that way
+    let out = s.d + 0.4;
+    for (let d = out; d <= s.d + 3.5 && wetAt(s.x + fx * d, s.z + fz * d); d += 0.2) out = d;
+    (tx = s.x + fx * out), (tz = s.z + fz * out);
+  }
   fishing.cast({ x: s.x, z: s.z, face: s.face, seat: s.seat, target: { x: tx, y: waterY(tx, tz) ?? pos.y, z: tz } }, minutes);
 }
 /** @param {number} id seat @returns {number} distance from you to that seat */
@@ -4693,7 +4737,7 @@ let fishRestored = false;
 function updateFishing() {
   const now = Date.now();
   let s = fishing.spot();
-  if (!fishRestored && savedPosChecked && pondBox) {
+  if (!fishRestored && savedPosChecked && (sceneId === HOME ? pondBox : lake)) {
     fishRestored = true;
     if (s && s.seat >= 0 && seatSpot(s.seat)) sit(s.seat);
     else if (s && isFree(s.x, s.z, topHeight(s.x, s.z))) pos.set(s.x, topHeight(s.x, s.z), s.z), (dir = s.face);
