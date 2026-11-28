@@ -1,0 +1,127 @@
+#ttt {
+  --gold: #ffc95a;
+  left: 50%;
+  bottom: 20px;
+  transform: translateX(-50%);
+  z-index: 3;
+  box-sizing: border-box;
+  width: 256px;
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 12px;
+  font: 11px/1.4 Silkscreen, monospace;
+}
+
+#ttt[hidden] { display: none; }
+#ttt p, #ttt h2 { margin: 0; }
+#ttt header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 6px; }
+#ttt h2 { color: var(--gold); font-size: 14px; font-weight: 400; }
+#ttt .stand { white-space: nowrap; }
+#ttt kbd { margin-left: 5px; color: var(--gold); font: inherit; }
+
+#ttt .players { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; margin-top: 8px; }
+#ttt .player { display: flex; align-items: baseline; gap: 5px; padding: 4px 6px; border: 1px solid rgba(255,255,255,.12); border-radius: 4px; }
+#ttt .player.active { border-color: var(--gold); background: rgba(255,201,90,.1); }
+#ttt .player .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#ttt .player .pts { flex-shrink: 0; margin-left: auto; color: #c4c6d4; }
+#ttt .draws { margin-top: 4px; font-size: 10px; color: #c4c6d4; text-align: center; }
+#ttt .draws[hidden] { display: none; }
+#ttt .status { margin: 8px 0; color: var(--gold); text-align: center; overflow-wrap: anywhere; }
+#ttt [data-mark="X"] { color: #ff8a7a; }
+#ttt [data-mark="O"] { color: #5fd8e8; }
+
+#ttt button {
+  padding: 5px 6px;
+  border: 1px solid rgba(255,255,255,.2);
+  border-radius: 5px;
+  background: rgba(0,0,0,.28);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+#ttt button:disabled { cursor: default; }
+#ttt button:not(:disabled):is(:hover, :focus-visible) { border-color: var(--gold); }
+#ttt button:focus-visible { outline: 2px solid var(--gold); outline-offset: 1px; }
+#ttt .cells { display: grid; grid-template-columns: repeat(3, 44px); justify-content: center; gap: 4px; }
+#ttt .cell { height: 44px; padding: 0; font-size: 24px; }
+#ttt .cell.win, #ttt .rematch.accept { border-color: var(--gold); background: rgba(255,201,90,.17); }
+#ttt .rematch.accept { color: var(--gold); }
+#ttt footer { margin-top: 8px; text-align: center; }
+
+/* At smaller desktop widths, clear the GitHub badge and then center in the space left of chat. */
+@media (pointer: fine) and (1100px < width <= 1360px) {
+  #ttt { bottom: 76px; max-height: calc(100dvh - 88px); }
+}
+@media (pointer: fine) and (max-width: 1100px) {
+  #ttt { bottom: 120px; left: calc((100vw - 342px) / 2); max-height: calc(100dvh - 132px); }
+}
+@media (pointer: fine) and (max-width: 740px) {
+  #ttt { bottom: 208px; max-height: calc(100dvh - 220px); }
+}
+@media (pointer: fine) and (max-width: 630px) {
+  #ttt { left: 12px; transform: none; width: min(256px, calc(100vw - 366px)); min-width: 164px; }
+}
+@media (pointer: fine) and (max-width: 530px) {
+  body:has(#ttt:not([hidden])) #chat { width: min(320px, calc(100vw - 210px)); }
+}
+@media (pointer: fine) and (max-height: 540px) {
+  #ttt { padding: 8px 10px; }
+  #ttt .players { margin-top: 5px; }
+  #ttt .status { margin: 5px 0; }
+  #ttt .cells { grid-template-columns: repeat(3, 36px); gap: 3px; }
+  #ttt .cell { height: 36px; font-size: 20px; }
+  #ttt footer { margin-top: 6px; }
+}
+@media (pointer: fine) and (max-width: 740px) and (max-height: 540px) {
+  #ttt {
+    left: 72px;
+    transform: none;
+    width: min(256px, calc(100vw - 424px));
+    min-width: 164px;
+    bottom: 120px;
+    max-height: max(112px, calc(100dvh - 316px));
+  }
+  body:has(#ttt:not([hidden])) #chat { width: min(320px, calc(100vw - 268px)); }
+}
+
+@media (pointer: coarse) {
+  #ttt {
+    bottom: calc(118px + env(safe-area-inset-bottom));
+    width: min(256px, calc(100vw - 24px));
+    max-height: calc(100dvh - 260px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+  }
+  #ttt kbd, body:has(#chat.open) #ttt { display: none; }
+  #ttt .stand, #ttt .rematch { min-height: 44px; }
+}
+@media (pointer: coarse) and (max-height: 520px) {
+  #ttt:not([hidden]) {
+    top: calc(12px + env(safe-area-inset-top));
+    right: 12px;
+    left: auto;
+    bottom: auto;
+    transform: none;
+    width: min(328px, calc(100vw - 304px));
+    min-width: min(256px, calc(100vw - 24px));
+    padding: 8px 10px;
+    max-height: calc(100dvh - 118px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    column-gap: 10px;
+    align-items: start;
+  }
+  #ttt header, #ttt .players, #ttt .draws, #ttt .status, #ttt footer { grid-column: 1; }
+  #ttt .cells {
+    grid-column: 2;
+    grid-row: 1 / span 5;
+    align-self: center;
+    grid-template-columns: repeat(3, 38px);
+    gap: 3px;
+  }
+  #ttt .cell { height: 38px; font-size: 20px; }
+  #ttt .players { grid-template-columns: 1fr; margin-top: 5px; gap: 3px; }
+  #ttt .draws { margin-top: 3px; }
+  #ttt .status { margin: 5px 0 0; text-align: left; }
+  #ttt footer { margin-top: 6px; text-align: left; }
+  #ttt .stand, #ttt .rematch { min-height: 32px; }
+}

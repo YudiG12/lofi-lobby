@@ -4,7 +4,8 @@
 //   client -> server: { t: "hello", name, gender, color, cap, x, z, dir } | { t: "pos", x, z, dir, step, run }
 //                     { t: "chat", text } | { t: "name", name } | { t: "gender", gender, cap }
 //                     { t: "color", color }   (name colour: one of NAME_COLORS)
-//                     { t: "sit", seat, n }   (bench seat 0..15, carousel horse 16..23, Ferris wheel gondola 24..31, roller coaster 32..36 while it waits at the station, or -1 to stand; n numbers the request)
+//                     { t: "sit", seat, n }   (bench seat 0..15, carousel horse 16..23, Ferris wheel gondola 24..31, roller coaster 32..36 while it waits at the station, tic-tac-toe chairs 37..38, or -1 to stand; n numbers the request)
+//                     { t: "ttt", action: "move", cell, rev } | { t: "ttt", action: "rematch", rev }
 //                     { t: "capy" }   (feed the capybara)
 //                     { t: "stone", pts: [[x, z], ...] }   (a stone skipped on the pond: where it touched the water, 1 to 6)
 //                     { t: "ground", on }   (sit on the ground, or get up)
@@ -30,6 +31,7 @@
 //                     { t: "fish", id, fish }   (that player's line: [x, z] of the bobber, or null when it is in)
 //                     { t: "hold", item }   (what you hold: 0 nothing, 1 laptop, 2 coffee, 3 book, 4 cigarette; the client decides when it shows)
 //                     { t: "seat", id, seat, n }   (who sits where; n only on a correction to the sender)
+//                     { t: "ttt", game }
 //                     { t: "capy", at, until, lost, phrase }   (the capybara was fed: it sits from at to until, room clock;
 //                                                               lost = all its sitting before; phrase picks what it says.
 //                                                               Also sent on join, without phrase)
@@ -93,12 +95,12 @@ const roomOf = (p) => (ROOMS.includes(p?.room) ? p.room : HOME); // a socket fro
 const historyKey = (room) => (room === HOME ? "chat" : "chat:" + room);
 const SCENE_SEATS = { lago: 14 }; // the swing, two benches and two picnic tables (src/lake-layout.js)
 const seatsIn = (room) => (room === HOME ? MAX_SEATS : SCENE_SEATS[room] | 0);
-const TOWN_ONLY = ["capy", "cat"]; // the capybara and the cats live in the town (stones and fishing: any water)
+const TOWN_ONLY = ["capy", "cat", "ttt"]; // the capybara, cats and tic-tac-toe table live in the town (stones and fishing: any water)
 const MAX_BYTES = 1024;
 const COORD_LIMIT = 500;
 const ADMIN_ATTEMPTS = 20; // per IP, then locked for ADMIN_LOCK_MS (the "other" rate limit already caps tries at ~1/s)
 const ADMIN_LOCK_MS = 60_000;
-const MAX_SEATS = 37; // bench seats 0..15 (bench * 2 + side), carousel horses 16..23, Ferris wheel gondolas 24..31, roller coaster 32..36; the client knows where each is
+const MAX_SEATS = TTT_SEAT_O + 1; // bench seats 0..15 (bench * 2 + side), carousel horses 16..23, Ferris wheel gondolas 24..31, roller coaster 32..36, tic-tac-toe chairs 37..38
 // The roller coaster runs in cycles by the room's clock (src/roller-coaster.js): it waits at the station
 // for BOARD_MS, then rides for RIDE_MS. Its seats can be taken only while it waits (plus a little for the trip).
 const COASTER_SEATS = [32, 37];
@@ -145,7 +147,7 @@ const NOTE_ID = /^note:\d{15}-[a-z0-9]{6}$/;
 const AFTER_EVERY_NOTE = "note:999999999999999-zzzzzz"; // a cursor above every note id
 const topKey = (likes, id) => `top:${String(likes).padStart(6, "0")}:${id}`;
 // rate buckets: capacity, refill per second
-const RATES = { pos: [30, 20], chat: [8, 1], sit: [20, 6], like: [30, 0.5], github: [4, 1 / 30], social: [20, 2], other: [10, 1] };
+const RATES = { pos: [30, 20], chat: [8, 1], sit: [20, 6], ttt: [15, 4], like: [30, 0.5], github: [4, 1 / 30], social: [20, 2], other: [10, 1] };
 // accounts, profiles, friends and private chat (worker/social.js); a private message spends the chat budget
 const SOCIAL = ["profile", "friend", "friends", "bio", "dm-open", "dm-read", "chat-invite", "chat-accept"];
 // contributors: a player proves their GitHub login (OAuth device flow, GITHUB_CLIENT_ID) and the room counts
@@ -176,6 +178,7 @@ function safeClose(ws, code = 1000, reason = "") {
 }
 
 import { badName, cleanChat, hasLink, normalize } from "./moderation.js";
+import { TTT_SEAT_X, TTT_SEAT_O, isTttSeat, createGame, syncSeats, applyMove, requestRematch } from "./tictactoe.js";
 import { HOME, ROOMS, roomOfPath } from "./rooms.js";
 import { renamedNotes, wallName } from "./notes.js";
 import { installSocial } from "./social.js";
@@ -275,10 +278,11 @@ export class Room {
   constructor(state, env) {
     this.state = state;
     this.env = env;
-    this.buckets = new Map(); // "ip|type" or "ws-id|pos" -> { tokens, at } (in memory)
+    this.buckets = new Map(); // "ip|type" or "ws-id|type" -> { tokens, at } (in memory)
     this.noteEdits = new Map(); // ip -> time of the last note edit (in memory)
     this.spam = new Map(); // ip -> { strikes, mutedUntil, lastStrike, lastText, lastAt }
     this.leftSockets = new WeakSet();
+    this.tttQueue = Promise.resolve();
     this.ghBusy = new Set(); // player ids with a GitHub call in flight
     this.ghTriedAt = 0; // last read of the pull requests, good or bad
     // accounts and sessions, in D1; the repository's owner is account 0
@@ -644,6 +648,12 @@ export class Room {
     const messages = await this.history(room);
     if (messages.length) server.send(JSON.stringify({ t: "history", messages }));
     server.send(JSON.stringify({ t: "state", players: this.players(room).filter((p) => p.id !== id) }));
+    if (room === HOME) {
+      await this.queueTtt(async () => {
+        const game = await this.syncTttAndBroadcast(server);
+        server.send(JSON.stringify({ t: "ttt", game }));
+      });
+    }
     return new Response(null, { status: 101, webSocket: client });
   }
 
@@ -671,10 +681,37 @@ export class Room {
     for (const ws of dead) this.leave(ws, 1000, "send failed");
   }
 
-  // rate limit (token bucket): movement and seats per connection, chat and the rest shared by everyone on one IP
+  // Seat changes, moves and join snapshots share one queue so they see each game update in order.
+  queueTtt(work) {
+    const next = this.tttQueue.then(work);
+    this.tttQueue = next.catch(() => {}); // a failed operation still lets the next one reconcile
+    return next;
+  }
+
+  async loadAndSyncTtt() {
+    const game = (await this.state.storage.get("ttt")) ?? createGame();
+    const players = this.players(HOME);
+    const x = players.find((p) => p.seat === TTT_SEAT_X)?.id;
+    const o = players.find((p) => p.seat === TTT_SEAT_O)?.id;
+    return syncSeats(game, x, o);
+  }
+
+  async saveTttAndBroadcast(game, except) {
+    // Keep the last board revision in storage even when both chairs empty so a stale move can never match a later game.
+    await this.state.storage.put("ttt", game);
+    this.broadcast({ t: "ttt", game }, except, HOME);
+  }
+
+  async syncTttAndBroadcast(except) {
+    const { state: game, changed } = await this.loadAndSyncTtt();
+    if (changed) await this.saveTttAndBroadcast(game, except);
+    return game;
+  }
+
+  // rate limit (token bucket): movement, seats and games per connection, the rest shared by everyone on one IP
   allowed(p, type) {
     const [cap, refill] = RATES[type] || RATES.other;
-    const key = (type === "pos" || type === "sit" ? p.id : p.ip) + "|" + type;
+    const key = (type === "pos" || type === "sit" || type === "ttt" ? p.id : p.ip) + "|" + type;
     const now = Date.now() / 1000;
     let k = this.buckets.get(key);
     if (!k) this.buckets.set(key, (k = { tokens: cap, at: now }));
@@ -686,7 +723,7 @@ export class Room {
   }
 
   async webSocketMessage(ws, raw) {
-    if (typeof raw !== "string" || raw.length > MAX_BYTES) return;
+    if (typeof raw !== "string" || raw.length > MAX_BYTES || (raw.length > MAX_BYTES / 3 && new TextEncoder().encode(raw).byteLength > MAX_BYTES)) return;
     let m;
     try { m = JSON.parse(raw); } catch { return; }
     if (!m || typeof m !== "object") return;
@@ -697,12 +734,16 @@ export class Room {
     const room = roomOf(p);
     const say = (msg, except) => this.broadcast(msg, except, room);
     if (room !== HOME && TOWN_ONLY.includes(m.t)) return;
-    const type = m.t === "pos" ? "pos" : m.t === "chat" || m.t === "dm" ? "chat" : m.t === "sit" ? "sit" : m.t === "github-start" ? "github" : SOCIAL.includes(m.t) ? "social" : "other";
+    let type = "other";
+    if (m.t === "pos" || m.t === "sit" || m.t === "ttt" || m.t === "chat") type = m.t;
+    else if (m.t === "dm") type = "chat";
+    else if (m.t === "github-start") type = "github";
+    else if (SOCIAL.includes(m.t)) type = "social";
     // the seat the room really has for this player, tagged with the request it answers
-    const seatReply = () => ws.send(JSON.stringify({ t: "seat", id: p.id, seat: p.seat ?? -1, n: Number.isSafeInteger(m.n) ? m.n : 0 }));
+    const seatReply = (seat = p.seat ?? -1) => ws.send(JSON.stringify({ t: "seat", id: p.id, seat, n: Number.isSafeInteger(m.n) ? m.n : 0 }));
     if (!this.allowed(p, type)) {
       if (type === "chat") this.strike(ws, p.ip);
-      // a dropped sit would leave the client and the room disagreeing: tell it where it really is
+      // a dropped sit would leave the client and the room disagreeing: tell it where it really is without queuing work
       if (type === "sit") seatReply();
       return;
     }
@@ -755,19 +796,40 @@ export class Room {
       // one player per seat; -1 stands up. A taken seat is refused back to the sender only,
       // with the seat the room really has for them
       const seat = Number.isInteger(m.seat) && m.seat >= 0 && m.seat < seatsIn(room) ? m.seat : -1;
-      if (seat >= 0 && this.players(room).some((q) => q.id !== p.id && q.seat === seat)) {
-        seatReply();
-        return;
-      }
-      // nobody gets into the roller coaster's sleigh while it is out on the track
-      if (room === HOME && seat >= COASTER_SEATS[0] && seat < COASTER_SEATS[1] && seat !== p.seat && !coasterBoarding(Date.now())) {
-        seatReply();
-        return;
-      }
-      p.seat = seat;
-      ws.serializeAttachment(p);
-      // not back to the sender: it already moved, and a late echo would undo a quick sit/stand
-      say({ t: "seat", id: p.id, seat }, ws);
+      await this.queueTtt(async () => {
+        const current = ws.deserializeAttachment();
+        if (!current || current.left || ws.readyState !== 1) return;
+        const prevSeat = current.seat ?? -1;
+        if (seat >= 0 && this.players(room).some((q) => q.id !== current.id && q.seat === seat)) {
+          seatReply(prevSeat);
+          return;
+        }
+        // nobody gets into the roller coaster's sleigh while it is out on the track
+        if (room === HOME && seat >= COASTER_SEATS[0] && seat < COASTER_SEATS[1] && seat !== prevSeat && !coasterBoarding(Date.now())) {
+          seatReply(prevSeat);
+          return;
+        }
+        current.seat = seat;
+        ws.serializeAttachment(current);
+        // not back to the sender: it already moved, and a late echo would undo a quick sit/stand
+        say({ t: "seat", id: current.id, seat }, ws);
+        if (room === HOME && (isTttSeat(prevSeat) || isTttSeat(seat))) await this.syncTttAndBroadcast();
+      });
+    } else if (m.t === "ttt") {
+      const validAction =
+        (m.action === "move" && Number.isInteger(m.cell) && m.cell >= 0 && m.cell < 9) ||
+        m.action === "rematch";
+      if (!p.joinedAt || !isTttSeat(p.seat) || !validAction || !Number.isSafeInteger(m.rev)) return;
+      await this.queueTtt(async () => {
+        const { state, changed } = await this.loadAndSyncTtt();
+        const current = ws.deserializeAttachment();
+        let game = state;
+        if (ws.readyState === 1 && current?.joinedAt && !current.left && isTttSeat(current.seat)) {
+          if (m.action === "move") game = applyMove(state, current.id, m.cell, m.rev).state;
+          else if (m.action === "rematch") game = requestRematch(state, current.id, m.rev).state;
+        }
+        if (changed || game !== state) await this.saveTttAndBroadcast(game);
+      });
     } else if (m.t === "capy") {
       // Someone fed the capybara. The clients walk it by the room's clock; a feeding stops that clock
       // for it from `at` to `until`, and `lost` adds up every stop before, so everyone computes the
@@ -829,9 +891,11 @@ export class Room {
     } else if (m.t === "auth") {
       if (!(await this.isAdmin(ws, p, m.password))) return;
       // everyone sees who the admin is (badge over the name, colour in the chat)
-      p.admin = true;
-      ws.serializeAttachment(p);
-      say({ t: "admin", id: p.id });
+      const current = ws.deserializeAttachment();
+      if (!current || current.left || ws.readyState !== 1) return;
+      current.admin = true;
+      ws.serializeAttachment(current);
+      say({ t: "admin", id: current.id });
       if (!m.quiet) ws.send(JSON.stringify({ t: "admin-ok" }));
     } else if (m.t === "who") {
       if (!(await this.isAdmin(ws, p, m.password))) return;
@@ -1079,6 +1143,7 @@ export class Room {
       this.leave(w, 4003, action);
     }
     await this.syncHeartbeatAlarm();
+    await this.tttQueue;
     tell(`${action === "ban" ? "banned" : "kicked"} ${name}`);
   }
 
@@ -1167,6 +1232,7 @@ export class Room {
     for (const ws of stale) this.leave(ws, 1000, "heartbeat timeout");
     await this.maybeStartCatRide(Date.now());
     if (this.openSockets().length > 0) await this.state.storage.setAlarm(Date.now() + HEARTBEAT_CHECK_MS);
+    await this.tttQueue;
   }
   // Server-only cat-on-head lottery: picks a random online player on the heartbeat alarm,
   // avoiding players already carrying another cat and launching at most one new ride per tick.
@@ -1230,16 +1296,19 @@ export class Room {
         break;
       }
     }
+    await this.tttQueue;
     return new Response(null, { status: 204, headers: { "Cache-Control": "no-store" } });
   }
 
   async webSocketClose(ws, code, reason) {
     this.leave(ws, code, reason);
     await this.syncHeartbeatAlarm();
+    await this.tttQueue;
   }
   async webSocketError(ws) {
     this.leave(ws, 1000, "error");
     await this.syncHeartbeatAlarm();
+    await this.tttQueue;
   }
   leave(ws, code = 1000, reason = "") {
     if (this.leftSockets.has(ws)) {
@@ -1249,6 +1318,8 @@ export class Room {
     this.leftSockets.add(ws);
     const p = ws.deserializeAttachment();
     if (p && !p.left) {
+      const wasTttSeat = isTttSeat(p.seat);
+      p.seat = -1;
       p.left = true;
       try { ws.serializeAttachment(p); } catch {}
       if (p.joinedAt) this.stat("leave", p, [Math.round((Date.now() - p.joinedAt) / 1000)]);
@@ -1258,6 +1329,10 @@ export class Room {
         this.broadcast({ t: "left", id: p.id }, ws, roomOf(p));
         this.clearCatRideFor(p.id).catch(() => {});
         if (p.acct != null) this.presence(p.acct, false).catch(() => {});
+      }
+      if (wasTttSeat) {
+        const work = this.queueTtt(() => this.syncTttAndBroadcast());
+        this.state.waitUntil?.(work);
       }
     } else {
       safeClose(ws, code, reason);

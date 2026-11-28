@@ -13,6 +13,8 @@ import { cellAt as lakeCellAt } from "./lake-layout.js";
 import "./scenes.css";
 import { createOwl } from "./owl.js";
 import { createFishing, createFishingGear, FISH_NEAR, FISH_LEAVE } from "./fishing.js";
+import { createTicTacToe, TABLE_STAND_DISTANCE } from "./tictactoe.js";
+import { TTT_SEAT_X, TTT_SEAT_O, isTttSeat } from "../worker/tictactoe.js";
 import { createCat, CATS, CAT_NEAR, CAT_SIT_MS, CAT_RIDE_MS, PHRASES as CAT_PHRASES, RIDE_PHRASES as CAT_RIDE_PHRASES } from "./cat.js";
 import { CAROUSEL, carouselSeat, createCarousel, inClearing, isCarouselSeat, onCarousel } from "./carousel.js";
 import { WHEEL, wheelSeat, createFerrisWheel, inWheelClearing, isWheelSeat, onWheel } from "./ferris-wheel.js";
@@ -360,6 +362,7 @@ function prepareTown(fbx) {
     candles.updateMatrixWorld(true);
     solidBoxes.push(new THREE.Box3().setFromObject(candles).expandByScalar(0.15)); // nobody steps on them: a very small gap around
     placeBenches();
+    ttt.place({ isOpen, isFree: (x, z, y) => isFree(x, z, y, true), groundHeight, inPond, benches, lampPosts, board, solidBoxes, benchBoxes });
     placeFireflies();
     board.position.y = groundHeight(board.position.x, board.position.z);
     placeCapybara();
@@ -738,6 +741,7 @@ board.position.set(BOARD_AT[0], 0, BOARD_AT[1]);
 // Built in code (no new art), two seats each, facing the road. A seat is numbered
 // bench * 2 + side; that number is all the server stores (MAX_SEATS in worker/index.js).
 const SEATS_PER_BENCH = 2;
+const TABLE_SEATS = [TTT_SEAT_X, TTT_SEAT_O];
 const SEAT_GAP = 1.1; // seat center, sideways from the bench center
 // There is no sitting frame: a sitter is the whole standing frame raised so the
 // hips rest on the seat and the short legs hang in front of it.
@@ -823,6 +827,7 @@ const BENCH_SPOTS = [
 ];
 // Where a seat is, and which way the sitter looks (null if that bench doesn't exist)
 function seatSpot(id) {
+  if (isTttSeat(id)) return sceneId === HOME ? ttt.seatSpot(id) : null;
   if (isRideSeat(id) && sceneId !== HOME) return null; // the rides are the town's
   // a carousel horse: where it is right now, by the room's clock
   if (isCarouselSeat(id)) return fairPlaced ? carouselSeat(id - CAROUSEL.firstSeat, roomNow(), carousel.root.position.y) : null;
@@ -2367,9 +2372,9 @@ function catRideUpdate(m) {
 const BODY_RADIUS = 0.9; // character "width"
 const MAX_STEP = 1.2; // height difference it can climb
 const POST_RADIUS = 1.1;
-function isFree(x, z, currentY) {
+function isFree(x, z, currentY, inTown = false) {
   // other scenes are flat, with their own obstacles (no raycasts)
-  if (sceneId !== HOME) return !!lake && !lake.blocked(x, z, BODY_RADIUS * 0.8);
+  if (!inTown && sceneId !== HOME) return !!lake && !lake.blocked(x, z, BODY_RADIUS * 0.8);
   if (
     x < townBox.min.x ||
     x > townBox.max.x ||
@@ -2999,7 +3004,7 @@ function createHeld(feet) {
 // and the coffee or the cigarette while standing still
 const COFFEE = 2;
 const ON_FOOT = [COFFEE, 4]; // what stays in your hand on your feet
-const heldDir = (item, seat, still, d) => (!item ? null : seat ? seat.dir : ON_FOOT.includes(item) && still ? d : null);
+const heldDir = (item, seat, still, d) => (!item || seat?.table ? null : seat ? seat.dir : ON_FOOT.includes(item) && still ? d : null);
 // put the item over its trainer, seen from direction d (or hide it: d is null)
 function showHeld(mesh, body, cfg, item, d) {
   mesh.visible = !!(item && d);
@@ -3032,9 +3037,10 @@ function nextHold() {
   const i = FOOT_CYCLE.indexOf(myHold);
   return i < 0 ? COFFEE : FOOT_CYCLE[(i + 1) % FOOT_CYCLE.length]; // a laptop or a book in hand gives way to the coffee
 }
-function updateHoldButton() {
+function updateHoldButton(seat) {
+  holdBtn.hidden = !!seat?.table;
+  if (holdBtn.hidden) return;
   const shown = mySeat >= 0 || ON_FOOT.includes(myHold) ? myHold : 0; // a laptop or a book waits for a bench
-  holdBtn.hidden = false;
   holdBtn.classList.toggle("on", shown > 0);
   holdBtn.setAttribute("aria-label", "hold " + HELD[nextHold()]);
   if (holdIcon !== shown) holdBtn.querySelector("svg").innerHTML = HELD_ICONS[(holdIcon = shown)];
@@ -3042,7 +3048,7 @@ function updateHoldButton() {
 let lastHold = 0;
 function cycleHold() {
   const now = performance.now();
-  if (gamePaused || now - lastHold < 350) return; // stays under the server's rate limit
+  if (gamePaused || isTttSeat(mySeat) || now - lastHold < 350) return; // stays under the server's rate limit
   lastHold = now;
   myHold = nextHold();
   try { localStorage.setItem("hold", myHold); } catch {}
@@ -3104,6 +3110,7 @@ function nearestFreeSeat() {
     if (d < bestD && !seatTaken(id)) (best = id), (bestD = d);
   };
   for (let id = 0; id < benches.length * SEATS_PER_BENCH; id++) consider(id);
+  for (const id of TABLE_SEATS) consider(id);
   for (let i = 0; i < CAROUSEL.seats; i++) consider(CAROUSEL.firstSeat + i);
   for (let i = 0; i < WHEEL.seats; i++) consider(WHEEL.firstSeat + i);
   for (let i = 0; i < COASTER.seats; i++) consider(COASTER.firstSeat + i); // only while it is at the station (board)
@@ -3133,10 +3140,10 @@ function standUp(notify = true, way = null) {
   if (s) {
     const [fx, fz] = FACING[s.dir];
     // walking toward the other seat (across the bench) gets you off its front instead
-    if (way && way[0] * fz * side - way[1] * fx * side > 0.7 * Math.hypot(way[0], way[1])) (way = null), (dir = s.dir);
-    const front = way ? Math.atan2(way[1], way[0]) : Math.atan2(fz, fx);
+    if (!s.table && way && way[0] * fz * side - way[1] * fx * side > 0.7 * Math.hypot(way[0], way[1])) (way = null), (dir = s.dir);
+    const front = way ? Math.atan2(way[1], way[0]) : s.table ? Math.atan2(1, 0) : Math.atan2(fz, fx);
     const ground = groundHeight(s.x, s.z);
-    search: for (let d = 2.4; d <= 7; d += 0.4)
+    search: for (let d = s.table && !way ? TABLE_STAND_DISTANCE : 2.4; d <= 7; d += 0.4)
       for (let i = 0; i < 16; i++) {
         // that way first, then alternating to each side, the opposite way last
         const a = front + (i % 2 ? 1 : -1) * Math.ceil(i / 2) * (Math.PI / 8);
@@ -3238,10 +3245,10 @@ const toggleSit = () => {
   if (id >= 0) sit(id);
 };
 addEventListener("keydown", (e) => {
+  if (wall.isOpen()) return;
   const typing = ["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName);
   const k = e.key.toLowerCase();
   if (!typing && !e.repeat && !e.ctrlKey && !e.metaKey && k === "q") cycleHold();
-  if (!typing && !e.repeat && !e.ctrlKey && !e.metaKey && k === "e") (mySeat >= 0 || (!nearBoard() && !nearCapy() && !nearCat())) && toggleSit();
   // a quick tap on a move key can end before the next frame: stand up right away
   if (!typing && !gamePaused && mySeat >= 0 && !strappedIn() && MOVE_KEYS[k]) {
     dir = MOVE_KEYS[k];
@@ -3532,18 +3539,22 @@ function connect() {
     const m = JSON.parse(ev.data);
     if (m.t === "you") {
       myId = m.id;
+      ttt.setOnline(true);
       if (Number.isFinite(m.now)) clockOffset = m.now - Date.now(); // the capybara walks by the room's clock
       myLeaveToken = m.token || "";
       // the room reconnected us to a newer deploy than the one this tab loaded with: reload to get
       // it, but not in the middle of something being written
       if (deployed && m.v && m.v !== deployed) {
-        const busy = () => wall.isOpen() || elInput.value || document.activeElement?.id === "name-input";
+        const busy = () => isTttSeat(mySeat) || wall.isOpen() || elInput.value || document.activeElement?.id === "name-input";
         const go = () => (busy() ? setTimeout(go, 2000) : location.reload());
         go();
       }
       deployed ||= m.v;
     }
-    else if (m.t === "state") m.players.forEach(createOther);
+    else if (m.t === "state") {
+      [...others.keys()].forEach(removeOther);
+      m.players.forEach(createOther);
+    }
     else if (m.t === "joined") createOther(m.player);
     else if (m.t === "left") removeOther(m.id);
     else if (m.t === "chat") receiveChat(m.id, m.name, m.text, m.admin, m.color, m.prs, m.n);
@@ -3559,6 +3570,7 @@ function connect() {
       elMsgs.scrollTop = elMsgs.scrollHeight;
     }
     else if (m.t === "radio") receiveCommand(m.command);
+    else if (m.t === "ttt") ttt.setGame(m.game);
     else if (m.t === "note") wall.onNote(m.note, m.total);
     else if (m.t === "note-edit") wall.onNoteEdited(m.note);
     else if (m.t === "note-del") wall.onNoteDeleted(m.id, m.total);
@@ -3674,6 +3686,7 @@ function connect() {
   };
   sock.onclose = () => {
     if (ws !== sock) return;
+    ttt.setOnline(false);
     clearInterval(pingTimer);
     pingTimer = 0;
     myLeaveToken = "";
@@ -3681,6 +3694,20 @@ function connect() {
     if (!kicked && !pageUnloading) reconnectTimer = setTimeout(connect, 2000); // reconnect
   };
 }
+const sendTtt = (action, rev, cell) => ws?.readyState === 1 && ws.send(JSON.stringify({ t: "ttt", action, rev, cell }));
+const ttt = createTicTacToe(lobbyRoot, {
+  woodLight, woodDark, ironMaterial, sitLift: SIT_LIFT, sideSeatForward: SIDE_SEAT_FORWARD,
+  sendMove: (cell, rev) => sendTtt("move", rev, cell),
+  sendRematch: (rev) => sendTtt("rematch", rev),
+  standUp: () => standUp(),
+  getPlayerInfo: (id) => {
+    const player = id === myId ? { name: NAME, color: COLOR } : others.get(id);
+    return player && { name: player.name, color: NAME_COLORS[player.color] };
+  },
+  getMyId: () => myId,
+  getMySeat: () => mySeat,
+  isOverlayBlocked: () => gamePaused || wall.isOpen(),
+});
 const MULTIPLAYER = true;
 if (MULTIPLAYER) {
   connect();
@@ -3969,11 +3996,17 @@ function updateNameTags() {
 }
 
 const _v = new THREE.Vector3();
-// "press E to sit" over the nearest free seat, while you're close enough to take it
+// "press E to sit" or "press E to play" over the nearest free seat
 const sitPrompt = document.querySelector("#sit-prompt");
+const sitPromptKey = sitPrompt.querySelector(".key").lastChild;
+const sitPromptTap = sitPrompt.querySelector(".tap");
 sitPrompt.addEventListener("click", (e) => {
   toggleSit();
   e.currentTarget.blur(); // give the keyboard back to the game
+});
+// Let Enter and Space activate the focused prompt instead of opening chat or pausing the lobby.
+sitPrompt.addEventListener("keydown", (e) => {
+  if (e.code === "Space" || e.key === "Enter") e.stopPropagation();
 });
 // The roller coaster's countdown over its station, for whoever is near it or riding: the seconds left
 // to board while the train waits, then the seconds until it is back
@@ -3995,9 +4028,14 @@ function updateCoasterSign() {
   coasterSign.style.top = `${(-_v.y * 0.5 + 0.5) * innerHeight}px`;
 }
 function updateSitPrompt(seat) {
-  const s = seat >= 0 && !gamePaused && !typing() && !nearBoard() && !nearCapy() && !nearCat() ? seatSpot(seat) : null;
+  const s = seat >= 0 && !gamePaused && !typing() ? seatSpot(seat) : null;
   sitPrompt.hidden = !s;
   if (!s) return;
+  const action = s.table ? "play" : "sit";
+  if (sitPromptKey.textContent !== ` to ${action}`) {
+    sitPromptKey.textContent = ` to ${action}`;
+    sitPromptTap.textContent = `tap to ${action}`;
+  }
   _v.set(s.x, s.y + 5.2, s.z).project(camera); // above a standing trainer's name tag
   sitPrompt.style.left = `${(_v.x * 0.5 + 0.5) * innerWidth}px`;
   sitPrompt.style.top = `${(-_v.y * 0.5 + 0.5) * innerHeight}px`;
@@ -4066,7 +4104,7 @@ document.querySelector("#chat form").addEventListener("submit", (e) => {
 });
 // Enter opens the chat; Esc leaves it
 addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && !typing()) {
+  if (e.key === "Enter" && !typing() && !document.activeElement?.closest?.("#ttt")) {
     e.preventDefault();
     elInput.focus();
   } else if (e.key === "Escape" && typing()) elInput.blur();
@@ -4273,13 +4311,13 @@ catPrompt.addEventListener("click", (e) => {
 });
 document.body.append(catPrompt);
 // Pick at most one closest animal in interaction range so prompts and E never collide.
-function closestAnimal() {
+function closestAnimal(maxDistance = Infinity) {
   // the capybara and the cats are the town's
   if (sceneId !== HOME || mySeat >= 0 || nearBoard()) return null;
   let best = null;
-  let bestDist = Infinity;
+  let bestDist = maxDistance;
   const capyDist = Math.hypot(pos.x - capy.mesh.position.x, pos.z - capy.mesh.position.z);
-  if (capyDist < CAPY_NEAR) {
+  if (capyDist < CAPY_NEAR && capyDist < bestDist) {
     best = { kind: "capy" };
     bestDist = capyDist;
   }
@@ -4293,7 +4331,6 @@ function closestAnimal() {
   }
   return best;
 }
-const nearCapy = () => closestAnimal()?.kind === "capy";
 const nearCat = () => {
   const a = closestAnimal();
   return a?.kind === "cat" ? a.cat : null;
@@ -4688,7 +4725,7 @@ const seatDistance = (id) => {
 let eNow = null;
 /**
  * What E does right now: the line if it is out, standing up if seated, then the wall, the closest
- * animal (capybara or cat), and last the pond's edge or the free seat, whichever is closer.
+ * animal (unless a free table chair is closer), then the nearer of the pond's edge and the free seat.
  * Only that action's prompt shows.
  * @param {number} [seat] nearest free seat, if already known this frame
  * @returns {"fish" | "stand" | "wall" | "capy" | "cat" | "cast" | "sit" | null}
@@ -4699,7 +4736,7 @@ function eAction(seat = nearestFreeSeat()) {
   if (p === "focus" || p === "bite") return "fish";
   if (mySeat >= 0) return "stand";
   if (nearBoard()) return "wall";
-  const animal = closestAnimal();
+  const animal = closestAnimal(isTttSeat(seat) ? seatDistance(seat) : Infinity);
   if (animal) return animal.kind;
   const spot = fishSpot();
   if (spot && (seat < 0 || spot.d < seatDistance(seat))) return "cast";
@@ -4875,13 +4912,15 @@ function loop() {
   if (!riding) sendPosition(now, currentStep, running);
   const freeSeat = mySeat >= 0 ? -1 : nearestFreeSeat();
   eNow = eAction(freeSeat);
-  updateHoldButton();
+  const seat = mySeat >= 0 ? seatSpot(mySeat) : null;
+  updateHoldButton(seat);
   updateOthers(dt);
+  ttt.update(dt, dayAmount, waterUniforms.uTime.value);
 
   // smooth the height so it doesn't jitter on small terrain steps
   pos.y = THREE.MathUtils.lerp(
     pos.y,
-    mySeat >= 0 ? seatSpot(mySeat).y : topHeight(pos.x, pos.z),
+    seat?.y ?? topHeight(pos.x, pos.z),
     Math.min(1, dt * 12),
   );
   const k = Math.exp(-dt * 9);
@@ -4903,7 +4942,7 @@ function loop() {
   updateOcclusion();
   // facing the camera, tilted only halfway (the shadow looks like a standing body)
   sprite.rotation.set(camera.rotation.x * 0.5, 0, 0);
-  showHeld(myHeld, sprite, CHARACTER.cfg, myHold, grounded ? null : heldDir(myHold, mySeat >= 0 ? seatSpot(mySeat) : null, !walking, dir));
+  showHeld(myHeld, sprite, CHARACTER.cfg, myHold, grounded ? null : heldDir(myHold, seat, !walking, dir));
 
   carousel.update(roomNow(), dayAmount);
   wheel.update(roomNow(), dayAmount);
