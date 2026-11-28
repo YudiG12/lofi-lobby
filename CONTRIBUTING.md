@@ -17,7 +17,7 @@ To deploy your own: `npm run deploy-your-own` ([README](README.md#deploy-your-ow
 ## How changes are made
 
 1. **One change per PR**, with the why in the description. Design decisions become an ADR in `docs/adr/`, linked in the `README.md` Architecture table in ascending ADR number order (before non-ADR references like `SECURITY.md`).
-2. **Check it in the browser** (two tabs for anything multiplayer) before opening the PR.
+2. **Check it in the browser** (two players for anything multiplayer: a private window or a second browser, since one browser holds one character) before opening the PR.
 3. **Review** by a separate reviewer with a clean context (only the diff and the docs).
 4. **Docs and diagrams** are merged only after the owner approves them.
 5. **Game assets stay in the build**: keep the town model, textures and trainer sheets under `public/assets/`; review and credit any new third-party art before adding it ([ADR 005](docs/adr/005-version-and-deploy-game-assets.md)).
