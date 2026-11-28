@@ -13,9 +13,3 @@ export function roomOfPath(pathname) {
   const room = m[1].toLowerCase();
   return ROOMS.includes(room) ? room : null;
 }
-
-// /api/leave?room=<room>: the room the closing tab was in (the town if missing or unknown)
-export function leaveRoom(searchParams) {
-  const room = String(searchParams.get("room") || "").toLowerCase();
-  return ROOMS.includes(room) ? room : HOME;
-}

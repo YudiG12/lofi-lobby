@@ -1,4 +1,4 @@
-// Scenes: one place is drawn at a time, and each one is its own room on the server. Walking into a
+// Scenes: one place is drawn at a time, and each connection is in one of them on the server. Walking into a
 // portal (an edge of the map, like the classic top-down games) takes you to the other scene, where
 // you arrive just inside its matching portal. No three.js here: the worker and the tests import it.
 

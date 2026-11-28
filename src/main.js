@@ -3689,7 +3689,7 @@ if (MULTIPLAYER) {
     pingTimer = 0;
     clearTimeout(reconnectTimer);
     if (myId && myLeaveToken && navigator.sendBeacon) {
-      try { navigator.sendBeacon(`/api/leave?room=${sceneId}`, JSON.stringify({ id: myId, token: myLeaveToken })); } catch {}
+      try { navigator.sendBeacon("/api/leave", JSON.stringify({ id: myId, token: myLeaveToken })); } catch {}
       myLeaveToken = "";
     }
     if (ws && (ws.readyState === 0 || ws.readyState === 1)) {
