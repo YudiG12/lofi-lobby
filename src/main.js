@@ -362,7 +362,7 @@ function prepareTown(fbx) {
     candles.updateMatrixWorld(true);
     solidBoxes.push(new THREE.Box3().setFromObject(candles).expandByScalar(0.15)); // nobody steps on them: a very small gap around
     placeBenches();
-    ttt.place({ isOpen, isFree, groundHeight, inPond, benches, lampPosts, board, solidBoxes, benchBoxes });
+    ttt.place({ isOpen, isFree: (x, z, y) => isFree(x, z, y, true), groundHeight, inPond, benches, lampPosts, board, solidBoxes, benchBoxes });
     placeFireflies();
     board.position.y = groundHeight(board.position.x, board.position.z);
     placeCapybara();
@@ -2372,9 +2372,9 @@ function catRideUpdate(m) {
 const BODY_RADIUS = 0.9; // character "width"
 const MAX_STEP = 1.2; // height difference it can climb
 const POST_RADIUS = 1.1;
-function isFree(x, z, currentY) {
+function isFree(x, z, currentY, inTown = false) {
   // other scenes are flat, with their own obstacles (no raycasts)
-  if (sceneId !== HOME) return !!lake && !lake.blocked(x, z, BODY_RADIUS * 0.8);
+  if (!inTown && sceneId !== HOME) return !!lake && !lake.blocked(x, z, BODY_RADIUS * 0.8);
   if (
     x < townBox.min.x ||
     x > townBox.max.x ||
@@ -3695,7 +3695,7 @@ function connect() {
   };
 }
 const sendTtt = (action, rev, cell) => ws?.readyState === 1 && ws.send(JSON.stringify({ t: "ttt", action, rev, cell }));
-const ttt = createTicTacToe(scene, {
+const ttt = createTicTacToe(lobbyRoot, {
   woodLight, woodDark, ironMaterial, sitLift: SIT_LIFT, sideSeatForward: SIDE_SEAT_FORWARD,
   sendMove: (cell, rev) => sendTtt("move", rev, cell),
   sendRematch: (rev) => sendTtt("rematch", rev),
