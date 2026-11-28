@@ -113,8 +113,14 @@ button.ico.close:hover { color: #ffc95a; background: none; border-color: transpa
 #chat .tabs button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #chat .tabs button:hover { color: #F2F2F5; }
 #chat .tabs button.on { color: var(--name, #F2F2F5); border-color: rgba(255,255,255,.2); background: rgba(255,255,255,.06); }
-#chat .tabs button[data-tab=room] { font-size: 18px; padding: 0 8px 0 0; border: 0; background: none; color: #9a9db0; }
-#chat .tabs button[data-tab=room].on { color: #F2F2F5; }
+/* the room chats: global (the main one) and local, as plain words; the one open is white */
+#chat .tabs button:is([data-tab=global], [data-tab=local]) { font-size: 16px; padding: 0 4px 0 0; border: 0; background: none; color: #9a9db0; }
+#chat .tabs button:is([data-tab=global], [data-tab=local]).on { color: #F2F2F5; }
+#chat .tabs button[data-tab=local] { padding-right: 8px; }
+/* the speech bubble marks the open tab (it stands for the "chat" title) */
+#chat .tabs button i.ic { display: none; margin-right: 6px; line-height: 0; }
+#chat .tabs button.on i.ic { display: inline-grid; }
+#chat .tabs button i.ic svg { width: 1em; height: 1em; }
 #chat .tabs button .x { display: grid; margin-left: 6px; font-weight: 400; color: #9a9db0; }
 #chat .tabs button .x:hover { color: #ffc95a; }
 #chat .tabs button .x.shut:hover { color: #ff8a7a; }
@@ -123,9 +129,12 @@ button.ico.close:hover { color: #ffc95a; background: none; border-color: transpa
 #dm-msgs, .dm-win .msgs { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
            padding: 14px 20px; display: flex; flex-direction: column; gap: 12px; }
 #dm-msgs > :first-child, .dm-win .msgs > :first-child { margin-top: auto; }
-#dm-msgs[hidden], #msgs[hidden] { display: none; }
+#dm-msgs[hidden], #msgs[hidden], #msgs-local[hidden] { display: none; }
 #dm-msgs .m small, .dm-win .m small { display: block; font-size: 11px; color: var(--name, #ffc95a); margin-bottom: 2px; }
 #dm-msgs .m span, .dm-win .m span { font-size: 13px; line-height: 20px; color: #F2F2F5; overflow-wrap: anywhere; }
+#dm-msgs .m .head, .dm-win .m .head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 2px; }
+#dm-msgs .m .head small, .dm-win .m .head small { margin-bottom: 0; min-width: 0; }
+#dm-msgs .m .head time, .dm-win .m .head time { margin-left: auto; flex-shrink: 0; font-size: 10px; color: #8b8ea0; font-variant-numeric: tabular-nums; white-space: nowrap; }
 
 /* a private chat out of the panel: a window to drag by its bar and resize by its corner */
 .dm-win { z-index: 4; display: flex; flex-direction: column; min-width: 220px; min-height: 170px; max-width: calc(100vw - 16px); max-height: calc(100vh - 16px);

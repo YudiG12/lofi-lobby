@@ -3,6 +3,8 @@
 ## Unreleased
 
 ### Added
+- **Global and local chat**: the chat panel has two tabs. **global**, open when you arrive, reaches everyone in every scene, so people at the Lago and in the town talk to each other; **local** is only for who is in your scene. A tab counts what you missed while it was closed, and bubbles over the head are still only for the people around you ([ADR 017](docs/adr/017-global-and-local-chat.md)).
+- **The time of each message**, on the right of the name line, in the chat and in private chats.
 - **A second scene, the Lago**: walk off the top of the town, up the dirt path between the pines, and the screen dims and opens on a lake under a cliff, with two waterfalls fed by a river, a wooden pier, the notice board (the same wall) and a lamp post by its landing, benches along the path, picnic tables and a swing. Walk back down the path to return. Only one scene is drawn at a time; the town stays loaded, so coming back is instant. Built from the town's own pieces (its atlas tiles, pines, water, stone pond rim, benches, lamp post and board); only the waterfalls, round trees, cattails, tables and swing are new.
 - **Each scene has its own players, chat and seats**, and you come back to the scene you left. Your friends, private chats, the wall and the radio are the same in every scene: a friend in the town shows as online from the lake, and a private message reaches them there. Kicks, bans and the limits per connection cover every scene ([ADR 016](docs/adr/016-scenes-share-one-durable-object.md)).
 - **Fish and skip stones at the Lago too**: at the shore or the pier's edge, facing the water, **E** casts the line and **T** throws a stone, as at the town's pond. The stone goes the way you face, or toward the closest water.

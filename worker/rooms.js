@@ -13,3 +13,8 @@ export function roomOfPath(pathname) {
   const room = m[1].toLowerCase();
   return ROOMS.includes(room) ? room : null;
 }
+
+// The chats' histories in storage: each scene's local chat ("chat" is the town's, as before there were
+// scenes), and the global one, under GLOBAL, which is not a scene name (those are [a-z0-9-]).
+export const GLOBAL = "*";
+export const historyKey = (room) => (room === GLOBAL ? "chat-global" : room === HOME ? "chat" : "chat:" + room);
